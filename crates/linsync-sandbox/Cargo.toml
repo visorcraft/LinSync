@@ -1,0 +1,18 @@
+[package]
+name = "linsync-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libc.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+seccompiler = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+scopeguard = "1"

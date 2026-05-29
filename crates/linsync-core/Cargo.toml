@@ -1,0 +1,33 @@
+[package]
+name = "linsync-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["sandbox"]
+sandbox = ["dep:linsync-sandbox"]
+image-compare = ["dep:image", "dep:lab"]
+image-avif = ["image-compare", "image/avif"]
+web-engine = ["dep:linsync-webengine"]
+document-compare = []
+
+[dependencies]
+blake3.workspace = true
+image = { workspace = true, optional = true }
+lab = { workspace = true, optional = true }
+libc.workspace = true
+linsync-sandbox = { workspace = true, optional = true }
+linsync-webengine = { path = "../linsync-webengine", optional = true }
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_repr.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+httptest = "0.16"
+serde_json = { workspace = true }

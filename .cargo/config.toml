@@ -1,0 +1,9 @@
+# Build acceleration: sccache compiler cache + mold linker.
+# Requires `mold` and `sccache` on PATH (e.g. `pacman -S mold sccache`).
+# Bypass per-build with `CARGO_BUILD_RUSTC_WRAPPER= cargo …` (skip sccache)
+# or `RUSTFLAGS= cargo …` (skip mold); see AGENTS.md "Build acceleration".
+[build]
+rustc-wrapper = "sccache"
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

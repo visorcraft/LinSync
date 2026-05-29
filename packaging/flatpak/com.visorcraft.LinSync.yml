@@ -1,0 +1,109 @@
+# Flatpak manifest for LinSync.
+#
+# This manifest pairs with the workspace `rust-toolchain.toml` pin (Rust
+# 1.95, 2024 edition) by selecting the KDE 6.10 runtime, which is built on
+# the FDO 25.08 SDK and gets us the matching rust-stable Sdk extension.
+#
+# Build the .flatpak bundle via `just flatpak-bundle` (recommended). The
+# Justfile target vendors cargo deps into target/flatpak/vendor, stages
+# the matching .cargo/config.toml under a trap (so it's removed even on
+# build failure), and produces target/release/linsync.flatpak.
+#
+# Requires:
+#   flatpak-builder
+#   org.kde.Platform//6.10
+#   org.kde.Sdk//6.10
+#   org.freedesktop.Sdk.Extension.rust-stable//25.08
+#
+# Plugin-helper sandbox notes
+# ===========================
+# Plugin helpers are sandboxed by the `linsync-sandbox` crate at runtime,
+# *inside* the Flatpak sandbox. The Flatpak portal already restricts host
+# access; Landlock + seccomp-bpf add intra-sandbox isolation so a compromised
+# helper cannot read the rest of the Flatpak's mount namespace either.
+#
+# The Landlock backend works inside Flatpak when the host kernel >= 5.13.
+# When unavailable the runtime degrades to bwrap-in-bwrap (works under
+# `--share=ipc` only) or to degraded mode with a tracing::warn! at startup.
+# See docs/sandbox-design.md and docs/plugin-protocol.md §"Sandboxing".
+
+app-id: com.visorcraft.LinSync
+runtime: org.kde.Platform
+runtime-version: '6.10'
+sdk: org.kde.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: linsync
+
+# Skip the post-build `appstreamcli compose` pass — LinSync's metainfo
+# references the GitHub repo URL which appstreamcli treats as a hard
+# read-error when the repo is private / unpublished, and the resulting
+# `filters-but-no-output` failure aborts the whole build. The metainfo
+# is still bundled at /app/share/metainfo and consumed by software
+# centers at install time.
+appstream-compose: false
+
+finish-args:
+  # Wayland + X11 fallback for the QML shell.
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Filesystem access. LinSync compares user-visible paths so we ask
+  # for $HOME + removable media; everything else is portal-mediated.
+  - --filesystem=home
+  - --filesystem=/run/media
+  # Notifications + secret service for any future credential prompts.
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.secrets
+  # FileManager1 D-Bus for "reveal in file manager" actions.
+  - --talk-name=org.freedesktop.FileManager1
+  # XDG state for sessions, settings, logs.
+  - --persist=.config/linsync
+  - --persist=.local/share/linsync
+  - --persist=.local/state/linsync
+  - --persist=.cache/linsync
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  # No build-args network share — cargo reads from the vendored
+  # target/flatpak/vendor tree staged by `just flatpak-vendor`.
+  env:
+    CARGO_HOME: /run/build/linsync/cargo
+
+modules:
+  - name: linsync
+    buildsystem: simple
+    build-commands:
+      # Match the per-distro packaging recipes: build with the cxx-qt
+      # in-process host so the Flatpak doesn't need an external `qml6`
+      # subprocess at runtime.
+      - QT_VERSION_MAJOR=6 cargo --offline build --release --workspace --frozen --features 'linsync/cxxqt linsync/cxxqt-app'
+      - install -Dm755 target/release/linsync /app/bin/linsync
+      - install -Dm755 target/release/linsync-cli /app/bin/linsync-cli
+      - mkdir -p /app/share/linsync
+      - cp -R apps/linsync-gui/qml /app/share/linsync/qml
+      - install -Dm644 packaging/com.visorcraft.LinSync.desktop /app/share/applications/com.visorcraft.LinSync.desktop
+      - install -Dm644 packaging/com.visorcraft.LinSync.metainfo.xml /app/share/metainfo/com.visorcraft.LinSync.metainfo.xml
+      - install -Dm644 packaging/com.visorcraft.LinSync.mime.xml /app/share/mime/packages/com.visorcraft.LinSync.xml
+      # SVG icon intentionally skipped — newer librsvg dropped the
+      # gdk-pixbuf SVG loader, so `flatpak build-export` rejects it as
+      # "Format not recognized". The hicolor PNG set below (16..512px)
+      # covers every Plasma / GNOME icon-size request. The .deb / .rpm /
+      # Arch / AppImage targets all still ship the SVG.
+      - for size in 16 22 24 32 36 48 64 72 96 128 192 256 512; do install -Dm644 "packaging/icons/hicolor/${size}x${size}/apps/com.visorcraft.LinSync.png" "/app/share/icons/hicolor/${size}x${size}/apps/com.visorcraft.LinSync.png"; done
+      - target/release/linsync-cli man --output linsync-cli.1
+      - install -Dm644 linsync-cli.1 /app/share/man/man1/linsync-cli.1
+      - install -d /app/share/bash-completion/completions /app/share/fish/vendor_completions.d /app/share/zsh/site-functions
+      - target/release/linsync-cli completions bash > /app/share/bash-completion/completions/linsync-cli
+      - target/release/linsync-cli completions fish > /app/share/fish/vendor_completions.d/linsync-cli.fish
+      - target/release/linsync-cli completions zsh > /app/share/zsh/site-functions/_linsync-cli
+      - install -Dm644 LICENSE /app/share/licenses/linsync/LICENSE
+    sources:
+      # The repo root. `just flatpak` stages
+      # target/flatpak/vendor + .cargo/config.toml before flatpak-builder
+      # runs, so this `type: dir` copies them into the sandbox alongside
+      # the workspace; `cargo --offline --frozen` then resolves every
+      # crate from the vendored tree.
+      - type: dir
+        path: ../..

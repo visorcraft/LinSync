@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "com.visorcraft.web-fetch",
+  "name": "Web Fetch",
+  "version": "1.0.0",
+  "license": "GPL-3.0-only",
+  "entry": ["./web-fetch"],
+  "classes": ["unpacker"],
+  "mime_types": ["text/html", "text/uri-list"],
+  "extensions": ["html", "htm", "uri"],
+  "capabilities": [],
+  "deterministic": false,
+  "sandbox": {
+    "network": true,
+    "writes_input": false,
+    "requires_home_access": false
+  }
+}

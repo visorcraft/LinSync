@@ -1,0 +1,346 @@
+// SPDX-FileCopyrightText: 2026 VisorCraft LLC
+// SPDX-License-Identifier: GPL-3.0-only
+
+import QtQuick
+import QtQuick.Controls as Controls
+import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
+
+// DocumentComparePage — two-pane text-diff view for OCR/document compare.
+// Sends a GET to /compare/document and renders the extracted text diff.
+//
+// Root is a Controls.Pane so QQC2 Controls inside inherit the
+// ApplicationWindow root's QPalette through the standard inheritance chain.
+// A plain Item root broke that chain and the widgets stayed dark in Light
+// mode regardless of the palette set on the window root.
+Controls.Pane {
+    id: root
+    padding: 0
+    background: Rectangle { color: root.activeBg }
+
+    // ── External interface ────────────────────────────────────────────────────
+    required property string bridgeUrl
+    required property color activeBg
+    required property color activeBgAlt
+    required property color activeText
+    required property color activeDisabledText
+    required property color activeHighlight
+    required property color separatorColor
+
+    property string leftPath: ""
+    property string rightPath: ""
+
+    // ── Internal state ────────────────────────────────────────────────────────
+    property string statusText: "Select left and right document paths, then run compare."
+    property bool running: false
+    property var lastResult: null
+
+    // ── Bridge helper ─────────────────────────────────────────────────────────
+    function bridgeGet(path, onLoad) {
+        if (root.bridgeUrl === "") {
+            if (onLoad)
+                onLoad(false, null);
+            return;
+        }
+        const xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState === XMLHttpRequest.DONE) {
+                const ok = xhr.status >= 200 && xhr.status < 300;
+                let payload = null;
+                try {
+                    payload = JSON.parse(xhr.responseText);
+                } catch (_) {}
+                if (onLoad)
+                    onLoad(ok, payload);
+            }
+        };
+        xhr.open("GET", root.bridgeUrl + path);
+        xhr.send();
+    }
+
+    function runCompare() {
+        if (root.leftPath === "" || root.rightPath === "") {
+            root.statusText = "Both left and right paths are required.";
+            return;
+        }
+        root.running = true;
+        root.lastResult = null;
+        root.statusText = "Extracting text and comparing…";
+
+        const modeStr = modeCombo.currentText === "OCR Text" ? "ocr_text" : "text";
+        const lang = ocrLangField.text.trim() || "eng";
+        const url = "/compare/document"
+            + "?left=" + encodeURIComponent(root.leftPath)
+            + "&right=" + encodeURIComponent(root.rightPath)
+            + "&mode=" + modeStr
+            + "&ocr_language=" + encodeURIComponent(lang);
+
+        root.bridgeGet(url, function (ok, data) {
+            root.running = false;
+            if (!ok || !data || data.error) {
+                const msg = data && data.error ? data.error : "Compare failed — check file paths and plugin availability.";
+                root.statusText = msg;
+                return;
+            }
+            root.lastResult = data;
+            if (data.equal) {
+                root.statusText = "Documents are equal (extracted via " + data.left_extractor + ").";
+            } else {
+                root.statusText = data.differing_lines + " differing lines (extracted via " + data.left_extractor + ").";
+            }
+        });
+    }
+
+    // Reusable extracted-text pane: an accent-striped header bar plus a
+    // scrollable read-only monospace body. Mirrors ImageComparePage's
+    // ImagePane so the two compare pages share a visual language.
+    component TextPane: Rectangle {
+        id: pane
+
+        property string heading: ""
+        property color accent: root.activeHighlight
+        property string bodyText: ""
+        property bool placeholder: false
+
+        color: root.activeBgAlt
+        clip: true
+
+        Rectangle {
+            id: paneHeader
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: 28
+            color: root.activeBg
+            border.color: root.separatorColor
+            border.width: 1
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                spacing: 8
+
+                Rectangle {
+                    Layout.preferredWidth: 3
+                    Layout.preferredHeight: 14
+                    color: pane.accent
+                    radius: 2
+                }
+                Controls.Label {
+                    Layout.fillWidth: true
+                    text: pane.heading
+                    color: root.activeText
+                    font.bold: true
+                    font.pixelSize: 12
+                    elide: Text.ElideRight
+                }
+            }
+        }
+
+        Controls.ScrollView {
+            anchors.top: paneHeader.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.margins: 4
+            clip: true
+
+            Controls.TextArea {
+                text: pane.bodyText
+                readOnly: true
+                font.family: "monospace"
+                font.pointSize: 10
+                color: pane.placeholder ? root.activeDisabledText : root.activeText
+                background: null
+                wrapMode: Controls.TextArea.Wrap
+            }
+        }
+    }
+
+    // ── Layout ────────────────────────────────────────────────────────────────
+    ColumnLayout {
+        anchors.fill: parent
+        anchors.margins: 8
+        spacing: 8
+
+        // ── Toolbar ──────────────────────────────────────────────────────────
+        // Settings grouped in a bordered card (matching Image Compare), then
+        // the primary Run Compare action, a busy indicator, and a right-
+        // aligned result chip.
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 12
+
+            // Extraction-settings group
+            Rectangle {
+                Layout.preferredHeight: 40
+                Layout.preferredWidth: docGroupRow.implicitWidth + 20
+                color: root.activeBgAlt
+                border.color: root.separatorColor
+                border.width: 1
+                radius: 6
+
+                RowLayout {
+                    id: docGroupRow
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    spacing: 10
+
+                    Controls.Label {
+                        text: qsTr("Mode")
+                        color: root.activeDisabledText
+                        font.pixelSize: 11
+                    }
+                    AppComboBox {
+                        id: modeCombo
+                        model: ["Text", "OCR Text"]
+                        currentIndex: 0
+                        Layout.preferredWidth: 130
+                        implicitHeight: 30
+                        Accessible.name: "Document extraction mode"
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: 1
+                        Layout.fillHeight: true
+                        Layout.topMargin: 8
+                        Layout.bottomMargin: 8
+                        color: root.separatorColor
+                    }
+
+                    Controls.Label {
+                        text: qsTr("OCR Language")
+                        color: modeCombo.currentIndex === 1 ? root.activeText : root.activeDisabledText
+                        font.pixelSize: 11
+                    }
+                    AppTextField {
+                        id: ocrLangField
+                        text: "eng"
+                        Layout.preferredWidth: 80
+                        enabled: modeCombo.currentIndex === 1
+                        opacity: modeCombo.currentIndex === 1 ? 1.0 : 0.4
+                        Accessible.name: "OCR language code"
+                    }
+                }
+            }
+
+            // Primary action: Run Compare
+            AppButton {
+                Layout.preferredHeight: 40
+                Layout.preferredWidth: 150
+                text: root.running ? qsTr("Comparing…") : qsTr("Run Compare")
+                icon.name: "media-playback-start"
+                enabled: !root.running
+                onClicked: root.runCompare()
+            }
+
+            Controls.BusyIndicator {
+                running: root.running
+                visible: root.running
+                Layout.preferredWidth: 28
+                Layout.preferredHeight: 28
+            }
+
+            Item { Layout.fillWidth: true }
+
+            Controls.Label {
+                text: root.lastResult !== null ? (root.lastResult.equal ? qsTr("Equal") : root.lastResult.differing_lines + qsTr(" diffs")) : ""
+                color: root.lastResult !== null && !root.lastResult.equal ? "#e53935" : root.activeText
+                font.bold: true
+            }
+        }
+
+        // ── Result summary card ───────────────────────────────────────────────
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: root.lastResult !== null ? resultSummary.implicitHeight + 24 : 0
+            visible: root.lastResult !== null
+            color: root.activeBgAlt
+            border.color: root.separatorColor
+            border.width: 1
+            radius: 6
+
+            ColumnLayout {
+                id: resultSummary
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    top: parent.top
+                    margins: 12
+                }
+                spacing: 2
+
+                Controls.Label {
+                    text: root.lastResult !== null ? (root.lastResult.equal ? "Documents are identical." : "Documents differ.") : ""
+                    font.bold: true
+                    color: root.lastResult !== null && !root.lastResult.equal ? "#e53935" : root.activeText
+                }
+                Controls.Label {
+                    visible: root.lastResult !== null && !root.lastResult.equal
+                    text: root.lastResult !== null ? "Differing lines: " + root.lastResult.differing_lines : ""
+                    color: root.activeText
+                }
+                Controls.Label {
+                    text: root.lastResult !== null ? "Extracted via: " + root.lastResult.left_extractor : ""
+                    color: root.activeDisabledText
+                    font.pointSize: 9
+                }
+            }
+        }
+
+        // ── Two text panes (left / right extracted text) ──────────────────────
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 2
+
+            TextPane {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                heading: qsTr("Left")
+                accent: Kirigami.Theme.neutralTextColor
+                placeholder: !(root.lastResult !== null && root.lastResult.left_text)
+                bodyText: root.lastResult !== null && root.lastResult.left_text
+                    ? root.lastResult.left_text
+                    : (root.running ? "" : qsTr("(run compare to see extracted text)"))
+            }
+
+            Rectangle {
+                Layout.preferredWidth: 1
+                Layout.fillHeight: true
+                color: root.separatorColor
+            }
+
+            TextPane {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                heading: qsTr("Right")
+                accent: Kirigami.Theme.positiveTextColor
+                placeholder: !(root.lastResult !== null && root.lastResult.right_text)
+                bodyText: root.lastResult !== null && root.lastResult.right_text
+                    ? root.lastResult.right_text
+                    : (root.running ? "" : qsTr("(run compare to see extracted text)"))
+            }
+        }
+
+        // ── Status bar ────────────────────────────────────────────────────────
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 24
+            color: root.activeBg
+
+            Controls.Label {
+                anchors {
+                    verticalCenter: parent.verticalCenter
+                    left: parent.left
+                    leftMargin: 8
+                }
+                text: root.statusText
+                color: root.activeText
+                elide: Text.ElideRight
+            }
+        }
+    }
+}

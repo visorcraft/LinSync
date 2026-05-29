@@ -1,0 +1,125 @@
+/target/
+**/*.rs.bk
+*.log
+/.qmlls.ini
+**/.qmlls.ini
+
+# rustfmt backups
+**/*.orig
+
+# Build artifacts that may sneak in
+*.pdb
+*.exe
+*.dSYM/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+.zed/
+
+# AI coding-agent instruction files, kept local-only (not source-tracked).
+# CLAUDE.md is a symlink to AGENTS.md; GEMINI.md is optional / per-developer.
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
+
+# Long-form project roadmap, kept local-only (not source-tracked).
+/PLAN.md
+
+# Local secrets / credentials. Should never be committed. If you need
+# to share configuration with collaborators, put it under packaging/
+# or docs/ and review it explicitly.
+.env
+.env.*
+*.env
+**/*.pem
+**/*.key
+**/*_rsa
+**/*_dsa
+**/id_*
+**/credentials
+**/credentials.*
+**/secrets.*
+**/*.p12
+**/*.pfx
+
+# Editor swap / temp / backup files
+**/*.tmp.*
+**/*.swp
+**/*.swo
+**/*~
+
+# Cargo / flatpak vendor scratch. The dev `.cargo/config.toml`
+# (mold+sccache wiring) IS checked in — only transient cargo
+# scratch like a flatpak-build-time vendor swap or a `.bak`
+# restore file are ignored. `/vendor/` guards against an
+# accidental top-level `cargo vendor` (the supported path puts
+# the tree at target/flatpak/vendor).
+/.cargo/*
+!/.cargo/config.toml
+/vendor/
+
+# flatpak-builder writes its build cache + git mirror to this hidden
+# dir at the workspace root, separate from /target/.
+/.flatpak-builder/
+
+# Distro artifacts at the workspace root. `just flatpak-bundle` and
+# the per-distro recipes write into target/release*/ ; these patterns
+# catch artifacts that land at the root (e.g. linuxdeploy renames
+# LinSync-*.AppImage in-place before the script moves it).
+/*.AppImage
+/*.flatpak
+/*.deb
+/*.rpm
+/*.pkg.tar.zst
+/packaging/arch/*.pkg.tar.zst
+/packaging/arch/pkg/
+/packaging/arch/src/
+
+# Archive fixture source tree and built archives — regenerated at test time by
+# tests/fixtures/archive/build.sh. Allowlist the committed files; everything
+# else is ignored so test scratch outputs don't leak in.
+/tests/fixtures/archive/*
+!/tests/fixtures/archive/build.sh
+!/tests/fixtures/archive/members.txt
+
+# Symlink and permissions fixture trees — regenerated at test time by their
+# respective build.sh scripts; only the scripts themselves are checked in.
+/tests/fixtures/symlink/left/
+/tests/fixtures/symlink/right/
+/tests/fixtures/permissions/left/
+/tests/fixtures/permissions/right/
+
+# Local release-validation staging dirs. `dist/` is the canonical name
+# scripts/release-vm-validation.sh defaults to; `dist-rc1/` (and any
+# `dist-*` variant) holds the artifacts pulled from the GitHub Release
+# during pre-tag validation. None of these are source-tracked.
+/dist/
+/dist-*/
+
+# Local containerised RPM build output from `just package-rpm-fedora44`.
+# The build script also lives in packaging/rpm/, but its rpmbuild tree
+# (_rpmbuild-fedora44/) is local-only scratch.
+/packaging/rpm/_rpmbuild-fedora44/
+/packaging/rpm/_rpmbuild/
+# `just package-rpm` regenerates the source tarball each build via
+# `git archive` (linsync-<version>.tar.gz). The spec + build scripts in
+# packaging/rpm/ are tracked; the archived tree is transient.
+/packaging/rpm/*.tar.gz
+
+# Debian `dpkg-buildpackage` scratch. The packaging sources live in
+# packaging/debian/ (tracked) and get copied/symlinked to a `debian/`
+# root for the build; debian/rules then points CARGO_HOME and the
+# staging tree there, and debhelper adds its own stamps. Ignore the
+# root build tree outright, plus the dh-generated artifacts in case the
+# build writes back through a symlink into packaging/debian/.
+/debian/
+/packaging/debian/linsync/
+/packaging/debian/cargo_home/
+/packaging/debian/tmp/
+/packaging/debian/files
+/packaging/debian/.debhelper/
+/packaging/debian/debhelper-build-stamp
+/packaging/debian/*.substvars
+/packaging/debian/*.debhelper.log

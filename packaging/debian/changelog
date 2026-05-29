@@ -1,0 +1,114 @@
+linsync (1.7.0-1) unstable; urgency=medium
+
+  * Security hardening: sandbox fails closed without a backend and clears the
+    helper environment to an allowlist; streaming helpers sandboxed; web-fetch
+    pins the validated address at connect time (DNS-rebinding defense); folder
+    copy/delete refuse symlink-escaping paths; GUI bridge token written 0600
+  * About page: real app icon and unified "Visit LinSync" button styling
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Fri, 29 May 2026 09:00:00 -0500
+
+linsync (1.6.0-1) unstable; urgency=medium
+
+  * Webpage compare fully functional: sandbox DNS/TLS access for network
+    plugins, browser User-Agent, side-by-side editor diff with overview ruler
+  * Plugins page: themed built-in toggles (no longer black)
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Thu, 28 May 2026 18:50:00 -0500
+
+linsync (1.5.0-1) unstable; urgency=medium
+
+  * Version bump to 1.5.0
+  * Compare pages (Image / Webpage / Document) are now fully theme-aware
+  * Themed App* form controls across the compare pages (no stray dark borders)
+  * Image Compare: Left/Right file pickers; Tolerance/ΔE match Settings styling
+  * Webpage Compare layout redesigned; Document Compare restyled to match
+  * Shared AppButton control; sidebar hover flash removed
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Thu, 28 May 2026 12:00:00 -0500
+
+linsync (1.4.0-1) unstable; urgency=medium
+
+  * Version bump to 1.4.0
+  * QML diff-pane simplification: per-row TextArea → single Label (3× fewer nodes)
+  * Binding loops resolved across 7 QML pages
+  * Compare profiles: HTTP bridge fully profile-aware, cxx-qt fixup landed
+  * Phase 1 core + CLI + 7 built-in profiles shipped
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Thu, 28 May 2026 05:54:00 -0500
+
+linsync (1.3.1-2) unstable; urgency=medium
+
+  * Fixed QML ScrollBar namespace crash on launch
+  * Default to external qml6 runner (bypass fragile cxx-qt in-process host)
+  * Pass bridge URL via environment variable to fix qml6 argument parsing
+  * New compare dialog with file-browse and raw-text-paste tabs
+  * Removed 2000-line cap on comparison results
+  * Fixed scroll jitter (debounced pane sync, Canvas overview ruler)
+  * Full keyboard navigation (Up/Down/Home/End/PgUp/PgDn)
+  * Text selection support in diff panes
+  * Pre-computed color theme cache for faster delegate painting
+  * LRU text-transform cache avoids regex per-line per-frame
+  * ListView reuseItems + cacheBuffer for instant item recycling
+  * 256 KB bridge request limit for raw-text paste
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 27 May 2026 13:48:00 -0500
+
+linsync (1.2.1-1) unstable; urgency=medium
+
+  * Security: SSRF defenses for the bundled web-fetch plugin.
+    - Outbound requests are restricted to http / https.
+    - The resolved host must be a publicly-routable address; loopback,
+      RFC1918, link-local, unique-local, multicast, unspecified, and
+      reserved ranges are refused.
+    - Redirect targets are revalidated against the same policy.
+    - The opener no longer registers handlers for file://, ftp://, or
+      data:.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 27 May 2026 00:00:00 +0000
+
+linsync (1.1.0-1) unstable; urgency=medium
+
+  * New compare modes:
+    - image (pure-Rust pixel + CIEDE2000 perceptual diff)
+    - document (PDF/DOCX/ODT via Tesseract OCR + Poppler + LibreOffice
+      helper plugins)
+    - webpage (rendered DOM diff via Qt WebEngine, feature-gated)
+  * Sandbox foundation: new linsync-sandbox crate wires Landlock and
+    seccompiler with a bubblewrap fallback and a degraded mode for
+    plugin helpers.
+  * Plugin host: process-group propagation prevents soffice / poppler
+    grandchild leaks; killpg on shutdown.
+  * Screenshot pipeline: launch-context startup-section bridge lets
+    scripts/gui-screenshot.sh capture each sidebar section
+    deterministically.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 27 May 2026 00:00:00 +0000
+
+linsync (1.0.1-1) unstable; urgency=medium
+
+  * GUI wiring complete for Settings, Filters, and Plugins pages.
+  * Filter grammar: de: / e: expression families parse and evaluate;
+    linsync-cli filter migrate rewrites legacy .flt files into the
+    supported subset.
+  * Merge UI: dedicated three-pane view with save-to-third-target;
+    linsync-cli mergetool subcommand integrates LinSync as a Git
+    mergetool.
+  * Plugin protocol: unpack_folder operation, length-prefixed
+    streaming output, bundled ZIP/tar unpackers.
+  * Text compare: moved-block detection as a third diff kind
+    (opt-in via Settings).
+  * Accessibility audit and 11 P0 fixes; per-section GUI screenshots
+    captured in CI.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Tue, 26 May 2026 00:00:00 +0000
+
+linsync (1.0.0-1) unstable; urgency=medium
+
+  * Initial Debian packaging stub for LinSync 1.0.0.
+  * Bundles the Rust + Qt 6 / Kirigami GUI and the linsync-cli companion
+    binary.
+  * Installs the hicolor icon theme, AppStream metainfo, MIME package,
+    and the Dolphin service menu.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Tue, 19 May 2026 00:00:00 +0000

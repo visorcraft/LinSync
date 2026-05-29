@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "com.visorcraft.linsync.libreoffice-extract",
+  "name": "LibreOffice Text Extractor",
+  "version": "1.0.0",
+  "license": "GPL-3.0-only",
+  "entry": ["./libreoffice-extract.sh"],
+  "classes": ["unpacker", "document_text_extractor"],
+  "mime_types": [
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/rtf",
+    "text/rtf"
+  ],
+  "extensions": ["odt", "docx", "rtf"],
+  "capabilities": ["unpack-text"],
+  "deterministic": false,
+  "sandbox": {
+    "network": false,
+    "writes_input": false,
+    "requires_home_access": true
+  },
+  "options_schema": []
+}

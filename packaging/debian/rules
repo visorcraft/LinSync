@@ -1,0 +1,48 @@
+#!/usr/bin/make -f
+# SPDX-FileCopyrightText: 2026 VisorCraft LLC
+# SPDX-License-Identifier: GPL-3.0-only
+
+export QT_VERSION_MAJOR = 6
+export CARGO_HOME = $(CURDIR)/debian/cargo_home
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# Build with the EXTERNAL QML host only. cxxqt-app pulls in Qt's
+	# private API which forces strict (>= 6.8.2) version deps via
+	# dh_shlibdeps; that's incompatible with Debian trixie's stable
+	# Qt 6.4.2. The external QML host is the default runtime and works
+	# fine via qml6/qml — only the in-process performance benefit is
+	# lost. Fedora's .rpm is built in a matching Fedora container so
+	# it can keep cxxqt-app; this divergence is per-distro.
+	cargo build --release --workspace
+
+override_dh_auto_test:
+	# Skip the full test suite during package builds; CI runs `cargo test`
+	# against the workspace before any release artefact is produced.
+
+override_dh_auto_install:
+	install -Dm755 target/release/linsync     debian/linsync/usr/bin/linsync
+	install -Dm755 target/release/linsync-cli debian/linsync/usr/bin/linsync-cli
+	mkdir -p debian/linsync/usr/share/linsync
+	cp -R apps/linsync-gui/qml debian/linsync/usr/share/linsync/qml
+	install -Dm644 packaging/distro/git-mergetool.gitconfig \
+	    debian/linsync/usr/share/linsync/git-mergetool.gitconfig
+	install -Dm644 packaging/com.visorcraft.LinSync.desktop      debian/linsync/usr/share/applications/com.visorcraft.LinSync.desktop
+	install -Dm644 packaging/com.visorcraft.LinSync.metainfo.xml debian/linsync/usr/share/metainfo/com.visorcraft.LinSync.metainfo.xml
+	install -Dm644 packaging/com.visorcraft.LinSync.mime.xml     debian/linsync/usr/share/mime/packages/com.visorcraft.LinSync.xml
+	install -Dm644 packaging/dolphin/com.visorcraft.LinSync.desktop \
+	    debian/linsync/usr/share/kio/servicemenus/com.visorcraft.LinSync.desktop
+	install -Dm644 packaging/icons/hicolor/scalable/apps/com.visorcraft.LinSync.svg \
+	    debian/linsync/usr/share/icons/hicolor/scalable/apps/com.visorcraft.LinSync.svg
+	for size in 16 22 24 32 36 48 64 72 96 128 192 256 512; do \
+	    install -Dm644 packaging/icons/hicolor/$$size'x'$$size/apps/com.visorcraft.LinSync.png \
+	        debian/linsync/usr/share/icons/hicolor/$$size'x'$$size/apps/com.visorcraft.LinSync.png; \
+	done
+	install -Dm644 docs/third-party-notices.md \
+	    debian/linsync/usr/share/doc/linsync/third-party-notices.md
+
+override_dh_auto_clean:
+	cargo clean || true
+	dh_auto_clean

@@ -1,0 +1,18 @@
+[package]
+name = "linsync-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+web-engine = ["linsync-core/web-engine"]
+
+[dependencies]
+linsync-core = { workspace = true, features = ["image-compare", "document-compare"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+image = { workspace = true }
+tempfile = "3"
+serde_json = { workspace = true }

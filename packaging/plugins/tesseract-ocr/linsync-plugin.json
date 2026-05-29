@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "com.visorcraft.linsync.tesseract-ocr",
+  "name": "Tesseract OCR",
+  "version": "1.0.0",
+  "license": "GPL-3.0-only",
+  "entry": ["./tesseract-ocr.sh"],
+  "classes": ["unpacker", "ocr_engine"],
+  "mime_types": [
+    "image/png",
+    "image/jpeg",
+    "image/tiff",
+    "image/webp",
+    "application/pdf"
+  ],
+  "extensions": ["png", "jpg", "jpeg", "tiff", "tif", "webp", "pdf"],
+  "capabilities": ["unpack-text"],
+  "deterministic": false,
+  "sandbox": {
+    "network": false,
+    "writes_input": false,
+    "requires_home_access": false
+  },
+  "options_schema": [
+    {
+      "key": "language",
+      "label": "OCR language (ISO 639-2, e.g. \"eng\", \"fra\", \"deu\")",
+      "kind": "string",
+      "default": "eng"
+    }
+  ]
+}

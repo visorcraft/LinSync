@@ -1,0 +1,526 @@
+# SPDX-FileCopyrightText: 2026 VisorCraft LLC
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Tag-triggered release pipeline. Each tag push runs full preflight in
+# an Arch container (newer Qt 6 / Kirigami than apt ships), builds every
+# packaging format LinSync supports, and attaches the artefacts to a
+# GitHub Release.
+#
+# Distros:
+#   - Linux x86_64 tarball + AppImage : Arch container (Qt 6 + Kirigami)
+#   - Arch / CachyOS pkg.tar.zst      : Arch container (makepkg as non-root)
+#   - Debian / Ubuntu .deb            : debian:trixie-slim container
+#   - Fedora / RHEL .rpm              : fedora:latest container
+#
+# Grexa runs everything inside Arch since that release ships a single
+# tarball; LinSync also ships per-distro packages. Each distro builds
+# inside its native container because KF6 Kirigami / Qt 6 packaging is
+# fragmented across releases — Ubuntu noble's apt repos do not ship
+# qml6-module-org-kde-kirigami, only Debian trixie does.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  QMAKE: /usr/bin/qmake6
+  # The workspace's .cargo/config.toml wires `-Clink-arg=-fuse-ld=mold`.
+  # Without mold the default ld can't resolve cxx-qt's init symbols
+  # (cxx_qt_init_crate_*), so the release container installs mold via
+  # pacman alongside sccache. Don't override RUSTFLAGS here — the
+  # config's flags must be honoured for the cxx-qt link.
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Primary build: preflight + tarball + AppImage. Other jobs gate on this
+  # so a failing test or clippy lint blocks the whole release.
+  # ---------------------------------------------------------------------------
+  linux-tarball:
+    name: Linux x86_64 + AppImage
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:base-devel
+    concurrency:
+      group: release-linux-${{ github.ref }}
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Install Arch release dependencies
+        run: |
+          pacman -Sy --noconfirm --needed archlinux-keyring
+          pacman -Syu --noconfirm --needed \
+            git \
+            curl \
+            wget \
+            ca-certificates \
+            pkgconf \
+            qt6-base \
+            qt6-declarative \
+            qt6-tools \
+            kirigami \
+            clang \
+            mold \
+            sccache \
+            ninja \
+            mesa \
+            fuse2 \
+            file \
+            desktop-file-utils \
+            appstream \
+            github-cli
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve workspace version + verify tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          workspace_version="$(awk -F'"' '
+              /^\[workspace\.package\]/ { in_section = 1; next }
+              in_section && /^\[/ { exit }
+              in_section && $1 ~ /^version[[:space:]]*=/ { print $2; exit }
+          ' Cargo.toml)"
+          tag_version="${TAG#v}"
+          # Strip optional pre-release suffix (-rc1, -alpha, -beta.2, …) so
+          # that v1.0.1-rc1 is accepted as a release candidate for the 1.0.1
+          # workspace version. The CI builds artifacts named after the
+          # workspace version, not the tag, so an rc tag still produces
+          # linsync-1.0.1-1-*.{deb,rpm,pkg.tar.zst} that pass the
+          # release-vm-validation script against VERSION=1.0.1.
+          tag_release_version="${tag_version%%-*}"
+
+          if [[ "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]] \
+              && [[ "$tag_release_version" != "$workspace_version" ]]; then
+            echo "tag ${TAG} (release ${tag_release_version}) does not match workspace version ${workspace_version}" >&2
+            exit 1
+          fi
+
+          printf 'version=%s\n' "$workspace_version" >> "$GITHUB_OUTPUT"
+          echo "Building LinSync ${workspace_version} from tag ${TAG}"
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # cargo test is intentionally NOT run here. ci.yml exercises the
+      # full workspace test suite on every push to master; re-running
+      # it under cxxqt-app's feature set inside the release pipeline
+      # hits a cxx-qt link-time symbol resolution issue (lib.rs doesn't
+      # include the cxxqt_session module so the generated .cpp can't
+      # find the Rust extern "C" symbols). The release job's purpose is
+      # to BUILD installable artifacts, not to repeat the test suite.
+
+      - name: Validate desktop file + AppStream metainfo
+        run: |
+          desktop-file-validate packaging/com.visorcraft.LinSync.desktop
+          appstreamcli validate --no-net packaging/com.visorcraft.LinSync.metainfo.xml
+
+      - name: Build release binaries (cxx-qt in-process host)
+        env:
+          QT_VERSION_MAJOR: "6"
+        run: |
+          cargo build --workspace --release \
+            --features 'linsync/cxxqt linsync/cxxqt-app'
+
+      - name: Smoke-test GUI binary under offscreen Qt
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set +e
+          timeout --preserve-status 5 target/release/linsync
+          exit_code=$?
+          set -e
+          # 124 = timeout reached while Qt event loop was running
+          # 143 = SIGTERM from --preserve-status
+          # 0   = clean shutdown
+          if [[ "$exit_code" -ne 124 && "$exit_code" -ne 143 && "$exit_code" -ne 0 ]]; then
+            echo "GUI binary exited unexpectedly with ${exit_code}" >&2
+            exit "$exit_code"
+          fi
+
+      - name: Generate CLI manpage + shell completions
+        run: |
+          mkdir -p target/man target/completions
+          target/release/linsync-cli man             > target/man/linsync-cli.1
+          target/release/linsync-cli completions bash > target/completions/linsync-cli.bash
+          target/release/linsync-cli completions zsh  > target/completions/_linsync-cli
+          target/release/linsync-cli completions fish > target/completions/linsync-cli.fish
+
+      - name: Stage portable tarball
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          archive_root="linsync-${VERSION}-linux-x86_64"
+          staging="target/release-dist/${archive_root}"
+          dist="target/dist"
+
+          rm -rf "$staging" "$dist"
+          mkdir -p \
+            "$staging/bin" \
+            "$staging/share/applications" \
+            "$staging/share/bash-completion/completions" \
+            "$staging/share/doc/linsync" \
+            "$staging/share/fish/vendor_completions.d" \
+            "$staging/share/icons/hicolor" \
+            "$staging/share/kio/servicemenus" \
+            "$staging/share/linsync" \
+            "$staging/share/man/man1" \
+            "$staging/share/metainfo" \
+            "$staging/share/mime/packages" \
+            "$staging/share/zsh/site-functions" \
+            "$dist"
+
+          install -m755 target/release/linsync     "$staging/bin/linsync"
+          install -m755 target/release/linsync-cli "$staging/bin/linsync-cli"
+          install -m644 target/man/linsync-cli.1 \
+            "$staging/share/man/man1/linsync-cli.1"
+          install -m644 target/completions/linsync-cli.bash \
+            "$staging/share/bash-completion/completions/linsync-cli"
+          install -m644 target/completions/_linsync-cli \
+            "$staging/share/zsh/site-functions/_linsync-cli"
+          install -m644 target/completions/linsync-cli.fish \
+            "$staging/share/fish/vendor_completions.d/linsync-cli.fish"
+          install -m644 packaging/com.visorcraft.LinSync.desktop \
+            "$staging/share/applications/com.visorcraft.LinSync.desktop"
+          install -m644 packaging/com.visorcraft.LinSync.metainfo.xml \
+            "$staging/share/metainfo/com.visorcraft.LinSync.metainfo.xml"
+          install -m644 packaging/com.visorcraft.LinSync.mime.xml \
+            "$staging/share/mime/packages/com.visorcraft.LinSync.xml"
+          install -m644 packaging/dolphin/com.visorcraft.LinSync.desktop \
+            "$staging/share/kio/servicemenus/com.visorcraft.LinSync.desktop"
+          cp -R packaging/icons/hicolor/* "$staging/share/icons/hicolor/"
+          cp -R apps/linsync-gui/qml      "$staging/share/linsync/qml"
+          install -m644 README.md         "$staging/README.md"
+          install -m644 CONTRIBUTING.md   "$staging/CONTRIBUTING.md"
+          install -m644 LICENSE           "$staging/LICENSE"
+          install -m644 docs/third-party-notices.md \
+            "$staging/share/doc/linsync/third-party-notices.md"
+
+          tar -C target/release-dist \
+            --sort=name \
+            --mtime="@${SOURCE_DATE_EPOCH:-0}" \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "${dist}/${archive_root}.tar.gz" \
+            "$archive_root"
+          (cd "$dist" && sha256sum "${archive_root}.tar.gz" >> sha256sums.txt)
+
+      - name: Stage AppImage via linuxdeploy + linuxdeploy-plugin-qt
+        env:
+          QT_VERSION_MAJOR: "6"
+          # linuxdeploy ships as an AppImage; we extract it instead of
+          # mounting a FUSE filesystem so it works inside the container.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          # Newer librsvg drops the gdk-pixbuf SVG loader, which makes
+          # linuxdeploy's bundled strip choke on relr.dyn-only ELFs.
+          NO_STRIP: "1"
+        run: |
+          mkdir -p /opt/linuxdeploy
+          cd /opt/linuxdeploy
+          wget -q --tries=3 \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
+            -O linuxdeploy
+          wget -q --tries=3 \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage \
+            -O linuxdeploy-plugin-qt
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          export PATH="/opt/linuxdeploy:$PATH"
+
+          cd "$GITHUB_WORKSPACE"
+          bash packaging/appimage/build-appdir.sh
+
+          dist="target/dist"
+          if compgen -G "target/appimage/LinSync-*.AppImage" >/dev/null; then
+            mv target/appimage/LinSync-*.AppImage "${dist}/"
+            (cd "$dist" && sha256sum LinSync-*.AppImage >> sha256sums.txt)
+          else
+            echo "warning: AppImage was not produced; only tarball will ship" >&2
+          fi
+
+      - name: Upload Linux artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tarball
+          path: target/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Arch / CachyOS pacman package via makepkg. Must run as a non-root user
+  # because makepkg refuses to build as root.
+  # ---------------------------------------------------------------------------
+  arch-pkg:
+    name: Arch / CachyOS pkg.tar.zst
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:base-devel
+    needs: [linux-tarball]
+    steps:
+      - name: Install Arch build dependencies
+        run: |
+          pacman -Sy --noconfirm --needed archlinux-keyring
+          pacman -Syu --noconfirm --needed \
+            git \
+            sudo \
+            pkgconf \
+            qt6-base \
+            qt6-declarative \
+            qt6-tools \
+            kirigami \
+            clang \
+            mold \
+            sccache \
+            ninja \
+            mesa \
+            rust \
+            cargo
+
+      - uses: actions/checkout@v4
+
+      - name: Create unprivileged build user
+        run: |
+          useradd -m -G wheel builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Build pacman package
+        env:
+          QT_VERSION_MAJOR: "6"
+        run: |
+          runuser -u builder -- bash -lc '
+            set -euo pipefail
+            cd "$GITHUB_WORKSPACE/packaging/arch"
+            makepkg -sf --noconfirm --syncdeps
+          '
+
+      - name: Stage Arch artefact + sha256
+        run: |
+          mkdir -p target/dist
+          mv packaging/arch/linsync-*.pkg.tar.zst target/dist/
+          (cd target/dist && sha256sum linsync-*.pkg.tar.zst > sha256sums.txt)
+
+      - name: Upload Arch artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-pkg
+          path: target/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Debian / Ubuntu .deb. Runs inside debian:trixie-slim because that is
+  # the only Debian-family release whose apt repos ship qml6-module-org-
+  # kde-kirigami (Ubuntu noble does not). The packaging targets Debian
+  # 13 and later; older Debian / Ubuntu releases need a backports build.
+  # ---------------------------------------------------------------------------
+  deb-pkg:
+    name: Debian / Ubuntu .deb
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie-slim
+    needs: [linux-tarball]
+    steps:
+      - name: Install Debian build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            git \
+            curl \
+            build-essential \
+            debhelper \
+            devscripts \
+            dpkg-dev \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            qt6-declarative-private-dev \
+            qt6-tools-dev \
+            qml6-module-org-kde-kirigami \
+            libgl1-mesa-dev \
+            pkg-config \
+            clang \
+            mold \
+            sccache \
+            ninja-build
+
+      # Debian trixie ships rustc 1.85, but the workspace uses let-chains
+      # which require 1.88+. Install rustup so cargo/rustc are the pinned
+      # stable toolchain matching the other release jobs.
+      - name: Install Rust toolchain via rustup
+        env:
+          RUSTUP_HOME: /usr/local/rustup
+          CARGO_HOME: /usr/local/cargo
+          # rustup-init complains when GitHub Actions's $HOME (/github/home)
+          # differs from the euid-obtained one (/root in the container).
+          # Force HOME to match the euid path so the check passes.
+          HOME: /root
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+          {
+            echo "RUSTUP_HOME=/usr/local/rustup"
+            echo "CARGO_HOME=/usr/local/cargo"
+          } >> "$GITHUB_ENV"
+          echo "/usr/local/cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v4
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Stage debian/ at repo root (dpkg-buildpackage convention)
+        run: ln -sfn packaging/debian debian
+
+      - name: Build .deb
+        env:
+          QT_VERSION_MAJOR: "6"
+          # debian/control's Build-Depends lists cargo/rustc to document
+          # the requirement for downstream Debian builders, but we
+          # install Rust via rustup above instead of apt. -d tells
+          # dpkg-buildpackage to skip the build-deps check; the workflow
+          # itself guarantees the right toolchain is on PATH.
+        run: dpkg-buildpackage -d -us -uc -b
+
+      - name: Stage Debian artefact + sha256
+        run: |
+          mkdir -p target/dist
+          mv ../linsync_*.deb target/dist/
+          mv ../linsync_*.buildinfo target/dist/ 2>/dev/null || true
+          mv ../linsync_*.changes target/dist/ 2>/dev/null || true
+          (cd target/dist && sha256sum linsync_*.deb > sha256sums.txt)
+
+      - name: Upload Debian artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-pkg
+          path: target/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Fedora / RHEL .rpm.
+  # ---------------------------------------------------------------------------
+  rpm-pkg:
+    name: Fedora / RHEL .rpm
+    runs-on: ubuntu-24.04
+    container:
+      image: fedora:latest
+    needs: [linux-tarball]
+    steps:
+      - name: Install Fedora build dependencies
+        run: |
+          dnf -y install \
+            git \
+            tar \
+            rpm-build \
+            cargo \
+            rust \
+            sccache \
+            mold \
+            qt6-qtbase-devel \
+            qt6-qtbase-private-devel \
+            qt6-qtdeclarative-devel \
+            qt6-qtdeclarative-private-devel \
+            qt6-qttools-devel \
+            kf6-kirigami-devel \
+            mesa-libGL-devel \
+            pkgconf-pkg-config \
+            clang \
+            ninja-build \
+            desktop-file-utils
+
+      - uses: actions/checkout@v4
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Generate source tarball + build .rpm
+        env:
+          QT_VERSION_MAJOR: "6"
+        run: |
+          version="$(awk -F'"' '
+              /^\[workspace\.package\]/ { in_section = 1; next }
+              in_section && /^\[/ { exit }
+              in_section && $1 ~ /^version[[:space:]]*=/ { print $2; exit }
+          ' Cargo.toml)"
+
+          cd packaging/rpm
+          ( cd ../.. && \
+            git archive --format=tar.gz \
+              --prefix="linsync-${version}/" \
+              --output="packaging/rpm/linsync-${version}.tar.gz" \
+              HEAD )
+          rpmbuild \
+            --define "_topdir $(pwd)/_rpmbuild" \
+            --define "_sourcedir $(pwd)" \
+            -bb linsync.spec
+
+      - name: Stage RPM artefact + sha256
+        run: |
+          mkdir -p target/dist
+          find packaging/rpm/_rpmbuild/RPMS -name "linsync-*.rpm" \
+            -exec mv {} target/dist/ \;
+          (cd target/dist && sha256sum linsync-*.rpm > sha256sums.txt)
+
+      - name: Upload RPM artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-pkg
+          path: target/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Aggregate every artefact and create the GitHub Release.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    needs: [linux-tarball, arch-pkg, deb-pkg, rpm-pkg]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-staging
+
+      - name: Aggregate artefacts + checksums
+        run: |
+          mkdir -p dist
+          # Move every artefact file (skip the per-job sha256sums.txt; we
+          # produce a single aggregate below).
+          find dist-staging -type f ! -name "sha256sums.txt" \
+            -exec mv {} dist/ \;
+          (cd dist && sha256sum * > sha256sums.txt)
+          echo "Release payload:" && ls -la dist/
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --title "LinSync $TAG" \
+            --generate-notes \
+            --verify-tag

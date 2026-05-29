@@ -1,0 +1,231 @@
+# SPDX-FileCopyrightText: 2026 VisorCraft LLC
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Per-job CI matching the Grexa layout. Each gate runs in its own runner
+# so failures pinpoint quickly and the build job (which needs Arch's
+# fresher Kirigami) doesn't block the faster checks. Mirror of
+# grexa/ci.yml adapted for LinSync. No `${{ github.event.* }}`
+# interpolations are used: this workflow is safe against workflow
+# injection from PR titles, branch names, or commit messages.
+
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # cxx-qt's build script picks Qt up via qmake6 on $PATH.
+  QMAKE: /usr/bin/qmake6
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  lint:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt 6 + C++ toolchain + mold/sccache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            qt6-tools-dev \
+            libgl1-mesa-dev \
+            clang \
+            mold \
+            sccache \
+            ninja-build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt 6 + runtime + C++ toolchain + mold/sccache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            qt6-tools-dev \
+            libgl1-mesa-dev \
+            clang \
+            mold \
+            sccache \
+            ninja-build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  build:
+    name: build + smoke GUI (Arch)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Install Arch Qt 6 + Kirigami dependencies
+        run: |
+          pacman -Sy --noconfirm --needed archlinux-keyring
+          pacman -Syu --noconfirm --needed \
+            git \
+            curl \
+            ca-certificates \
+            pkgconf \
+            qt6-base \
+            qt6-declarative \
+            qt6-tools \
+            kirigami \
+            clang \
+            mold \
+            sccache \
+            ninja \
+            mesa
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build GUI binary (cxx-qt in-process host)
+        env:
+          QT_VERSION_MAJOR: "6"
+        run: |
+          cargo build -p linsync --release \
+            --features 'linsync/cxxqt linsync/cxxqt-app'
+      - name: GUI smoke (external QML host)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: bash scripts/gui-smoke.sh
+      - name: GUI smoke (in-process cxx-qt host)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: LINSYNC_GUI_SMOKE_CXXQT=1 bash scripts/gui-smoke.sh
+
+  screenshots:
+    name: GUI screenshots
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    needs: build
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Install Arch Qt 6 + Kirigami + screenshot dependencies
+        run: |
+          pacman -Sy --noconfirm --needed archlinux-keyring
+          pacman -Syu --noconfirm --needed \
+            git \
+            curl \
+            ca-certificates \
+            pkgconf \
+            qt6-base \
+            qt6-declarative \
+            qt6-tools \
+            kirigami \
+            clang \
+            mold \
+            sccache \
+            ninja \
+            mesa \
+            xorg-server-xvfb \
+            imagemagick
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build GUI binary
+        env:
+          QT_VERSION_MAJOR: "6"
+        run: |
+          cargo build -p linsync --release \
+            --features 'linsync/cxxqt linsync/cxxqt-app'
+      - name: Capture screenshots
+        env:
+          LINSYNC_BIN: target/release/linsync
+          STARTUP_SLEEP: "6"
+        run: bash scripts/gui-screenshot.sh
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linsync-screenshots-${{ github.sha }}
+          path: target/screenshots/*.png
+
+  a11y-check:
+    name: accessibility label grep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check every Button/Switch/SpinBox/ComboBox/TextField has a label
+        run: bash scripts/gui-smoke.sh --check-a11y
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    # cargo-deny-action installs its own musl toolchain. Disable the
+    # workspace's sccache wrapping (force = true in .cargo/config.toml)
+    # for this job — the wrapper isn't available on the action's
+    # toolchain path. RUSTFLAGS is similarly cleared so mold isn't a
+    # hard requirement.
+    env:
+      CARGO_BUILD_RUSTC_WRAPPER: ""
+      RUSTFLAGS: ""
+      CC: cc
+      CXX: c++
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - run: cargo audit
+
+  appstream-validate:
+    name: appstream metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y appstream
+      - run: appstreamcli validate --no-net packaging/com.visorcraft.LinSync.metainfo.xml
+
+  desktop-validate:
+    name: desktop file
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y desktop-file-utils
+      - run: desktop-file-validate packaging/com.visorcraft.LinSync.desktop
+
+  # NOTE: Flatpak CI is currently disabled.
+  # bilelmoussaoui/flatpak-github-actions only publishes kde-5.15 tags
+  # (verified 2026-05-26); there's no KDE 6 base image. The Flatpak
+  # manifest pins org.kde.Platform//6.10 at *runtime* but the CI host
+  # needs a matching base. To re-enable, either:
+  #   1. Set up flatpak-builder on a stock ubuntu-latest runner with
+  #      apt-get install flatpak flatpak-builder and `flatpak install`
+  #      org.kde.Platform//6.10 from flathub, OR
+  #   2. Use a published flatpak-builder image that has KDE 6 SDK.
+  # Local builds via `just flatpak-bundle` continue to work for now.

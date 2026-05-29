@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.visorcraft.LinSync</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>LinSync</name>
+  <summary>Linux-native visual file and folder comparison</summary>
+  <developer id="com.visorcraft">
+    <name>VisorCraft LLC</name>
+  </developer>
+  <description>
+    <p>
+      LinSync is a GPL-licensed Linux application for visual file and folder
+      comparison, merge workflows, filters, reports, and Linux-native parity.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.visorcraft.LinSync.desktop</launchable>
+  <url type="homepage">https://github.com/visorcraft</url>
+  <provides>
+    <binary>linsync</binary>
+    <binary>linsync-cli</binary>
+    <mediatype>text/plain</mediatype>
+    <mediatype>text/x-diff</mediatype>
+    <mediatype>text/x-patch</mediatype>
+    <mediatype>inode/directory</mediatype>
+    <mediatype>application/x-linsync-session</mediatype>
+    <mediatype>application/x-linsync-project</mediatype>
+  </provides>
+  <categories>
+    <category>Utility</category>
+    <category>Development</category>
+    <category>TextTools</category>
+    <category>FileTools</category>
+  </categories>
+  <keywords>
+    <keyword>diff</keyword>
+    <keyword>compare</keyword>
+    <keyword>merge</keyword>
+    <keyword>folder</keyword>
+    <keyword>patch</keyword>
+  </keywords>
+  <content_rating type="oars-1.1" />
+  <!-- Real screenshots captured by scripts/gui-screenshot.sh against the
+       packaged 1.3.1 binary on a CachyOS host; uploaded to the hosting
+       path below for the AppStream / Flathub listing. -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>Text and folder compare workspace with side-by-side panes</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/compare.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Sessions page — open tabs and recent comparison history</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/sessions.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Filters page — glob include/exclude rules, walk options, and legacy .flt migration</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/filters.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Plugins page — installed comparison plugins with per-plugin enable toggle</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/plugins.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Settings page — theme, fonts, comparison defaults, and session preferences</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/settings.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>About page — version, license, credits, and third-party notices</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/about.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="1.7.0" date="2026-05-29">
+      <description>
+        <p>Security hardening across the plugin sandbox and bundled helpers: the sandbox fails closed when neither Landlock nor bubblewrap is available and clears the helper environment down to a safe allowlist, streaming helpers run under the same confinement, the web-fetch plugin pins the validated address at connect time to defeat DNS rebinding, folder copy and delete operations refuse symlinked paths that escape the comparison root, and the GUI bridge token file is written owner-only. The About page now shows the real LinSync application icon and gives the "Visit LinSync" button the same styling as the Credits and Licenses buttons.</p>
+      </description>
+    </release>
+    <release version="1.6.0" date="2026-05-28">
+      <description>
+        <p>Webpage compare is now fully functional: the plugin sandbox grants network plugins read access to the resolver configuration and TLS trust store (fixing getaddrinfo EAI_AGAIN inside the sandbox), the web-fetch plugin presents a mainstream browser User-Agent so CDN/WAF filters no longer return 403, and results render as a side-by-side editor diff with cursor, multi-row selection, keyboard navigation, line-number gutters, synchronized scrolling, and a draggable diff-overview ruler. The Plugins page now renders built-in (always-on) toggles with a themed track instead of black.</p>
+      </description>
+    </release>
+    <release version="1.5.0" date="2026-05-28">
+      <description>
+        <p>The Image, Webpage, and Document compare pages are now fully theme-aware: Kirigami.Theme propagates correctly and the shared App* form controls render with themed frames instead of stray dark borders. Image Compare gains Left/Right file pickers and Tolerance/ΔE spin boxes that match the Settings styling. The Webpage compare layout was redesigned and the Document compare page was restyled to match the other compare pages. Adds a shared AppButton control and removes the sidebar hover flash.</p>
+      </description>
+    </release>
+    <release version="1.4.0" date="2026-05-28">
+      <description>
+        <p>QML diff-pane simplification reduces per-row QML nodes 3×. Binding-loop-free theme model across 7 pages. Compare profiles are now fully wired through the HTTP bridge with 7 built-in profiles, CLI subcommand, and cxx-qt fixup landed. New reusable App* QML controls and DesignTokens theming system.</p>
+      </description>
+    </release>
+    <release version="1.3.1" date="2026-05-27">
+      <description>
+        <p>Security release. The bundled web-fetch plugin now validates outbound URLs against an SSRF policy: only http/https schemes are honoured, the resolved host must be a publicly-routable address, and redirect targets are revalidated against the same policy.</p>
+      </description>
+    </release>
+    <release version="1.1.0" date="2026-05-27">
+      <description>
+        <p>LinSync 1.1.0 adds three new compare modes: image (pure-Rust pixel + CIEDE2000 perceptual diff), document (PDF/DOCX/ODT via Tesseract OCR + Poppler + LibreOffice helpers), and webpage (rendered DOM diff via Qt WebEngine, feature-gated). New linsync-sandbox crate wires Landlock + seccompiler with a bubblewrap fallback for plugin helpers. Plugin host now propagates process groups to prevent grandchild leaks.</p>
+      </description>
+    </release>
+    <release version="1.0.1" date="2026-05-26">
+      <description>
+        <p>GUI wiring complete for Settings, Filters, and Plugins pages; three-pane merge view with save-to-third-target; linsync-cli mergetool integration. Filter grammar adds the de: / e: expression families and a migrator for legacy .flt files. Plugin protocol gains unpack_folder and streaming output, with bundled ZIP and tar unpackers. Text compare gains opt-in moved-block detection. Accessibility audit with 11 P0 fixes; per-section GUI screenshots in CI.</p>
+      </description>
+    </release>
+    <release version="1.0.0" date="2026-05-18">
+      <description>
+        <p>LinSync 1.0.0 with Rust core comparison engines, CLI workflows, and the QML/Kirigami shell.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 VisorCraft LLC
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# LinSync `unpacker` / `folder_virtualizer` plugin for ZIP-family archives.
+#
+# Protocol: reads one JSON request from stdin (may or may not have a trailing
+# newline), {"op":"unpack_folder","source":"<path>"}, and emits one JSON line:
+#   {"ok":true,"tree":[{"path":"...","kind":"file"|"dir","size":N},...]}
+#   {"ok":false,"error":"..."}
+
+set -euo pipefail
+
+REQUEST=$(cat)
+
+python3 - "$REQUEST" <<'PY'
+import sys, json, os, zipfile
+
+raw_request = sys.argv[1]
+try:
+    req = json.loads(raw_request)
+except json.JSONDecodeError as e:
+    print(json.dumps({"ok": False, "error": f"invalid JSON request: {e}"}))
+    sys.exit(0)
+
+op = req.get("op", "")
+if op != "unpack_folder":
+    print(json.dumps({"ok": False, "error": f"unsupported op: {op}"}))
+    sys.exit(0)
+
+src = req.get("source", "")
+if not src:
+    print(json.dumps({"ok": False, "error": "missing source field"}))
+    sys.exit(0)
+
+if not os.path.isfile(src):
+    print(json.dumps({"ok": False, "error": f"source not found: {src}"}))
+    sys.exit(0)
+
+try:
+    with zipfile.ZipFile(src) as zf:
+        infos = zf.infolist()
+except zipfile.BadZipFile as e:
+    print(json.dumps({"ok": False, "error": f"bad zip: {e}"}))
+    sys.exit(0)
+
+tree = []
+seen = set()
+
+for info in infos:
+    name = info.filename.rstrip('/')
+    if not name:
+        continue
+    norm = os.path.normpath(name)
+    if norm.startswith("..") or os.path.isabs(norm):
+        print(json.dumps({"ok": False, "error": f"unsafe path in archive: {info.filename}"}))
+        sys.exit(0)
+
+    is_dir = info.is_dir() or info.filename.endswith('/')
+    if is_dir:
+        if name not in seen:
+            tree.append({"path": name, "kind": "dir"})
+            seen.add(name)
+    else:
+        # Emit implicit parent dirs first
+        parts = name.split('/')
+        for i in range(1, len(parts)):
+            d = '/'.join(parts[:i])
+            if d and d not in seen:
+                tree.append({"path": d, "kind": "dir"})
+                seen.add(d)
+        tree.append({"path": name, "kind": "file", "size": info.file_size})
+
+print(json.dumps({"ok": True, "tree": tree}))
+PY

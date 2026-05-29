@@ -1,0 +1,1185 @@
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::de::{DeserializeOwned, Error as DeError, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_repr::Serialize_repr;
+
+use crate::filter::FileFilter;
+use crate::text::{CompareSession, CompareSide};
+use crate::trash::DeletePreference;
+
+const CURRENT_STORAGE_SCHEMA_VERSION: u32 = 1;
+
+fn current_storage_schema_version() -> u32 {
+    CURRENT_STORAGE_SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub schema_version: u32,
+    #[serde(rename = "theme_preference", alias = "theme")]
+    pub theme_preference: ThemePreference,
+    pub pane_font_size: u8,
+    pub pane_font_family: String,
+    pub pane_tab_width: u8,
+    pub show_line_numbers: bool,
+    pub show_whitespace: bool,
+    pub word_wrap: bool,
+    pub ignore_case: bool,
+    pub ignore_whitespace: bool,
+    pub ignore_blank_lines: bool,
+    pub ignore_eol: bool,
+    pub eol_normalization: String,
+    pub default_compare_mode: String,
+    pub open_last_session: bool,
+    pub confirm_on_close: bool,
+    pub persist_recent_paths: bool,
+    pub recent_limit: usize,
+    pub default_recursive_folder_compare: bool,
+    #[serde(default)]
+    pub detect_moves: bool,
+    pub delete_preference: DeletePreference,
+    pub confirm_permanent_delete: bool,
+    pub window_size: Option<WindowSize>,
+    #[serde(default = "default_true")]
+    pub respect_gitignore: bool,
+    #[serde(default)]
+    pub follow_symlinks: bool,
+    #[serde(default)]
+    pub max_walk_depth: u32,
+    #[serde(default)]
+    pub session_includes: Vec<String>,
+    #[serde(default)]
+    pub session_excludes: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            theme_preference: ThemePreference::System,
+            pane_font_size: 12,
+            pane_font_family: "monospace".to_owned(),
+            pane_tab_width: 4,
+            show_line_numbers: true,
+            show_whitespace: false,
+            word_wrap: false,
+            ignore_case: false,
+            ignore_whitespace: false,
+            ignore_blank_lines: false,
+            ignore_eol: true,
+            eol_normalization: "auto".to_owned(),
+            default_compare_mode: "Text".to_owned(),
+            open_last_session: true,
+            confirm_on_close: true,
+            persist_recent_paths: true,
+            recent_limit: 20,
+            default_recursive_folder_compare: true,
+            detect_moves: false,
+            delete_preference: DeletePreference::MoveToTrash,
+            confirm_permanent_delete: true,
+            window_size: None,
+            respect_gitignore: true,
+            follow_symlinks: false,
+            max_walk_depth: 0,
+            session_includes: Vec::new(),
+            session_excludes: Vec::new(),
+        }
+    }
+}
+
+impl Settings {
+    pub const CURRENT_SCHEMA_VERSION: u32 = CURRENT_STORAGE_SCHEMA_VERSION;
+
+    pub fn validate_current_schema(mut self) -> Result<Self, StoreError> {
+        ensure_supported_schema(
+            "settings",
+            self.schema_version,
+            Self::CURRENT_SCHEMA_VERSION,
+        )?;
+        if let Some(size) = self.window_size
+            && (size.width == 0 || size.height == 0)
+        {
+            return Err(StoreError::InvalidData(
+                "settings window_size dimensions must be greater than zero".to_owned(),
+            ));
+        }
+        self.schema_version = Self::CURRENT_SCHEMA_VERSION;
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize_repr)]
+#[repr(u8)]
+pub enum ThemePreference {
+    #[default]
+    System = 0,
+    Light = 1,
+    Dark = 2,
+    GentleGecko = 3,
+    BlackKnight = 4,
+    Diamond = 5,
+    Dreams = 6,
+    Paranoid = 7,
+    RedVelvet = 8,
+    Subspace = 9,
+    Tiefling = 10,
+    Vibes = 11,
+    OledBlack = 12,
+}
+
+impl ThemePreference {
+    pub fn from_grex_value(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::System),
+            1 => Some(Self::Light),
+            2 => Some(Self::Dark),
+            3 => Some(Self::GentleGecko),
+            4 => Some(Self::BlackKnight),
+            5 => Some(Self::Diamond),
+            6 => Some(Self::Dreams),
+            7 => Some(Self::Paranoid),
+            8 => Some(Self::RedVelvet),
+            9 => Some(Self::Subspace),
+            10 => Some(Self::Tiefling),
+            11 => Some(Self::Vibes),
+            12 => Some(Self::OledBlack),
+            _ => None,
+        }
+    }
+
+    pub fn grex_value(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_legacy_key(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            "oled-black" | "oled_black" => Some(Self::OledBlack),
+            "gentle-gecko" | "gentle_gecko" => Some(Self::GentleGecko),
+            "black-knight" | "black_knight" | "high-contrast" | "high_contrast" => {
+                Some(Self::BlackKnight)
+            }
+            "diamond" => Some(Self::Diamond),
+            "dreams" => Some(Self::Dreams),
+            "paranoid" => Some(Self::Paranoid),
+            "red-velvet" | "red_velvet" => Some(Self::RedVelvet),
+            "subspace" => Some(Self::Subspace),
+            "tiefling" => Some(Self::Tiefling),
+            "vibes" => Some(Self::Vibes),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ThemePreference {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ThemePreferenceVisitor;
+
+        impl Visitor<'_> for ThemePreferenceVisitor {
+            type Value = ThemePreference;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a Grex/Grexa theme integer 0..12 or a legacy theme key")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                let value = u8::try_from(value)
+                    .map_err(|_| E::custom(format!("unsupported theme preference {value}")))?;
+                ThemePreference::from_grex_value(value)
+                    .ok_or_else(|| E::custom(format!("unsupported theme preference {value}")))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                let value = u8::try_from(value)
+                    .map_err(|_| E::custom(format!("unsupported theme preference {value}")))?;
+                ThemePreference::from_grex_value(value)
+                    .ok_or_else(|| E::custom(format!("unsupported theme preference {value}")))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                ThemePreference::from_legacy_key(value)
+                    .ok_or_else(|| E::custom(format!("unsupported theme preference '{value}'")))
+            }
+        }
+
+        deserializer.deserialize_any(ThemePreferenceVisitor)
+    }
+}
+
+#[derive(Debug)]
+pub enum StoreError {
+    Io(io::Error),
+    Json(serde_json::Error),
+    InvalidData(String),
+    UnsupportedSchema {
+        artifact: &'static str,
+        version: u32,
+        supported: u32,
+    },
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "{err}"),
+            Self::Json(err) => write!(f, "{err}"),
+            Self::InvalidData(message) => write!(f, "{message}"),
+            Self::UnsupportedSchema {
+                artifact,
+                version,
+                supported,
+            } => write!(
+                f,
+                "unsupported {artifact} schema version {version}; supported version is {supported}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {}
+
+impl From<io::Error> for StoreError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<serde_json::Error> for StoreError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Json(value)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SettingsStore {
+    path: PathBuf,
+}
+
+impl SettingsStore {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn load_or_default(&self) -> Result<Settings, StoreError> {
+        if !self.path.exists() {
+            return Ok(Settings::default());
+        }
+
+        let text = fs::read_to_string(&self.path)?;
+        let raw: serde_json::Value = serde_json::from_str(&text)?;
+        let should_rewrite_theme = raw.get("theme").is_some()
+            || raw
+                .get("theme_preference")
+                .is_some_and(serde_json::Value::is_string);
+        let settings = serde_json::from_value::<Settings>(raw)?;
+        let original_schema_version = settings.schema_version;
+        let settings = settings.validate_current_schema()?;
+        if original_schema_version != Settings::CURRENT_SCHEMA_VERSION || should_rewrite_theme {
+            self.save(&settings)?;
+        }
+        Ok(settings)
+    }
+
+    pub fn save(&self, settings: &Settings) -> Result<(), StoreError> {
+        write_json(&self.path, settings)
+    }
+
+    pub fn import_from(&self, source: &Path) -> Result<Settings, StoreError> {
+        let settings = read_json::<Settings>(source)?.validate_current_schema()?;
+        self.save(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn export_to(&self, destination: &Path) -> Result<(), StoreError> {
+        let settings = self.load_or_default()?;
+        write_json(destination, &settings)
+    }
+
+    pub fn backup_to(&self, destination: &Path) -> Result<(), StoreError> {
+        self.export_to(destination)
+    }
+
+    pub fn reset_to_default(&self) -> Result<Settings, StoreError> {
+        let settings = Settings::default();
+        self.save(&settings)?;
+        Ok(settings)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecentPaths {
+    pub schema_version: u32,
+    pub paths: Vec<PathBuf>,
+}
+
+impl Default for RecentPaths {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            paths: Vec::new(),
+        }
+    }
+}
+
+impl RecentPaths {
+    pub fn validate_current_schema(mut self) -> Result<Self, StoreError> {
+        ensure_supported_schema(
+            "recent paths",
+            self.schema_version,
+            CURRENT_STORAGE_SCHEMA_VERSION,
+        )?;
+        self.schema_version = CURRENT_STORAGE_SCHEMA_VERSION;
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RecentPathStore {
+    path: PathBuf,
+    limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NamedFilters {
+    pub schema_version: u32,
+    pub filters: Vec<FileFilter>,
+}
+
+impl Default for NamedFilters {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            filters: Vec::new(),
+        }
+    }
+}
+
+impl NamedFilters {
+    pub fn validate_current_schema(mut self) -> Result<Self, StoreError> {
+        ensure_supported_schema(
+            "named filters",
+            self.schema_version,
+            CURRENT_STORAGE_SCHEMA_VERSION,
+        )?;
+        self.schema_version = CURRENT_STORAGE_SCHEMA_VERSION;
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FilterStore {
+    path: PathBuf,
+}
+
+impl FilterStore {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn load_or_default(&self) -> Result<NamedFilters, StoreError> {
+        if !self.path.exists() {
+            return Ok(NamedFilters::default());
+        }
+
+        read_json::<NamedFilters>(&self.path)?.validate_current_schema()
+    }
+
+    pub fn save(&self, filters: &NamedFilters) -> Result<(), StoreError> {
+        write_json(&self.path, filters)
+    }
+
+    pub fn upsert(&self, filter: FileFilter) -> Result<NamedFilters, StoreError> {
+        let mut filters = self.load_or_default()?;
+        if let Some(name) = filter.name.as_deref() {
+            filters
+                .filters
+                .retain(|existing| existing.name.as_deref() != Some(name));
+        }
+        filters.filters.push(filter);
+        self.save(&filters)?;
+        Ok(filters)
+    }
+}
+
+impl RecentPathStore {
+    pub fn new(path: PathBuf, limit: usize) -> Self {
+        Self { path, limit }
+    }
+
+    pub fn load_or_default(&self) -> Result<RecentPaths, StoreError> {
+        if !self.path.exists() {
+            return Ok(RecentPaths::default());
+        }
+
+        read_json::<RecentPaths>(&self.path)?.validate_current_schema()
+    }
+
+    pub fn add(&self, path: PathBuf) -> Result<RecentPaths, StoreError> {
+        let mut recent = self.load_or_default()?;
+        recent.paths.retain(|existing| existing != &path);
+        recent.paths.insert(0, path);
+        recent.paths.truncate(self.limit);
+        self.save(&recent)?;
+        Ok(recent)
+    }
+
+    pub fn remove(&self, path: &Path) -> Result<RecentPaths, StoreError> {
+        let mut recent = self.load_or_default()?;
+        recent.paths.retain(|existing| existing != path);
+        self.save(&recent)?;
+        Ok(recent)
+    }
+
+    pub fn search(&self, query: &str) -> Result<Vec<PathBuf>, StoreError> {
+        let recent = self.load_or_default()?;
+        let query = query.to_lowercase();
+
+        Ok(recent
+            .paths
+            .into_iter()
+            .filter(|path| {
+                query.is_empty()
+                    || path
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .split(['/', '\\'])
+                        .any(|segment| segment.starts_with(&query))
+                    || path.to_string_lossy().to_lowercase().contains(&query)
+            })
+            .collect())
+    }
+
+    pub fn save(&self, recent: &RecentPaths) -> Result<(), StoreError> {
+        write_json(&self.path, recent)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionFile {
+    #[serde(default = "current_storage_schema_version")]
+    pub schema_version: u32,
+    pub session: CompareSession,
+    #[serde(default)]
+    pub selected_view: CompareViewMode,
+    #[serde(default)]
+    pub filter_names: Vec<String>,
+    #[serde(default)]
+    pub layout: SessionLayout,
+}
+
+impl SessionFile {
+    pub fn new(session: CompareSession) -> Self {
+        Self {
+            schema_version: CURRENT_STORAGE_SCHEMA_VERSION,
+            session,
+            selected_view: CompareViewMode::default(),
+            filter_names: Vec::new(),
+            layout: SessionLayout::default(),
+        }
+    }
+
+    pub fn validate_current_schema(mut self) -> Result<Self, StoreError> {
+        ensure_supported_schema(
+            "session",
+            self.schema_version,
+            CURRENT_STORAGE_SCHEMA_VERSION,
+        )?;
+        self.schema_version = CURRENT_STORAGE_SCHEMA_VERSION;
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompareViewMode {
+    #[default]
+    Text,
+    Folder,
+    Binary,
+    Table,
+    Image,
+    Archive,
+    Webpage,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionLayout {
+    pub active_side: Option<CompareSide>,
+    pub visible_columns: Vec<String>,
+    pub sort_column: Option<String>,
+    pub selected_view_state: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionFileStore {
+    path: PathBuf,
+}
+
+impl SessionFileStore {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn load(&self) -> Result<SessionFile, StoreError> {
+        read_json::<SessionFile>(&self.path)?.validate_current_schema()
+    }
+
+    pub fn save(&self, session: &SessionFile) -> Result<(), StoreError> {
+        write_json(&self.path, session)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectFile {
+    #[serde(default = "current_storage_schema_version")]
+    pub schema_version: u32,
+    pub name: String,
+    #[serde(default)]
+    pub sessions: Vec<SessionFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_session_index: Option<usize>,
+}
+
+impl ProjectFile {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            schema_version: CURRENT_STORAGE_SCHEMA_VERSION,
+            name: name.into(),
+            sessions: Vec::new(),
+            active_session_index: None,
+        }
+    }
+
+    pub fn validate_current_schema(mut self) -> Result<Self, StoreError> {
+        ensure_supported_schema(
+            "project",
+            self.schema_version,
+            CURRENT_STORAGE_SCHEMA_VERSION,
+        )?;
+
+        if let Some(index) = self.active_session_index
+            && index >= self.sessions.len()
+        {
+            return Err(StoreError::InvalidData(format!(
+                "project active_session_index {index} is out of range for {} sessions",
+                self.sessions.len()
+            )));
+        }
+
+        self.schema_version = CURRENT_STORAGE_SCHEMA_VERSION;
+        self.sessions = self
+            .sessions
+            .into_iter()
+            .map(SessionFile::validate_current_schema)
+            .collect::<Result<_, _>>()?;
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectFileStore {
+    path: PathBuf,
+}
+
+impl ProjectFileStore {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn load(&self) -> Result<ProjectFile, StoreError> {
+        read_json::<ProjectFile>(&self.path)?.validate_current_schema()
+    }
+
+    pub fn save(&self, project: &ProjectFile) -> Result<(), StoreError> {
+        write_json(&self.path, project)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecentSessions {
+    pub schema_version: u32,
+    pub sessions: Vec<SessionFile>,
+}
+
+impl Default for RecentSessions {
+    fn default() -> Self {
+        Self {
+            schema_version: CURRENT_STORAGE_SCHEMA_VERSION,
+            sessions: Vec::new(),
+        }
+    }
+}
+
+impl RecentSessions {
+    pub fn validate_current_schema(mut self) -> Result<Self, StoreError> {
+        ensure_supported_schema(
+            "recent sessions",
+            self.schema_version,
+            CURRENT_STORAGE_SCHEMA_VERSION,
+        )?;
+        self.schema_version = CURRENT_STORAGE_SCHEMA_VERSION;
+        self.sessions = self
+            .sessions
+            .into_iter()
+            .map(SessionFile::validate_current_schema)
+            .collect::<Result<_, _>>()?;
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RecentSessionStore {
+    path: PathBuf,
+    limit: usize,
+}
+
+impl RecentSessionStore {
+    pub fn new(path: PathBuf, limit: usize) -> Self {
+        Self { path, limit }
+    }
+
+    pub fn load_or_default(&self) -> Result<RecentSessions, StoreError> {
+        if !self.path.exists() {
+            return Ok(RecentSessions::default());
+        }
+
+        read_json::<RecentSessions>(&self.path)?.validate_current_schema()
+    }
+
+    pub fn add(&self, session: SessionFile) -> Result<RecentSessions, StoreError> {
+        let mut recent = self.load_or_default()?;
+        recent
+            .sessions
+            .retain(|existing| existing.session != session.session);
+        recent.sessions.insert(0, session);
+        recent.sessions.truncate(self.limit);
+        self.save(&recent)?;
+        Ok(recent)
+    }
+
+    pub fn save(&self, recent: &RecentSessions) -> Result<(), StoreError> {
+        write_json(&self.path, recent)
+    }
+}
+
+fn ensure_supported_schema(
+    artifact: &'static str,
+    version: u32,
+    supported: u32,
+) -> Result<(), StoreError> {
+    if version > supported {
+        return Err(StoreError::UnsupportedSchema {
+            artifact,
+            version,
+            supported,
+        });
+    }
+
+    Ok(())
+}
+
+fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, StoreError> {
+    let text = fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&text)?)
+}
+
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), StoreError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let text = serde_json::to_string_pretty(value)?;
+
+    for attempt in 0..100 {
+        let temporary = temporary_json_path(path, attempt);
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&temporary) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(StoreError::Io(err)),
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(err) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
+                let _ = fs::remove_file(&temporary);
+                return Err(StoreError::Io(err));
+            }
+        }
+
+        if let Err(err) = file.write_all(text.as_bytes()) {
+            let _ = fs::remove_file(&temporary);
+            return Err(StoreError::Io(err));
+        }
+        if let Err(err) = file.sync_all() {
+            let _ = fs::remove_file(&temporary);
+            return Err(StoreError::Io(err));
+        }
+        drop(file);
+
+        if let Err(err) = fs::rename(&temporary, path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(StoreError::Io(err));
+        }
+        return Ok(());
+    }
+
+    Err(StoreError::Io(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not create unique temporary settings file",
+    )))
+}
+
+fn temporary_json_path(path: &Path, attempt: u32) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| "settings".into());
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    path.with_file_name(format!(
+        ".{file_name}.{}-{now}-{attempt}.tmp",
+        std::process::id()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn settings_round_trip() {
+        let fixture = TempFixture::new();
+        let store = SettingsStore::new(fixture.path.join("settings.json"));
+        let settings = Settings {
+            theme_preference: ThemePreference::Dark,
+            window_size: Some(WindowSize {
+                width: 1280,
+                height: 720,
+            }),
+            ..Settings::default()
+        };
+
+        store.save(&settings).unwrap();
+        assert_eq!(store.load_or_default().unwrap(), settings);
+        let persisted = fs::read_to_string(&store.path).unwrap();
+        assert!(persisted.contains(r#""theme_preference": 2"#));
+        assert!(persisted.contains(r#""window_size""#));
+        assert!(persisted.contains(r#""width": 1280"#));
+        assert!(!persisted.contains(r#""x""#));
+        assert!(!persisted.contains(r#""y""#));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stored_json_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = TempFixture::new();
+        let settings_path = fixture.path.join("settings.json");
+        let recent_path = fixture.path.join("recent-paths.json");
+
+        SettingsStore::new(settings_path.clone())
+            .save(&Settings::default())
+            .unwrap();
+        RecentPathStore::new(recent_path.clone(), 10)
+            .add(PathBuf::from("/home/alice/private.txt"))
+            .unwrap();
+
+        assert_eq!(
+            fs::metadata(settings_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(recent_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn settings_load_migrates_legacy_schema_and_persists_current_schema() {
+        let fixture = TempFixture::new();
+        let store = SettingsStore::new(fixture.path.join("settings.json"));
+        fs::write(
+            &store.path,
+            r#"{"schema_version":0,"theme":"light","recent_limit":4}"#,
+        )
+        .unwrap();
+
+        let settings = store.load_or_default().unwrap();
+
+        assert_eq!(settings.schema_version, Settings::CURRENT_SCHEMA_VERSION);
+        assert_eq!(settings.theme_preference, ThemePreference::Light);
+        assert_eq!(settings.recent_limit, 4);
+        assert!(settings.default_recursive_folder_compare);
+        let persisted = fs::read_to_string(&store.path).unwrap();
+        assert!(persisted.contains(r#""schema_version": 1"#));
+        assert!(persisted.contains(r#""theme_preference": 1"#));
+        assert!(persisted.contains(r#""default_recursive_folder_compare": true"#));
+    }
+
+    #[test]
+    fn settings_load_rewrites_legacy_theme_field_at_current_schema() {
+        let fixture = TempFixture::new();
+        let store = SettingsStore::new(fixture.path.join("settings.json"));
+        fs::write(
+            &store.path,
+            r#"{"schema_version":1,"theme":"oled-black","recent_limit":8}"#,
+        )
+        .unwrap();
+
+        let settings = store.load_or_default().unwrap();
+
+        assert_eq!(settings.theme_preference, ThemePreference::OledBlack);
+        assert_eq!(settings.recent_limit, 8);
+        let persisted = fs::read_to_string(&store.path).unwrap();
+        assert!(persisted.contains(r#""theme_preference": 12"#));
+        assert!(!persisted.contains(r#""theme""#));
+    }
+
+    #[test]
+    fn settings_import_export_backup_and_reset_defaults() {
+        let fixture = TempFixture::new();
+        let store = SettingsStore::new(fixture.path.join("settings.json"));
+        let backup = fixture.path.join("backup/settings.json");
+        let imported = fixture.path.join("imported.json");
+        let settings = Settings {
+            theme_preference: ThemePreference::BlackKnight,
+            recent_limit: 7,
+            ..Settings::default()
+        };
+
+        store.save(&settings).unwrap();
+        store.backup_to(&backup).unwrap();
+        store.reset_to_default().unwrap();
+        assert_eq!(store.load_or_default().unwrap(), Settings::default());
+
+        fs::copy(&backup, &imported).unwrap();
+        assert_eq!(store.import_from(&imported).unwrap(), settings);
+        assert_eq!(store.load_or_default().unwrap(), settings);
+    }
+
+    #[test]
+    fn settings_theme_preferences_cover_grexa_palette_keys() {
+        for (theme, value) in [
+            (ThemePreference::System, 0),
+            (ThemePreference::Light, 1),
+            (ThemePreference::Dark, 2),
+            (ThemePreference::GentleGecko, 3),
+            (ThemePreference::BlackKnight, 4),
+            (ThemePreference::Diamond, 5),
+            (ThemePreference::Dreams, 6),
+            (ThemePreference::Paranoid, 7),
+            (ThemePreference::RedVelvet, 8),
+            (ThemePreference::Subspace, 9),
+            (ThemePreference::Tiefling, 10),
+            (ThemePreference::Vibes, 11),
+            (ThemePreference::OledBlack, 12),
+        ] {
+            let json = serde_json::to_string(&theme).unwrap();
+            assert_eq!(json, value.to_string());
+            assert_eq!(
+                serde_json::from_str::<ThemePreference>(&json).unwrap(),
+                theme
+            );
+        }
+
+        assert_eq!(
+            serde_json::from_str::<ThemePreference>(r#""high_contrast""#).unwrap(),
+            ThemePreference::BlackKnight
+        );
+        assert_eq!(
+            serde_json::from_str::<ThemePreference>(r#""oled-black""#).unwrap(),
+            ThemePreference::OledBlack
+        );
+    }
+
+    #[test]
+    fn settings_ignore_unknown_fields_and_reject_bad_input() {
+        let fixture = TempFixture::new();
+        let store = SettingsStore::new(fixture.path.join("settings.json"));
+
+        fs::write(
+            &store.path,
+            r#"{"schema_version":1,"theme":"dark","recent_limit":10,"default_recursive_folder_compare":false,"future_field":true}"#,
+        )
+        .unwrap();
+        let settings = store.load_or_default().unwrap();
+        assert_eq!(settings.theme_preference, ThemePreference::Dark);
+        assert!(!settings.default_recursive_folder_compare);
+
+        fs::write(&store.path, "{not json").unwrap();
+        assert!(matches!(store.load_or_default(), Err(StoreError::Json(_))));
+
+        fs::write(
+            &store.path,
+            r#"{"schema_version":1,"theme":"dark","recent_limit":10,"default_recursive_folder_compare":false,"window_size":{"width":0,"height":720}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            store.load_or_default(),
+            Err(StoreError::InvalidData(message)) if message.contains("window_size")
+        ));
+
+        fs::write(
+            &store.path,
+            r#"{"schema_version":99,"theme":"dark","recent_limit":10,"default_recursive_folder_compare":false}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            store.load_or_default(),
+            Err(StoreError::UnsupportedSchema {
+                artifact: "settings",
+                version: 99,
+                supported: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn concurrent_settings_writes_remain_valid_json_without_temp_leftovers() {
+        let fixture = TempFixture::new();
+        let path = fixture.path.join("settings.json");
+        let mut handles = Vec::new();
+
+        for worker in 0..12 {
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || {
+                let store = SettingsStore::new(path);
+                for iteration in 0..25 {
+                    store
+                        .save(&Settings {
+                            theme_preference: if worker % 2 == 0 {
+                                ThemePreference::Light
+                            } else {
+                                ThemePreference::Dark
+                            },
+                            recent_limit: worker * 100 + iteration + 1,
+                            default_recursive_folder_compare: worker % 3 == 0,
+                            ..Settings::default()
+                        })
+                        .unwrap();
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let settings = SettingsStore::new(path.clone()).load_or_default().unwrap();
+        assert_eq!(settings.schema_version, Settings::CURRENT_SCHEMA_VERSION);
+        assert!(settings.recent_limit > 0);
+        let persisted = fs::read_to_string(&path).unwrap();
+        serde_json::from_str::<Settings>(&persisted).unwrap();
+        let temp_leftovers = fs::read_dir(&fixture.path)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(temp_leftovers, 0);
+    }
+
+    #[test]
+    fn recent_paths_dedupes_and_caps() {
+        let fixture = TempFixture::new();
+        let store = RecentPathStore::new(fixture.path.join("recent.json"), 2);
+
+        store.add(PathBuf::from("/one")).unwrap();
+        store.add(PathBuf::from("/two")).unwrap();
+        let recent = store.add(PathBuf::from("/one")).unwrap();
+
+        assert_eq!(
+            recent.paths,
+            vec![PathBuf::from("/one"), PathBuf::from("/two")]
+        );
+
+        let recent = store.add(PathBuf::from("/three")).unwrap();
+        assert_eq!(
+            recent.paths,
+            vec![PathBuf::from("/three"), PathBuf::from("/one")]
+        );
+
+        let matches = store.search("thr").unwrap();
+        assert_eq!(matches, vec![PathBuf::from("/three")]);
+
+        let recent = store.remove(Path::new("/three")).unwrap();
+        assert_eq!(recent.paths, vec![PathBuf::from("/one")]);
+    }
+
+    #[test]
+    fn named_filters_round_trip_and_upsert_by_name() {
+        let fixture = TempFixture::new();
+        let store = FilterStore::new(fixture.path.join("filters.json"));
+        let first = FileFilter::parse("name: Source\nwf:*.rs").unwrap();
+        let replacement = FileFilter::parse("name: Source\nwf:*.toml").unwrap();
+
+        store.upsert(first).unwrap();
+        let filters = store.upsert(replacement).unwrap();
+
+        assert_eq!(filters.filters.len(), 1);
+        assert_eq!(filters.filters[0].rules[0].pattern, "*.toml");
+        assert_eq!(store.load_or_default().unwrap(), filters);
+    }
+
+    #[test]
+    fn session_file_round_trip_persists_options_filters_and_layout() {
+        let fixture = TempFixture::new();
+        let store = SessionFileStore::new(fixture.path.join("sessions/compare.linsync-session"));
+        let mut session = SessionFile::new(sample_compare_session("Source"));
+        session.selected_view = CompareViewMode::Text;
+        session.filter_names = vec!["Generated files".to_owned()];
+        session.layout.active_side = Some(CompareSide::Right);
+        session.layout.visible_columns = vec!["path".to_owned(), "state".to_owned()];
+        session.layout.sort_column = Some("path".to_owned());
+
+        store.save(&session).unwrap();
+        assert_eq!(store.load().unwrap(), session);
+    }
+
+    #[test]
+    fn project_file_round_trip_and_active_session_validation() {
+        let fixture = TempFixture::new();
+        let store = ProjectFileStore::new(fixture.path.join("projects/release.linsync-project"));
+        let mut project = ProjectFile::new("Release audit");
+        project
+            .sessions
+            .push(SessionFile::new(sample_compare_session("Main")));
+        project
+            .sessions
+            .push(SessionFile::new(sample_compare_session("Docs")));
+        project.active_session_index = Some(1);
+
+        store.save(&project).unwrap();
+        assert_eq!(store.load().unwrap(), project);
+
+        project.active_session_index = Some(2);
+        store.save(&project).unwrap();
+        assert!(matches!(store.load(), Err(StoreError::InvalidData(_))));
+    }
+
+    #[test]
+    fn recent_sessions_dedupes_and_caps() {
+        let fixture = TempFixture::new();
+        let store = RecentSessionStore::new(fixture.path.join("recent-sessions.json"), 2);
+        let one = SessionFile::new(sample_compare_session("One"));
+        let two = SessionFile::new(sample_compare_session("Two"));
+        let three = SessionFile::new(sample_compare_session("Three"));
+
+        store.add(one.clone()).unwrap();
+        store.add(two.clone()).unwrap();
+        let recent = store.add(one.clone()).unwrap();
+        assert_eq!(
+            recent
+                .sessions
+                .iter()
+                .map(|session| session.session.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["One", "Two"]
+        );
+
+        let recent = store.add(three.clone()).unwrap();
+        assert_eq!(
+            recent
+                .sessions
+                .iter()
+                .map(|session| session.session.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Three", "One"]
+        );
+    }
+
+    fn sample_compare_session(title: &str) -> CompareSession {
+        let slug = title.to_lowercase();
+        CompareSession {
+            title: title.to_owned(),
+            left: PathBuf::from(format!("/left/{slug}.txt")),
+            base: None,
+            right: PathBuf::from(format!("/right/{slug}.txt")),
+            options: crate::text::CompareOptions {
+                text: crate::text::TextCompareOptions {
+                    ignore_case: true,
+                    ignore_whitespace: true,
+                    ignore_eol: false,
+                    ignore_blank_lines: true,
+                    ignore_line_patterns: vec![r"^Generated:".to_owned()],
+                    substitutions: vec![crate::text::TextSubstitution {
+                        pattern: r"id=\d+".to_owned(),
+                        replacement: "id=<id>".to_owned(),
+                    }],
+                    ..crate::text::TextCompareOptions::default()
+                },
+            },
+        }
+    }
+
+    struct TempFixture {
+        path: PathBuf,
+    }
+
+    static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+
+    impl TempFixture {
+        fn new() -> Self {
+            let sequence = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "linsync-storage-test-{}-{}-{sequence}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TempFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}

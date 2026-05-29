@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""LinSync web-fetch plugin.
+
+Reads one JSON request on stdin, writes one JSON response on stdout.
+Supported ops: fetch_html, extract_text, resource_tree.
+
+Outbound request policy: only http / https schemes are honoured, and the
+host must resolve to a publicly-routable address. Loopback, link-local,
+RFC1918 / unique-local, multicast, unspecified, and reserved ranges are
+refused. Redirect targets are revalidated against the same policy.
+"""
+
+import http.client
+import ipaddress
+import json
+import os
+import re
+import socket
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+_ALLOWED_SCHEMES = ("http", "https")
+
+# Default User-Agent. urllib's built-in "Python-urllib/x.y" is rejected with
+# 403 by many sites and CDN/WAF bot filters (e.g. Cloudflare), so present a
+# mainstream browser UA unless the caller supplies its own.
+_DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+)
+
+
+class _BlockedURLError(ValueError):
+    """Raised when an outbound URL is blocked by the SSRF policy."""
+
+
+def _allow_loopback_for_tests() -> bool:
+    """Test-only escape hatch.
+
+    The webpage compare integration tests spin up local httptest fixture
+    servers on the loopback interface (typically ``::1``). The default
+    SSRF policy refuses to talk to loopback addresses, which would mask
+    the fixture failure as a "blocked" error. Setting
+    ``LINSYNC_WEB_FETCH_ALLOW_LOOPBACK=1`` *only* relaxes loopback
+    (``127.0.0.0/8`` and ``::1``); every other non-public address family
+    (private, link-local, multicast, reserved, unspecified) stays blocked.
+
+    This env var is never set in production builds or release artifacts —
+    it is opt-in for the test harness, and the security contract for end
+    users is unchanged.
+    """
+    return os.environ.get("LINSYNC_WEB_FETCH_ALLOW_LOOPBACK") == "1"
+
+
+def _is_disallowed_address(addr: ipaddress._BaseAddress) -> bool:
+    if _allow_loopback_for_tests() and addr.is_loopback:
+        return False
+    # Positive allow check: only globally-routable addresses are permitted.
+    # `is_global` is the inverse of the IANA special-purpose registries, so it
+    # also rejects ranges a hand-maintained deny-list tends to miss (e.g. the
+    # RFC 6598 carrier-grade NAT block 100.64.0.0/10). The explicit predicates
+    # remain as belt-and-suspenders across interpreter versions.
+    return (
+        not getattr(addr, "is_global", False)
+        or addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_unspecified
+        or addr.is_multicast
+        or addr.is_reserved
+    )
+
+
+def _validate_url(url: str) -> None:
+    """Reject URLs that point to non-public destinations or use a scheme
+    other than http / https."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        raise _BlockedURLError(
+            f"scheme {parsed.scheme!r} not allowed (http / https only)"
+        )
+    host = parsed.hostname
+    if not host:
+        raise _BlockedURLError("missing host")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as exc:
+        raise _BlockedURLError(f"DNS resolution failed for {host!r}: {exc}") from exc
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except (ValueError, IndexError):
+            continue
+        if _is_disallowed_address(addr):
+            raise _BlockedURLError(
+                f"{host!r} resolves to non-routable address {addr}"
+            )
+
+
+def _resolve_and_validate(host, port):
+    """Resolve ``host``/``port`` and validate **every** resolved address against
+    the SSRF policy, returning the ``getaddrinfo`` result list (all entries
+    vetted) so the caller can connect to exactly those addresses.
+
+    This is the anti-rebinding primitive: validation and connection share a
+    single resolution. ``_validate_url`` resolves up front for a fast, friendly
+    error, but the address it sees is discarded — urllib would otherwise resolve
+    the host a *second*, independent time at connect, and a low-TTL DNS-rebinding
+    attacker could answer the validating lookup with a public IP and the
+    connecting lookup with 127.0.0.1 / 169.254.169.254 / an RFC1918 host. By
+    resolving here and handing the vetted addresses straight to the socket, the
+    bytes we connect to are exactly the bytes we checked.
+    """
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise _BlockedURLError(f"DNS resolution failed for {host!r}: {exc}") from exc
+    if not infos:
+        raise _BlockedURLError(f"no addresses resolved for {host!r}")
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except (ValueError, IndexError) as exc:
+            raise _BlockedURLError(f"unparseable address for {host!r}") from exc
+        if _is_disallowed_address(addr):
+            raise _BlockedURLError(f"{host!r} resolves to non-routable address {addr}")
+    return infos
+
+
+def _pinned_create_connection(
+    address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None
+):
+    """Drop-in for ``socket.create_connection`` that resolves the host once,
+    validates every resolved address, and connects only to those vetted
+    addresses — closing the DNS-rebinding TOCTOU. Installed on the pinned
+    HTTP(S) connection classes below."""
+    host, port = address
+    infos = _resolve_and_validate(host, port)
+    err = None
+    for family, socktype, proto, _canonname, sockaddr in infos:
+        sock = None
+        try:
+            sock = socket.socket(family, socktype, proto)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT and timeout is not None:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            err = exc
+            if sock is not None:
+                sock.close()
+    if err is not None:
+        raise err
+    raise OSError(f"no usable address for {host!r}")
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # The hostname stays in self.host (Host header stays correct); only the
+        # connect-time resolution is pinned to the validated address.
+        self._create_connection = _pinned_create_connection
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # self.host is still the hostname, so TLS SNI + certificate hostname
+        # verification continue to use the real name, not the pinned IP.
+        self._create_connection = _pinned_create_connection
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_PinnedHTTPConnection, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_PinnedHTTPSConnection, req, context=self._context)
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-run the SSRF policy against every redirect target. Without this,
+    a public-IP host could 302 to http://127.0.0.1/admin and urllib's
+    default redirect handler would follow it unchecked. The pinned connection
+    classes additionally re-resolve-and-validate at connect time, so the
+    redirect's host cannot be rebound between this check and the fetch."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _make_opener(user_agent: str | None) -> urllib.request.OpenerDirector:
+    opener = urllib.request.OpenerDirector()
+    # Explicit handler list: include only http / https transports plus the
+    # redirect validator above. FileHandler, FTPHandler, and DataHandler
+    # are deliberately omitted so file:// / ftp:// / data: cannot reach
+    # the opener even if a request slipped past _validate_url.
+    for handler in (
+        urllib.request.ProxyHandler(),
+        urllib.request.UnknownHandler(),
+        _PinnedHTTPHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        _SafeRedirectHandler(),
+        urllib.request.HTTPErrorProcessor(),
+        _PinnedHTTPSHandler(),
+    ):
+        opener.add_handler(handler)
+    if user_agent:
+        opener.addheaders = [("User-Agent", user_agent)]
+    return opener
+
+
+def fetch_html(url: str, timeout: int, user_agent: str | None) -> dict:
+    try:
+        _validate_url(url)
+    except _BlockedURLError as exc:
+        return {"ok": False, "error": f"blocked: {exc}", "url": url}
+    opener = _make_opener(user_agent)
+    try:
+        with opener.open(url, timeout=timeout) as resp:
+            raw = resp.read()
+            headers = dict(resp.headers)
+            status = resp.status
+        html = raw.decode("utf-8", errors="replace")
+        return {"ok": True, "html": html, "headers": headers, "status": status}
+    except urllib.error.URLError as exc:
+        msg = str(exc.reason) if hasattr(exc, "reason") else str(exc)
+        if "timed out" in msg.lower():
+            return {"ok": False, "error": "timeout", "url": url}
+        return {"ok": False, "error": msg, "url": url}
+    except _BlockedURLError as exc:
+        return {"ok": False, "error": f"blocked: {exc}", "url": url}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc), "url": url}
+
+
+def extract_text(url: str, timeout: int, user_agent: str | None) -> dict:
+    result = fetch_html(url, timeout, user_agent)
+    if not result["ok"]:
+        return result
+    html = result["html"]
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"\s+", " ", text).strip()
+    return {"ok": True, "text": text}
+
+
+def resource_tree(
+    url: str,
+    depth: int,
+    max_requests: int,
+    timeout: int,
+    user_agent: str | None,
+) -> dict:
+    depth = min(max(depth, 1), 3)
+    seen: dict[str, int] = {}  # url -> HTTP status
+    opener = _make_opener(user_agent)
+
+    def _probe_status(target_url: str) -> int:
+        try:
+            req = urllib.request.Request(target_url, method="HEAD")
+            with opener.open(req, timeout=timeout) as resp:
+                return resp.status
+        except urllib.error.HTTPError as exc:
+            if exc.code == 405:
+                try:
+                    with opener.open(target_url, timeout=timeout) as resp:
+                        return resp.status
+                except Exception:  # noqa: BLE001
+                    return 0
+            return exc.code
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _crawl(current_url: str, remaining_depth: int) -> None:
+        if current_url in seen or len(seen) >= max_requests:
+            return
+        try:
+            _validate_url(current_url)
+        except _BlockedURLError:
+            # Skip crawl targets that fail the SSRF policy. They are still
+            # recorded with status 0 so the caller can see the dead branch.
+            seen[current_url] = 0
+            return
+        status = _probe_status(current_url)
+        seen[current_url] = status
+        if remaining_depth <= 0:
+            return
+        # Fetch HTML and extract links.
+        result = fetch_html(current_url, timeout, user_agent)
+        if not result["ok"]:
+            return
+        html = result["html"]
+        hrefs = re.findall(r'href=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        srcs = re.findall(r'src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        for raw in hrefs + srcs:
+            if len(seen) >= max_requests:
+                break
+            resolved = urllib.parse.urljoin(current_url, raw)
+            if resolved not in seen:
+                _crawl(resolved, remaining_depth - 1)
+
+    _crawl(url, depth)
+    tree = [{"url": u, "status": s} for u, s in seen.items()]
+    return {"ok": True, "tree": tree}
+
+
+def main() -> None:
+    raw = sys.stdin.read()
+    try:
+        req = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        sys.stdout.write(json.dumps({"ok": False, "error": f"invalid JSON: {exc}"}))
+        sys.exit(0)
+
+    op = req.get("op", "")
+    url = req.get("url", "")
+    timeout = int(req.get("timeout", 30))
+    user_agent = req.get("user_agent") or _DEFAULT_USER_AGENT
+
+    if op == "fetch_html":
+        response = fetch_html(url, timeout, user_agent)
+    elif op == "extract_text":
+        response = extract_text(url, timeout, user_agent)
+    elif op == "resource_tree":
+        depth = int(req.get("depth", 1))
+        max_requests = int(req.get("max_requests", 50))
+        response = resource_tree(url, depth, max_requests, timeout, user_agent)
+    else:
+        response = {"ok": False, "error": f"unknown op: {op!r}"}
+
+    sys.stdout.write(json.dumps(response))
+
+
+if __name__ == "__main__":
+    main()
