@@ -990,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "linsync"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "linsync-cli"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "image",
  "linsync-core",
@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "linsync-core"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "blake3",
  "httptest",
@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "linsync-sandbox"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "landlock",
  "libc",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "linsync-webengine"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "tempfile",
 ]

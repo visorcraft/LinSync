@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.7.0
+Version:        1.7.1
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -108,6 +108,11 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Fri May 29 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.7.1-1
+- Rename application id io.visorcraft.LinSync -> com.visorcraft.LinSync to
+  match the visorcraft.com domain (desktop, metainfo, MIME, icons, D-Bus /
+  Wayland app id, plugin ids); fix stray visorcraft.io references.
+
 * Fri May 29 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.7.0-1
 - Security hardening: the plugin sandbox now fails closed when no backend
   (Landlock/bubblewrap) is available and reduces the helper environment to a

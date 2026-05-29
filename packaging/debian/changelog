@@ -1,3 +1,13 @@
+linsync (1.7.1-1) unstable; urgency=medium
+
+  * Rename the application id io.visorcraft.LinSync -> com.visorcraft.LinSync
+    to match the visorcraft.com domain (desktop entry, AppStream metainfo,
+    MIME registration, icons, D-Bus / Wayland app id, and plugin ids).
+  * Fix stray visorcraft.io references (security contact email, Qt
+    organization domain).
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Fri, 29 May 2026 16:19:55 -0500
+
 linsync (1.7.0-1) unstable; urgency=medium
 
   * Security hardening: sandbox fails closed without a backend and clears the

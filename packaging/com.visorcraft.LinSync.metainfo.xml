@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.7.1" date="2026-05-29">
+      <description>
+        <p>Renamed the application id from io.visorcraft.LinSync to com.visorcraft.LinSync to match the visorcraft.com domain. This updates the desktop entry, AppStream component id, MIME registration, icons, D-Bus and Wayland app id, and plugin ids; it also fixes stray visorcraft.io references (the security contact email and the Qt organization domain).</p>
+      </description>
+    </release>
     <release version="1.7.0" date="2026-05-29">
       <description>
         <p>Security hardening across the plugin sandbox and bundled helpers: the sandbox fails closed when neither Landlock nor bubblewrap is available and clears the helper environment down to a safe allowlist, streaming helpers run under the same confinement, the web-fetch plugin pins the validated address at connect time to defeat DNS rebinding, folder copy and delete operations refuse symlinked paths that escape the comparison root, and the GUI bridge token file is written owner-only. The About page now shows the real LinSync application icon and gives the "Visit LinSync" button the same styling as the Credits and Licenses buttons.</p>
