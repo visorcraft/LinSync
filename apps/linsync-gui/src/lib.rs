@@ -174,17 +174,42 @@ pub fn document_compare_bridge_response(query: &str) -> String {
     )
 }
 
+/// Resolve the effective [`DocumentCompareOptions`](linsync_core::DocumentCompareOptions)
+/// for a single `/compare/document` request.
+///
+/// The resolved profile supplies the defaults; `?mode` (`text` / `ocr_text`)
+/// and `?ocr_language` override `mode` / `ocr_language` field-by-field. Any
+/// unrecognised `?mode` value (e.g. `rendered`) and all other fields inherit
+/// from `profile_options`.
+pub fn resolve_document_options(
+    query: &str,
+    profile_options: &linsync_core::DocumentCompareOptions,
+) -> linsync_core::DocumentCompareOptions {
+    use linsync_core::DocumentCompareMode;
+    let mode = match image_query_param(query, "mode").as_deref() {
+        Some("ocr_text") => DocumentCompareMode::OcrText,
+        Some("text") => DocumentCompareMode::Text,
+        Some(_) | None => profile_options.mode,
+    };
+    let ocr_language = image_query_param(query, "ocr_language")
+        .unwrap_or_else(|| profile_options.ocr_language.clone());
+    linsync_core::DocumentCompareOptions {
+        mode,
+        ocr_language,
+        ..profile_options.clone()
+    }
+}
+
 /// Profile-aware variant of [`document_compare_bridge_response`].
 ///
-/// Query parameters override the profile's options field-by-field:
-/// `mode` and `ocr_language`. Fields not present in the query inherit from
-/// `profile_options`.
+/// Query parameters override the profile's options field-by-field via
+/// [`resolve_document_options`]: `mode` and `ocr_language`. Fields not present
+/// in the query inherit from `profile_options`.
 pub fn document_compare_bridge_response_with_profile(
     query: &str,
     profile_options: &linsync_core::DocumentCompareOptions,
 ) -> String {
     use linsync_core::document::{DocumentCompareError, compare_document_files};
-    use linsync_core::{DocumentCompareMode, DocumentCompareOptions};
 
     let left = match image_query_param(query, "left") {
         Some(v) => std::path::PathBuf::from(v),
@@ -195,23 +220,10 @@ pub fn document_compare_bridge_response_with_profile(
         None => return r#"{"error":"missing 'right' parameter"}"#.to_owned(),
     };
     let mode_str = image_query_param(query, "mode");
-    let ocr_language = image_query_param(query, "ocr_language")
-        .unwrap_or_else(|| profile_options.ocr_language.clone());
-
-    let mode = match mode_str.as_deref() {
-        Some("ocr_text") => DocumentCompareMode::OcrText,
-        Some("text") => DocumentCompareMode::Text,
-        Some(_) | None => profile_options.mode,
-    };
+    let opts = resolve_document_options(query, profile_options);
 
     // Locate the plugins root (same logic as the CLI helper).
     let plugins_root = detect_document_plugins_root();
-
-    let opts = DocumentCompareOptions {
-        mode,
-        ocr_language: ocr_language.clone(),
-        ..profile_options.clone()
-    };
 
     let result = match compare_document_files(&left, &right, &plugins_root, &opts) {
         Ok(r) => r,
@@ -647,15 +659,55 @@ pub fn webpage_compare_bridge_response(query: &str, paths: &linsync_core::AppPat
     )
 }
 
+/// Resolve the effective [`WebpageCompareOptions`](linsync_core::WebpageCompareOptions)
+/// for a single `/compare/webpage` request.
+///
+/// The resolved profile supplies the defaults for `depth` / `timeout` /
+/// `max_requests` / `user_agent`; matching query parameters override them
+/// field-by-field, mirroring the CLI flags (`--depth`, `--timeout`,
+/// `--max-requests`) and the image/document routes. `?depth` is clamped to
+/// `1..=3` exactly like `linsync-cli webpage --depth`.
+///
+/// `confirmed_by_user` is always forced to `true`: the consent gate is owned by
+/// the bridge dispatcher (which only reaches this point once the QML dialog has
+/// confirmed) and must never be sourced from persisted profile JSON, so a
+/// profile such as `webpage-source-safe` cannot bypass the dialog.
+pub fn resolve_webpage_options(
+    query: &str,
+    profile_options: &linsync_core::WebpageCompareOptions,
+) -> linsync_core::WebpageCompareOptions {
+    let resource_tree_depth = image_query_param(query, "depth")
+        .and_then(|v| v.parse::<u8>().ok())
+        .map(|d| d.clamp(1, 3))
+        .unwrap_or(profile_options.resource_tree_depth);
+    let timeout_secs = image_query_param(query, "timeout")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(profile_options.timeout_secs);
+    let max_requests = image_query_param(query, "max_requests")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(profile_options.max_requests);
+    // A present-but-empty `?user_agent=` is treated as "unset" and inherits the
+    // profile value rather than forcing an empty UA header.
+    let user_agent = match image_query_param(query, "user_agent") {
+        Some(ua) if !ua.is_empty() => Some(ua),
+        _ => profile_options.user_agent.clone(),
+    };
+    linsync_core::WebpageCompareOptions {
+        resource_tree_depth,
+        timeout_secs,
+        max_requests,
+        user_agent,
+        confirmed_by_user: true,
+    }
+}
+
 /// Profile-aware variant of [`webpage_compare_bridge_response`].
 ///
 /// `profile_options` supplies the depth / timeout / max-requests / user-agent
-/// defaults from the active profile. The caller is responsible for setting
-/// `confirmed_by_user` from a fresh user dialog — the value on the profile
-/// is intentionally ignored here so that a persisted profile cannot bypass
-/// the consent gate. The bridge currently sets it to `true` once the QML
-/// has confirmed; that decision is owned by the bridge dispatcher, not by
-/// this helper.
+/// defaults from the active profile; per-request query params override them via
+/// [`resolve_webpage_options`]. The caller is responsible for the consent gate —
+/// the profile's `confirmed_by_user` is intentionally ignored (always forced to
+/// `true` here) so that a persisted profile cannot bypass the fresh user dialog.
 pub fn webpage_compare_bridge_response_with_profile(
     query: &str,
     paths: &linsync_core::AppPaths,
@@ -672,13 +724,7 @@ pub fn webpage_compare_bridge_response_with_profile(
     let mode = image_query_param(query, "mode").unwrap_or_else(|| "html".to_owned());
     let cache_dir = &paths.cache_dir;
 
-    let options = linsync_core::WebpageCompareOptions {
-        confirmed_by_user: true,
-        // Profile supplies depth / timeout / max-requests / user-agent.
-        // confirmed_by_user is always set by the bridge from a fresh user
-        // interaction (see doc comment); never sourced from the profile.
-        ..profile_options.clone()
-    };
+    let options = resolve_webpage_options(query, profile_options);
 
     let result = match mode.as_str() {
         "html" => linsync_core::compare_webpage_html_source(&left, &right, &options, cache_dir),

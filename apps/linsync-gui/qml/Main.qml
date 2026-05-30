@@ -28,6 +28,18 @@ Kirigami.ApplicationWindow {
     property int activeTabId: 0
     property bool syncingScroll: false
     property string bridgeUrl: ""
+    // Compare cancellation state (Phase 3). `comparing` gates the Stop button;
+    // `activeRequestId` is the id sent with the in-flight /compare so /cancel
+    // can target it. `requestCounter` yields a session-unique id.
+    property bool comparing: false
+    property string activeRequestId: ""
+    property int requestCounter: 0
+    // Compare-profile selector state (Phase 1). `profileEntries` mirrors
+    // /profiles/list (built-ins first, then user profiles); `activeProfileId`
+    // is the persisted active pointer; `profileError` surfaces a 400/404 inline.
+    property var profileEntries: []
+    property string activeProfileId: ""
+    property string profileError: ""
     property string pendingBrowseSide: "left"
     property var diffRowIndexes: []
     property int currentDiffPosition: -1
@@ -659,6 +671,61 @@ Kirigami.ApplicationWindow {
         })
     }
 
+    // Populate the Compare-page profile selector from /profiles/list and
+    // pre-select the active id (falling back to `default`).
+    function loadProfiles() {
+        if (root.bridgeUrl === "")
+            return
+        bridgeGet("/profiles/list", function (ok, payload, status) {
+            if (!ok || !payload) {
+                root.profileError = qsTr("Could not load profiles")
+                return
+            }
+            root.profileError = ""
+            root.profileEntries = payload.profiles || []
+            root.activeProfileId = payload.active || "default"
+            var idx = root.profileIndexOf(root.activeProfileId)
+            if (idx < 0)
+                idx = root.profileIndexOf("default")
+            if (idx >= 0)
+                profileSelector.currentIndex = idx
+        })
+    }
+
+    function profileIndexOf(id) {
+        for (var i = 0; i < root.profileEntries.length; i++) {
+            if (root.profileEntries[i] && root.profileEntries[i].id === id)
+                return i
+        }
+        return -1
+    }
+
+    // Persist the active profile via /profiles/active/set. Unknown ids return
+    // 400/404, which we surface inline and recover from by re-syncing to the
+    // server's persisted selection.
+    function setActiveProfile(id) {
+        if (!id || root.bridgeUrl === "")
+            return
+        bridgeGet("/profiles/active/set?id=" + encodeURIComponent(id), function (ok, payload, status) {
+            if (ok) {
+                root.activeProfileId = id
+                root.profileError = ""
+                root.statusText = qsTr("Active profile: %1").arg(id)
+            } else if (status === 404 || status === 400) {
+                root.profileError = qsTr("Profile “%1” could not be selected").arg(id)
+                root.loadProfiles()
+            } else {
+                root.profileError = qsTr("Failed to set profile (HTTP %1)").arg(status)
+                root.loadProfiles()
+            }
+        })
+    }
+
+    onBridgeUrlChanged: {
+        if (root.bridgeUrl !== "")
+            root.loadProfiles()
+    }
+
     function loadFilters(callback) {
         bridgeGet("/filters/list", function (ok, payload) {
             if (ok && payload && callback)
@@ -1276,9 +1343,15 @@ Kirigami.ApplicationWindow {
         }
 
         root.statusText = "Comparing"
+        root.requestCounter += 1
+        var reqId = "req-" + root.requestCounter
+        root.activeRequestId = reqId
+        root.comparing = true
         const request = new XMLHttpRequest()
         let url = root.bridgeUrl + "/compare?left=" + encodeURIComponent(root.leftPath) + "&right=" + encodeURIComponent(root.rightPath)
         url += "&mode=" + encodeURIComponent(root.compareMode)
+        // Per-request id so the Stop button can cancel this exact compare.
+        url += "&request_id=" + encodeURIComponent(reqId)
         // Surface every compare-related setting on the wire even if the
         // current Rust bridge only consumes a subset. Unknown query
         // params are ignored server-side; getting them in the URL means
@@ -1292,8 +1365,15 @@ Kirigami.ApplicationWindow {
             url += "&new_tab=1"
         request.onreadystatechange = function () {
             if (request.readyState === XMLHttpRequest.DONE) {
+                root.comparing = false
+                root.activeRequestId = ""
                 if (request.status === 200) {
-                    applyLaunchContext(JSON.parse(request.responseText), false)
+                    var payload = JSON.parse(request.responseText)
+                    if (payload && payload.cancelled === true) {
+                        root.statusText = "Compare cancelled"
+                    } else {
+                        applyLaunchContext(payload, false)
+                    }
                 } else {
                     root.statusText = "Compare failed"
                 }
@@ -1301,6 +1381,15 @@ Kirigami.ApplicationWindow {
         }
         request.open("GET", url)
         request.send()
+    }
+
+    // Cancel the in-flight compare (if any) by flipping its bridge-side cancel
+    // flag. The /compare response handler then reports "Compare cancelled".
+    function cancelActiveCompare() {
+        if (!root.comparing || root.activeRequestId === "" || root.bridgeUrl === "")
+            return
+        root.statusText = "Cancelling…"
+        root.bridgeGet("/cancel?id=" + encodeURIComponent(root.activeRequestId), function (ok) {})
     }
 
     function browseSide(side) {
@@ -2822,15 +2911,16 @@ Kirigami.ApplicationWindow {
                     Controls.ToolButton {
                         icon.name: "process-stop"
                         icon.color: root.activeText
-                        // Disabled in 1.1.x: GUI cancellation is not wired
-                        // through the bridge yet. Core has cancel hooks
-                        // (linsync_core::folder, linsync_core::merge); the
-                        // bridge needs a /cancel endpoint plus per-request
-                        // tokens. Tracked in PLAN.md Phase 3.
-                        enabled: false
-                        Controls.ToolTip.text: qsTr("Cancellation is not wired yet — see PLAN.md Phase 3.")
+                        // Enabled only while a compare is in flight; clicking
+                        // fires /cancel?id=<activeRequestId>, which flips the
+                        // request's cancel flag in the bridge (Phase 3).
+                        enabled: root.comparing
+                        Controls.ToolTip.text: root.comparing
+                            ? qsTr("Stop the running compare")
+                            : qsTr("No compare is running")
                         Controls.ToolTip.visible: hovered
-                        Accessible.name: qsTr("Stop (not implemented)")
+                        Accessible.name: qsTr("Stop")
+                        onClicked: root.cancelActiveCompare()
                     }
 
                     Kirigami.Separator {
@@ -2844,6 +2934,84 @@ Kirigami.ApplicationWindow {
                         Controls.ToolTip.visible: hovered
                         Accessible.name: qsTr("Open three-way merge")
                         onClicked: openMergeDialog.startFlow()
+                    }
+                }
+            }
+
+            // Compare-profile selector (Phase 1). A thin secondary row keeps the
+            // primary path/mode toolbar uncluttered. Populated from
+            // /profiles/list; selecting an entry calls /profiles/active/set.
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 40
+                color: root.activeBgAlt
+                border.color: root.separatorColor
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    spacing: 8
+
+                    Controls.Label {
+                        text: qsTr("Profile:")
+                        color: root.activeText
+                        opacity: 0.7
+                    }
+
+                    AppComboBox {
+                        id: profileSelector
+                        implicitHeight: 30
+                        Layout.preferredWidth: 240
+                        implicitWidth: 240
+                        model: root.profileEntries
+                        textRole: "name"
+                        valueRole: "id"
+                        Accessible.name: qsTr("Compare profile")
+                        palette.button: root.activeBgAlt
+                        palette.buttonText: root.activeText
+                        palette.windowText: root.activeText
+                        palette.text: root.activeText
+                        palette.base: root.activeBg
+                        indicator: Kirigami.Icon {
+                            x: parent.width - width - 10
+                            y: (parent.height - height) / 2
+                            width: 16
+                            height: 16
+                            source: "arrow-down"
+                            color: root.activeText
+                            isMask: true
+                        }
+                        contentItem: Controls.Label {
+                            text: profileSelector.displayText
+                            leftPadding: 8
+                            rightPadding: 28
+                            verticalAlignment: Text.AlignVCenter
+                            color: root.activeText
+                            elide: Text.ElideRight
+                        }
+                        background: Rectangle {
+                            color: root.activeBg
+                            border.color: root.separatorColor
+                            border.width: 1
+                            radius: 4
+                        }
+                        Controls.ToolTip.visible: hovered && Controls.ToolTip.text !== ""
+                        Controls.ToolTip.text: {
+                            var e = root.profileEntries[profileSelector.currentIndex]
+                            return e && e.description ? e.description : ""
+                        }
+                        onActivated: root.setActiveProfile(currentValue)
+                    }
+
+                    Controls.Label {
+                        text: root.profileError
+                        visible: root.profileError !== ""
+                        color: Kirigami.Theme.negativeTextColor
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
                     }
                 }
             }

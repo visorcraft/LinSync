@@ -1,5 +1,7 @@
 use image::{ImageBuffer, Rgba, RgbaImage};
+use linsync::image_compare_bridge_response_with_profile;
 use linsync::test_support::image_compare_test;
+use linsync_core::ImageCompareOptions;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -7,6 +9,52 @@ fn save_png(dir: &TempDir, name: &str, img: &RgbaImage) -> PathBuf {
     let path = dir.path().join(name);
     img.save(&path).unwrap();
     path
+}
+
+// ── Phase 1: profile-aware route honours the ImageCompareOptions argument ─────
+// When the query selects tolerance mode but omits an explicit `?tolerance`, the
+// `_with_profile` variant must take the threshold from the resolved profile.
+// Two near-identical images (one channel off by 30) straddle a high vs. low
+// profile tolerance, proving the profile value flows through (a high tolerance
+// → equal, a low tolerance → different).
+#[test]
+fn with_profile_honours_profile_tolerance_when_query_omits_it() {
+    let dir = TempDir::new().unwrap();
+    let base: RgbaImage = ImageBuffer::from_fn(8, 8, |_, _| Rgba([100u8, 100, 100, 255]));
+    let off: RgbaImage = ImageBuffer::from_fn(8, 8, |_, _| Rgba([130u8, 100, 100, 255])); // red +30
+    let left = save_png(&dir, "left.png", &base);
+    let right = save_png(&dir, "right.png", &off);
+
+    // No `&tolerance=` in the query → the threshold must come from the profile.
+    let query = format!(
+        "left={}&right={}&mode=tolerance",
+        left.to_str().unwrap(),
+        right.to_str().unwrap()
+    );
+
+    let high = ImageCompareOptions {
+        tolerance: 64,
+        ..Default::default()
+    };
+    let body = image_compare_bridge_response_with_profile(&query, &high);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v["equal"],
+        serde_json::json!(true),
+        "profile tolerance 64 must treat a +30 delta as equal: {body}"
+    );
+
+    let low = ImageCompareOptions {
+        tolerance: 4,
+        ..Default::default()
+    };
+    let body_low = image_compare_bridge_response_with_profile(&query, &low);
+    let v_low: serde_json::Value = serde_json::from_str(&body_low).unwrap();
+    assert_eq!(
+        v_low["equal"],
+        serde_json::json!(false),
+        "profile tolerance 4 must treat a +30 delta as different: {body_low}"
+    );
 }
 
 #[test]

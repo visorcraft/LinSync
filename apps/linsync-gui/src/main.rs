@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, ExitCode};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -14,15 +15,16 @@ use linsync::{apply_gui_setting, parse_bool_setting};
 use linsync_core::{
     AppPaths, BinaryCompareOptions, CompareOptions, CompareProfile, CompareSession,
     CompareViewMode, ConflictId, DeletePreference, DiffBlockKind, DiffLine, DiffLineKind,
-    DiscoveredPlugin, FileFilter, FilterStore, FolderCompareOptions, FolderEntryDiff,
-    FolderEntryState, FolderOperationKind, FolderOperationOutcome, FolderOperationStatus,
-    MergeAction, MergeChoice, NamedFilters, ProfileId, ProfileStore, RecentPathStore,
-    RecentSessionStore, RecentSessions, SessionFile, Settings as CoreSettings, SettingsStore,
-    TableCompareOptions, TextCompareOptions, TextCompareResult, TextDocument, ThemePreference,
-    ThreeWayMergeState, TwoWayMergeState, builtin_profiles, compare_binary_files,
-    compare_documents, compare_folders, compare_table_files, compare_text, compare_text_files,
-    create_save_plan, discover_installed_plugins, execute_folder_operation_plan, find_builtin,
-    is_likely_binary, plan_folder_operation, write_encoded_text_with_plan,
+    DiscoveredPlugin, FileFilter, FilterStore, FolderCompareControl, FolderCompareOptions,
+    FolderEntryDiff, FolderEntryState, FolderOperationKind, FolderOperationOutcome,
+    FolderOperationStatus, MergeAction, MergeChoice, NamedFilters, ProfileId, ProfileStore,
+    RecentPathStore, RecentSessionStore, RecentSessions, SessionFile, Settings as CoreSettings,
+    SettingsStore, TableCompareOptions, TextCompareOptions, TextCompareResult, TextDocument,
+    ThemePreference, ThreeWayMergeState, TwoWayMergeState, builtin_profiles, compare_binary_files,
+    compare_documents, compare_folders, compare_folders_with_progress, compare_table_files,
+    compare_text, compare_text_files_cancellable, create_save_plan, discover_installed_plugins,
+    execute_folder_operation_plan, find_builtin, is_likely_binary, plan_folder_operation,
+    write_encoded_text_with_plan,
 };
 use serde::{Deserialize, Serialize};
 
@@ -278,6 +280,11 @@ struct GuiBridgeState {
     /// In-memory plugin-enabled map protected by its own lock so that concurrent
     /// toggle operations are atomic relative to each other and to list reads.
     plugin_enabled: Arc<Mutex<HashMap<String, bool>>>,
+    /// Cancellation flags for in-flight `/compare` requests, keyed by the
+    /// `request_id` the QML supplies. `/cancel?id=X` flips the flag; the compare
+    /// polls it and aborts. Inserted/removed under the state lock, but the flag
+    /// itself is atomic so `/cancel` never blocks on the running compare.
+    compare_cancels: HashMap<String, Arc<AtomicBool>>,
 }
 
 const GUI_HISTORY_LIMIT: usize = 32;
@@ -332,6 +339,7 @@ impl GuiBridgeState {
             redo_stacks: HashMap::new(),
             three_way_session: None,
             plugin_enabled: Arc::new(Mutex::new(HashMap::new())),
+            compare_cancels: HashMap::new(),
         }
     }
 
@@ -1207,27 +1215,61 @@ fn build_tab_for_paths_with_mode(
     mode: Option<&str>,
     text_options: &TextCompareOptions,
 ) -> GuiCompareTab {
+    build_tab_for_paths_with_mode_cancellable(left, right, mode, text_options, &|| false)
+        .expect("a non-cancelling build always yields a tab")
+}
+
+/// Cancellable variant of [`build_tab_for_paths_with_mode`]. `should_cancel` is
+/// polled during the long folder/text compares; when it reports `true` the
+/// compare aborts and this returns `None` (the bridge then responds with
+/// `{"cancelled":true}` without mutating the session). Fast modes (table, hex,
+/// validation errors) are unaffected.
+fn build_tab_for_paths_with_mode_cancellable(
+    left: &Path,
+    right: &Path,
+    mode: Option<&str>,
+    text_options: &TextCompareOptions,
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<GuiCompareTab> {
+    if should_cancel() {
+        return None;
+    }
     let left_path = left.display().to_string();
     let right_path = right.display().to_string();
 
     if let Some(mode) = mode.map(str::trim).filter(|mode| !mode.is_empty()) {
         return match GuiCompareMode::from_label(mode) {
-            Some(mode) => {
-                explicit_tab_for_paths(mode, left, right, left_path, right_path, text_options)
-            }
-            None => invalid_compare_tab(
+            Some(mode) => explicit_tab_for_paths_cancellable(
+                mode,
+                left,
+                right,
+                left_path,
+                right_path,
+                text_options,
+                should_cancel,
+            ),
+            None => Some(invalid_compare_tab(
                 "Text",
                 left_path,
                 right_path,
                 format!("Unsupported compare mode '{mode}'"),
-            ),
+            )),
         };
     }
 
     match classify_context_paths(left, right) {
-        Ok(ContextPathKind::Folders) => folder_tab(left, right, left_path, right_path),
-        Ok(ContextPathKind::Files) => file_tab(left, right, left_path, right_path, text_options),
-        Err(status) => invalid_compare_tab("Text", left_path, right_path, status),
+        Ok(ContextPathKind::Folders) => {
+            folder_tab_cancellable(left, right, left_path, right_path, should_cancel)
+        }
+        Ok(ContextPathKind::Files) => file_tab_cancellable(
+            left,
+            right,
+            left_path,
+            right_path,
+            text_options,
+            should_cancel,
+        ),
+        Err(status) => Some(invalid_compare_tab("Text", left_path, right_path, status)),
     }
 }
 
@@ -1260,36 +1302,49 @@ impl GuiCompareMode {
     }
 }
 
-fn explicit_tab_for_paths(
+fn explicit_tab_for_paths_cancellable(
     mode: GuiCompareMode,
     left: &Path,
     right: &Path,
     left_path: String,
     right_path: String,
     text_options: &TextCompareOptions,
-) -> GuiCompareTab {
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<GuiCompareTab> {
     match classify_context_paths(left, right) {
         Ok(ContextPathKind::Folders) if mode == GuiCompareMode::Folder => {
-            folder_tab(left, right, left_path, right_path)
+            folder_tab_cancellable(left, right, left_path, right_path, should_cancel)
         }
         Ok(ContextPathKind::Files) => match mode {
-            GuiCompareMode::Text => text_tab(left, right, left_path, right_path, text_options),
-            GuiCompareMode::Table => table_tab(left, right, left_path, right_path),
-            GuiCompareMode::Hex => binary_tab(left, right, left_path, right_path),
-            GuiCompareMode::Folder => invalid_compare_tab(
+            GuiCompareMode::Text => text_tab_cancellable(
+                left,
+                right,
+                left_path,
+                right_path,
+                text_options,
+                should_cancel,
+            ),
+            GuiCompareMode::Table => Some(table_tab(left, right, left_path, right_path)),
+            GuiCompareMode::Hex => Some(binary_tab(left, right, left_path, right_path)),
+            GuiCompareMode::Folder => Some(invalid_compare_tab(
                 mode.label(),
                 left_path,
                 right_path,
                 "Selected folder compare requires two folders".to_owned(),
-            ),
+            )),
         },
-        Ok(ContextPathKind::Folders) => invalid_compare_tab(
+        Ok(ContextPathKind::Folders) => Some(invalid_compare_tab(
             mode.label(),
             left_path,
             right_path,
             format!("Selected {} compare requires two files", mode.label()),
-        ),
-        Err(status) => invalid_compare_tab(mode.label(), left_path, right_path, status),
+        )),
+        Err(status) => Some(invalid_compare_tab(
+            mode.label(),
+            left_path,
+            right_path,
+            status,
+        )),
     }
 }
 
@@ -1346,8 +1401,27 @@ fn classify_context_paths(left: &Path, right: &Path) -> Result<ContextPathKind, 
     }
 }
 
-fn folder_tab(left: &Path, right: &Path, left_path: String, right_path: String) -> GuiCompareTab {
-    match compare_folders(left, right, &Default::default()) {
+fn folder_tab_cancellable(
+    left: &Path,
+    right: &Path,
+    left_path: String,
+    right_path: String,
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<GuiCompareTab> {
+    // The folder walker already supports cooperative cancellation: return
+    // `Cancel` from the progress callback as soon as the flag is set.
+    let result = compare_folders_with_progress(left, right, &Default::default(), |_event| {
+        if should_cancel() {
+            FolderCompareControl::Cancel
+        } else {
+            FolderCompareControl::Continue
+        }
+    });
+    // If the user cancelled, abort rather than surfacing a partial/aborted tab.
+    if should_cancel() {
+        return None;
+    }
+    Some(match result {
         Ok(result) => {
             let difference_count = result.summary.different_count
                 + result.summary.one_sided_count
@@ -1388,7 +1462,7 @@ fn folder_tab(left: &Path, right: &Path, left_path: String, right_path: String) 
             Vec::new(),
             (Vec::new(), Vec::new()),
         ),
-    }
+    })
 }
 
 fn folder_rows_for_gui(entries: &[FolderEntryDiff]) -> (Vec<GuiLineRow>, Vec<GuiLineRow>) {
@@ -1449,37 +1523,46 @@ fn gui_folder_state(state: FolderEntryState) -> &'static str {
     }
 }
 
-fn file_tab(
+fn file_tab_cancellable(
     left: &Path,
     right: &Path,
     left_path: String,
     right_path: String,
     text_options: &TextCompareOptions,
-) -> GuiCompareTab {
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<GuiCompareTab> {
     if is_table_path(left) && is_table_path(right) {
-        return table_tab(left, right, left_path, right_path);
+        return Some(table_tab(left, right, left_path, right_path));
     }
 
     let left_bytes = fs::read(left).unwrap_or_default();
     let right_bytes = fs::read(right).unwrap_or_default();
     if is_likely_binary(&left_bytes) || is_likely_binary(&right_bytes) {
-        return binary_tab(left, right, left_path, right_path);
+        return Some(binary_tab(left, right, left_path, right_path));
     }
 
-    text_tab(left, right, left_path, right_path, text_options)
+    text_tab_cancellable(
+        left,
+        right,
+        left_path,
+        right_path,
+        text_options,
+        should_cancel,
+    )
 }
 
-fn text_tab(
+fn text_tab_cancellable(
     left: &Path,
     right: &Path,
     left_path: String,
     right_path: String,
     text_options: &TextCompareOptions,
-) -> GuiCompareTab {
-    match compare_text_files(left, right, text_options) {
-        Ok(result) => {
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<GuiCompareTab> {
+    match compare_text_files_cancellable(left, right, text_options, should_cancel) {
+        Ok(Some(result)) => {
             let (left_rows, right_rows) = text_rows_for_gui(&result.lines, &result.blocks);
-            compare_tab(
+            Some(compare_tab(
                 "Text",
                 (left_path, right_path),
                 "Text compare complete".to_owned(),
@@ -1496,9 +1579,11 @@ fn text_tab(
                     summary_item("Right-only lines", result.summary.right_only_lines),
                 ],
                 (left_rows, right_rows),
-            )
+            ))
         }
-        Err(err) => compare_tab(
+        // Cancelled mid-compare — abort without producing a tab.
+        Ok(None) => None,
+        Err(err) => Some(compare_tab(
             "Text",
             (left_path, right_path),
             format!("Text compare failed: {err}"),
@@ -1510,7 +1595,7 @@ fn text_tab(
             },
             Vec::new(),
             (Vec::new(), Vec::new()),
-        ),
+        )),
     }
 }
 
@@ -1609,6 +1694,103 @@ fn gui_line_state(kind: DiffLineKind) -> &'static str {
     }
 }
 
+/// Build aligned left/right GUI rows from a table compare result. Each
+/// `TableRowDiff` becomes one row per side; cells are joined with ` | ` so the
+/// existing line-oriented diff pane can render the table side-by-side. The row
+/// state drives the diff highlight (left_only / right_only / changed / equal).
+fn table_rows_for_gui(
+    result: &linsync_core::TableCompareResult,
+) -> (Vec<GuiLineRow>, Vec<GuiLineRow>) {
+    let mut left_rows = Vec::with_capacity(result.rows.len());
+    let mut right_rows = Vec::with_capacity(result.rows.len());
+    for row in &result.rows {
+        let left_text = row
+            .cells
+            .iter()
+            .map(|c| c.left.clone().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let right_text = row
+            .cells
+            .iter()
+            .map(|c| c.right.clone().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let has_left = row.cells.iter().any(|c| c.left.is_some());
+        let has_right = row.cells.iter().any(|c| c.right.is_some());
+        let state = if has_left && !has_right {
+            "left_only"
+        } else if has_right && !has_left {
+            "right_only"
+        } else if row.has_difference {
+            "changed"
+        } else {
+            "equal"
+        };
+        let block_kind = if state == "equal" {
+            "equal"
+        } else {
+            "difference"
+        };
+        let row_id = format!("table:{}", row.row_index);
+        let number = Some(row.row_index + 1);
+        left_rows.push(GuiLineRow {
+            row_id: row_id.clone(),
+            number,
+            text: left_text,
+            state: state.to_owned(),
+            block_kind: block_kind.to_owned(),
+        });
+        right_rows.push(GuiLineRow {
+            row_id,
+            number,
+            text: right_text,
+            state: state.to_owned(),
+            block_kind: block_kind.to_owned(),
+        });
+    }
+    (left_rows, right_rows)
+}
+
+/// Build aligned left/right GUI rows from a binary compare result. Each
+/// `HexRow` becomes a single formatted `OFFSET  HEX  ASCII` line per side, so
+/// the diff pane renders a navigable hex view with differing rows highlighted.
+fn hex_rows_for_gui(
+    result: &linsync_core::BinaryCompareResult,
+) -> (Vec<GuiLineRow>, Vec<GuiLineRow>) {
+    let mut left_rows = Vec::with_capacity(result.rows.len());
+    let mut right_rows = Vec::with_capacity(result.rows.len());
+    for (index, row) in result.rows.iter().enumerate() {
+        let state = if row.has_difference {
+            "changed"
+        } else {
+            "equal"
+        };
+        let block_kind = if row.has_difference {
+            "difference"
+        } else {
+            "equal"
+        };
+        let row_id = format!("hex:{:08x}", row.offset);
+        let number = Some(index + 1);
+        left_rows.push(GuiLineRow {
+            row_id: row_id.clone(),
+            number,
+            text: format!("{:08x}  {}  {}", row.offset, row.left_hex, row.left_ascii),
+            state: state.to_owned(),
+            block_kind: block_kind.to_owned(),
+        });
+        right_rows.push(GuiLineRow {
+            row_id,
+            number,
+            text: format!("{:08x}  {}  {}", row.offset, row.right_hex, row.right_ascii),
+            state: state.to_owned(),
+            block_kind: block_kind.to_owned(),
+        });
+    }
+    (left_rows, right_rows)
+}
+
 fn table_tab(left: &Path, right: &Path, left_path: String, right_path: String) -> GuiCompareTab {
     let delimiter = if is_tsv_path(left) && is_tsv_path(right) {
         '\t'
@@ -1637,7 +1819,7 @@ fn table_tab(left: &Path, right: &Path, left_path: String, right_path: String) -
                 summary_item("Rows", result.rows.len()),
                 summary_item("Changed cells", result.changed_cells),
             ],
-            (Vec::new(), Vec::new()),
+            table_rows_for_gui(&result),
         ),
         Err(err) => compare_tab(
             "Table",
@@ -1672,7 +1854,7 @@ fn binary_tab(left: &Path, right: &Path, left_path: String, right_path: String) 
                 summary_item("Right bytes", result.right_len),
                 summary_item("Byte differences", result.differences.len()),
             ],
-            (Vec::new(), Vec::new()),
+            hex_rows_for_gui(&result),
         ),
         Err(err) => compare_tab(
             "Hex",
@@ -1782,15 +1964,26 @@ fn start_bridge_server(
         *pe = load_plugin_enabled_map(&paths);
     }
 
+    // Clear a stale active-profile pointer once at startup (e.g. a user profile
+    // deleted while selected) so the per-request resolver doesn't warn on every
+    // request.
+    cleanup_stale_active_pointer(&paths);
+
     thread::spawn(move || {
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
-                    if let Err(err) =
-                        handle_bridge_connection(stream, &paths, &state, &server_token)
-                    {
-                        tracing::warn!(error = %err, "LinSync GUI bridge request failed");
-                    }
+                    // Handle each connection on its own thread so a `/cancel`
+                    // request can be served while a `/compare` is still running
+                    // (the accept loop must not block on a single request).
+                    let paths = paths.clone();
+                    let state = Arc::clone(&state);
+                    let token = server_token.clone();
+                    thread::spawn(move || {
+                        if let Err(err) = handle_bridge_connection(stream, &paths, &state, &token) {
+                            tracing::warn!(error = %err, "LinSync GUI bridge request failed");
+                        }
+                    });
                 }
                 Err(err) => {
                     tracing::warn!(error = %err, "LinSync GUI bridge accept failed");
@@ -1914,6 +2107,7 @@ fn bridge_response_with_token(
         "/settings/set" => settings_set_bridge_response(query, paths),
         "/settings/reset" => settings_reset_bridge_response(paths),
         "/compare" => compare_bridge_response(query, paths, state),
+        "/cancel" => cancel_bridge_response(query, state),
         "/copy" => copy_bridge_response(query, state),
         "/copy-all" => copy_all_bridge_response(query, state),
         "/undo" => undo_bridge_response(state),
@@ -2204,6 +2398,37 @@ fn resolve_profile_for_request(
         .expect("at least one built-in profile is registered"))
 }
 
+/// Detect and clear a stale active-profile pointer once at startup.
+///
+/// If the active pointer references a profile that no longer exists (e.g. a
+/// user profile deleted while it was selected), remove the pointer file so the
+/// per-request resolver falls back to `default` cleanly — without emitting the
+/// "active profile … no longer exists" warning on every request. Built-in ids
+/// and live user profiles are left untouched. Returns `true` when a stale
+/// pointer was cleared.
+fn cleanup_stale_active_pointer(paths: &AppPaths) -> bool {
+    let store =
+        ProfileStore::with_builtins(paths.profiles_dir(), paths.active_profile_pointer_file());
+    let Ok(Some(active_id)) = store.load_active_pointer() else {
+        return false;
+    };
+    if find_builtin(&active_id).is_some() || store.load(&active_id).is_ok() {
+        return false;
+    }
+    match store.clear_active_pointer() {
+        Ok(()) => {
+            eprintln!(
+                "notice: cleared stale active profile pointer '{active_id}' (profile no longer exists); using built-in 'default'"
+            );
+            true
+        }
+        Err(err) => {
+            eprintln!("warning: failed to clear stale active profile pointer '{active_id}': {err}");
+            false
+        }
+    }
+}
+
 /// Build the `TextCompareOptions` for a single bridge request. Starts
 /// from the resolved profile's text options, then applies per-request
 /// query overrides (`ignore_case`, `ignore_whitespace`,
@@ -2285,12 +2510,46 @@ fn compare_bridge_response(
         Err(err) => return bridge_error(400, "Bad Request", &err),
     };
     let new_tab = query_bool(&params, "new_tab");
-    let tab = build_tab_for_paths_with_mode(
+
+    // Optional cancellation: when the QML supplies `?request_id=X`, register a
+    // cancel flag so a concurrent `/cancel?id=X` can abort this compare. The
+    // flag is registered/removed under the state lock, but the long compare
+    // below runs WITHOUT holding the lock, so `/cancel` is never blocked by it.
+    let request_id = query_value(&params, "request_id").map(str::to_owned);
+    let should_cancel: Box<dyn Fn() -> bool> = if let Some(id) = &request_id {
+        let flag = Arc::new(AtomicBool::new(false));
+        if let Ok(mut state) = state.lock() {
+            state.compare_cancels.insert(id.clone(), Arc::clone(&flag));
+        }
+        Box::new(move || flag.load(Ordering::Relaxed))
+    } else {
+        Box::new(|| false)
+    };
+
+    let maybe_tab = build_tab_for_paths_with_mode_cancellable(
         Path::new(left),
         Path::new(right),
         query_value(&params, "mode"),
         &text_options,
+        &*should_cancel,
     );
+
+    if let Some(id) = &request_id
+        && let Ok(mut state) = state.lock()
+    {
+        state.compare_cancels.remove(id);
+    }
+
+    let Some(tab) = maybe_tab else {
+        // The compare was cancelled — leave the session state untouched.
+        return http_response(
+            200,
+            "OK",
+            "application/json",
+            br#"{"cancelled":true}"#.to_vec(),
+        );
+    };
+
     let context = match state.lock() {
         Ok(mut state) => state.apply_compare(tab, new_tab),
         Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
@@ -2300,6 +2559,34 @@ fn compare_bridge_response(
         Ok(body) => http_response(200, "OK", "application/json", body.into_bytes()),
         Err(err) => bridge_error(500, "Internal Server Error", &err.to_string()),
     }
+}
+
+/// Handle `/cancel?id=X` — flip the cancel flag for the in-flight `/compare`
+/// request that registered `request_id == X`. Returns `{"cancelled":true}` if a
+/// matching request was found, `{"cancelled":false}` otherwise (already
+/// finished or unknown id). Always 200 so the QML treats it as best-effort.
+fn cancel_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(id) = query_value(&params, "id") else {
+        return bridge_error(400, "Bad Request", "missing id");
+    };
+    let cancelled = match state.lock() {
+        Ok(state) => state
+            .compare_cancels
+            .get(id)
+            .map(|flag| {
+                flag.store(true, Ordering::Relaxed);
+                true
+            })
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+    http_response(
+        200,
+        "OK",
+        "application/json",
+        format!(r#"{{"cancelled":{cancelled}}}"#).into_bytes(),
+    )
 }
 
 /// Handle `/raw-compare?left_text=...&right_text=...&left_name=...&right_name=...&mode=...`
@@ -3750,6 +4037,183 @@ mod tests {
         let root = env::temp_dir().join(format!("linsync-gui-files-{name}-{}", process::id()));
         fs::create_dir_all(&root).expect("test file root should be created");
         root
+    }
+
+    // ── Phase 3: Table / Hex modes emit real navigable rows ──────────────────
+    #[test]
+    fn table_mode_emits_real_aligned_rows() {
+        let root = test_file_root("table-real-rows");
+        let left = root.join("left.csv");
+        let right = root.join("right.csv");
+        fs::write(&left, "a,b,c\n1,2,3\n").unwrap();
+        fs::write(&right, "a,b,c\n1,9,3\n").unwrap();
+        let tab = build_tab_for_paths_with_mode(
+            &left,
+            &right,
+            Some("Table"),
+            &TextCompareOptions::default(),
+        );
+        assert!(
+            !tab.left_rows.is_empty(),
+            "Table mode must emit real rows, not summary-only"
+        );
+        assert_eq!(
+            tab.left_rows.len(),
+            tab.right_rows.len(),
+            "left/right table rows must align 1:1"
+        );
+        assert!(
+            tab.left_rows.iter().any(|r| r.state == "changed"),
+            "the differing row must be marked changed"
+        );
+        // The differing cell values appear on their respective sides.
+        assert!(tab.left_rows.iter().any(|r| r.text.contains('2')));
+        assert!(tab.right_rows.iter().any(|r| r.text.contains('9')));
+    }
+
+    #[test]
+    fn hex_mode_emits_real_aligned_rows() {
+        let root = test_file_root("hex-real-rows");
+        let left = root.join("left.bin");
+        let right = root.join("right.bin");
+        fs::write(&left, b"hello world").unwrap();
+        fs::write(&right, b"hello WORLD").unwrap();
+        let tab = build_tab_for_paths_with_mode(
+            &left,
+            &right,
+            Some("Hex"),
+            &TextCompareOptions::default(),
+        );
+        assert!(
+            !tab.left_rows.is_empty(),
+            "Hex mode must emit real rows, not summary-only"
+        );
+        assert_eq!(tab.left_rows.len(), tab.right_rows.len());
+        assert!(
+            tab.left_rows.iter().any(|r| r.state == "changed"),
+            "rows containing differing bytes must be marked changed"
+        );
+        // 'h' = 0x68 appears in the hex text of the first row.
+        assert!(
+            tab.left_rows[0].text.contains("68"),
+            "hex row text must contain the hex byte dump, got: {}",
+            tab.left_rows[0].text
+        );
+    }
+
+    // ── Phase 3: request-id cancellation ─────────────────────────────────────
+    #[test]
+    fn build_tab_cancellable_aborts_when_flagged() {
+        let root = test_file_root("cancel-build");
+        let left = root.join("l.txt");
+        let right = root.join("r.txt");
+        fs::write(&left, "a\nb\nc\n").unwrap();
+        fs::write(&right, "a\nx\nc\n").unwrap();
+        // An already-cancelled flag aborts the compare → None.
+        let cancelled = build_tab_for_paths_with_mode_cancellable(
+            &left,
+            &right,
+            Some("Text"),
+            &TextCompareOptions::default(),
+            &|| true,
+        );
+        assert!(cancelled.is_none(), "always-cancel must abort the compare");
+        // A live flag completes normally.
+        let ok = build_tab_for_paths_with_mode_cancellable(
+            &left,
+            &right,
+            Some("Text"),
+            &TextCompareOptions::default(),
+            &|| false,
+        );
+        assert!(ok.is_some(), "never-cancel must complete the compare");
+    }
+
+    #[test]
+    fn cancel_endpoint_sets_registered_flag() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let paths = test_app_paths("cancel-endpoint");
+        let state = test_bridge_state(None);
+        let flag = Arc::new(AtomicBool::new(false));
+        {
+            let mut s = state.lock().unwrap();
+            s.compare_cancels.insert("req-123".to_owned(), flag.clone());
+        }
+        let resp = String::from_utf8(bridge_response(
+            "GET /cancel?id=req-123 HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(
+            resp.contains("HTTP/1.1 200"),
+            "cancel should return 200: {resp}"
+        );
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "/cancel must set the registered cancel flag"
+        );
+        // Unknown id is harmless and reports cancelled:false.
+        let resp2 = String::from_utf8(bridge_response(
+            "GET /cancel?id=does-not-exist HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(
+            resp2.contains("\"cancelled\":false"),
+            "unknown id → cancelled:false, got: {resp2}"
+        );
+    }
+
+    // ── Phase 3: host parity ─────────────────────────────────────────────────
+    // Both hosts (external qml6 and in-process cxx-qt) drive the QML over the
+    // same HTTP bridge, and both the HTTP `/compare` route and the cxx-qt
+    // `compare_paths` qinvokable build their tab from
+    // `build_tab_for_paths_with_mode`. This asserts the shared builder and the
+    // HTTP route agree, so the two hosts produce identical comparisons.
+    #[test]
+    fn http_route_and_shared_builder_agree_on_compare() {
+        let root = test_file_root("host-parity");
+        let left = root.join("l.txt");
+        let right = root.join("r.txt");
+        fs::write(&left, "a\nb\nc\n").unwrap();
+        fs::write(&right, "a\nX\nc\n").unwrap();
+
+        // What the cxx-qt host's `compare_paths` qinvokable calls.
+        let shared = build_tab_for_paths_with_mode(
+            &left,
+            &right,
+            Some("Text"),
+            &TextCompareOptions::default(),
+        );
+
+        // What the QML uses over HTTP on both hosts.
+        let paths = test_app_paths("host-parity");
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            &format!(
+                "GET /compare?left={}&right={}&mode=Text HTTP/1.1\r\n",
+                left.display(),
+                right.display()
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        let body = json_response_body(&resp);
+        let http_tab = &body["session"]["tabs"][0];
+
+        assert_eq!(
+            http_tab["difference_count"].as_u64().unwrap() as usize,
+            shared.difference_count,
+            "HTTP and cxx-qt-shared builder must report the same difference count"
+        );
+        assert_eq!(
+            http_tab["left_rows"].as_array().unwrap().len(),
+            shared.left_rows.len(),
+            "HTTP and cxx-qt-shared builder must produce the same row count"
+        );
     }
 
     fn json_response_body(response: &str) -> serde_json::Value {
@@ -5638,6 +6102,46 @@ mod tests {
         assert!(
             resp.contains("HTTP/1.1 404"),
             "unknown id should 404: {resp}"
+        );
+    }
+
+    #[test]
+    fn stale_active_pointer_is_cleared_at_startup() {
+        let paths = test_app_paths("stale-pointer-cleanup");
+        let store =
+            ProfileStore::with_builtins(paths.profiles_dir(), paths.active_profile_pointer_file());
+        // Point the active selection at a user profile that does not exist.
+        store
+            .save_active_pointer(&ProfileId::new("ghost-profile").unwrap())
+            .unwrap();
+        assert!(store.load_active_pointer().unwrap().is_some());
+
+        let cleared = cleanup_stale_active_pointer(&paths);
+        assert!(cleared, "a dangling pointer must be cleared");
+        assert!(
+            store.load_active_pointer().unwrap().is_none(),
+            "pointer file should be gone after cleanup"
+        );
+        // The resolver now returns the built-in default without a stale pointer.
+        let profile = resolve_profile_for_request(&paths, &[]).unwrap();
+        assert_eq!(profile.id.as_str(), "default");
+    }
+
+    #[test]
+    fn valid_active_pointer_is_not_cleared() {
+        let paths = test_app_paths("valid-pointer-keep");
+        let store =
+            ProfileStore::with_builtins(paths.profiles_dir(), paths.active_profile_pointer_file());
+        // A built-in id is always valid and must be preserved.
+        store
+            .save_active_pointer(&ProfileId::new("code-review").unwrap())
+            .unwrap();
+
+        let cleared = cleanup_stale_active_pointer(&paths);
+        assert!(!cleared, "a valid built-in pointer must be kept");
+        assert_eq!(
+            store.load_active_pointer().unwrap().unwrap().as_str(),
+            "code-review"
         );
     }
 

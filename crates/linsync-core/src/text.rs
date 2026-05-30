@@ -272,6 +272,26 @@ pub fn compare_text_files(
     Ok(compare_documents(left_document, right_document, options))
 }
 
+/// Cancellable variant of [`compare_text_files`]. `should_cancel` is polled
+/// before and during the (O(n·m)) LCS construction; returning `true` aborts the
+/// compare and yields `Ok(None)`. Used by the GUI bridge to honour the Stop
+/// button on large-file text compares.
+pub fn compare_text_files_cancellable(
+    left: &Path,
+    right: &Path,
+    options: &TextCompareOptions,
+    should_cancel: &dyn Fn() -> bool,
+) -> io::Result<Option<TextCompareResult>> {
+    let left_document = TextDocument::from_path(left)?;
+    let right_document = TextDocument::from_path(right)?;
+    Ok(compare_documents_cancellable(
+        left_document,
+        right_document,
+        options,
+        should_cancel,
+    ))
+}
+
 pub fn compare_text(
     left_name: &str,
     left: &str,
@@ -291,9 +311,25 @@ pub fn compare_documents(
     right_document: TextDocument,
     options: &TextCompareOptions,
 ) -> TextCompareResult {
+    compare_documents_cancellable(left_document, right_document, options, &|| false)
+        .expect("a non-cancelling compare always produces a result")
+}
+
+/// Cancellable variant of [`compare_documents`]. Returns `None` when
+/// `should_cancel` reports `true` (checked up-front and once per row of the LCS
+/// table); otherwise behaves exactly like [`compare_documents`].
+pub fn compare_documents_cancellable(
+    left_document: TextDocument,
+    right_document: TextDocument,
+    options: &TextCompareOptions,
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<TextCompareResult> {
+    if should_cancel() {
+        return None;
+    }
     let left_lines = comparable_lines(&left_document, options);
     let right_lines = comparable_lines(&right_document, options);
-    let lcs = lcs_table(&left_lines, &right_lines);
+    let lcs = lcs_table_cancellable(&left_lines, &right_lines, should_cancel)?;
     let raw_lines = raw_diff_lines(
         &left_document,
         &right_document,
@@ -308,7 +344,7 @@ pub fn compare_documents(
     }
     let summary = compare_summary(&lines, &blocks);
 
-    TextCompareResult {
+    Some(TextCompareResult {
         left_name: left_document.name.clone(),
         right_name: right_document.name.clone(),
         left_document,
@@ -316,7 +352,7 @@ pub fn compare_documents(
         lines,
         blocks,
         summary,
-    }
+    })
 }
 
 impl TextDocument {
@@ -758,10 +794,17 @@ fn inline_diff(left: &str, right: &str) -> Vec<InlineDiff> {
     }]
 }
 
-fn lcs_table(left: &[ComparableLine], right: &[ComparableLine]) -> Vec<Vec<usize>> {
+fn lcs_table_cancellable(
+    left: &[ComparableLine],
+    right: &[ComparableLine],
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<Vec<Vec<usize>>> {
     let mut table = vec![vec![0; right.len() + 1]; left.len() + 1];
 
     for i in (0..left.len()).rev() {
+        if should_cancel() {
+            return None;
+        }
         for j in (0..right.len()).rev() {
             table[i][j] = if left[i].text == right[j].text {
                 table[i + 1][j + 1] + 1
@@ -771,7 +814,7 @@ fn lcs_table(left: &[ComparableLine], right: &[ComparableLine]) -> Vec<Vec<usize
         }
     }
 
-    table
+    Some(table)
 }
 
 fn diff_blocks(lines: &[DiffLine]) -> Vec<DiffBlock> {
@@ -1332,6 +1375,24 @@ fn escape_html(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compare_documents_cancellable_aborts_when_flagged() {
+        let opts = TextCompareOptions::default();
+        // An always-true cancel flag aborts and returns None (no partial diff).
+        let left = TextDocument::from_text("l", "a\nb\nc\n");
+        let right = TextDocument::from_text("r", "a\nx\nc\n");
+        assert!(
+            compare_documents_cancellable(left, right, &opts, &|| true).is_none(),
+            "always-cancel must return None"
+        );
+        // A never-cancel flag yields a normal result.
+        let left = TextDocument::from_text("l", "a\nb\nc\n");
+        let right = TextDocument::from_text("r", "a\nx\nc\n");
+        let got = compare_documents_cancellable(left, right, &opts, &|| false);
+        assert!(got.is_some(), "never-cancel must yield a result");
+        assert!(!got.unwrap().lines.is_empty());
+    }
 
     #[test]
     fn compares_equal_text() {

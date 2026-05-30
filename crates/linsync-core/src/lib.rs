@@ -83,7 +83,8 @@ pub use text::{
     CompareOptions, CompareSession, CompareSide, CompareSummary, DiffBlock, DiffBlockKind,
     DiffLine, DiffLineKind, InlineDiff, LineEnding, MergeAction, MergeConflict, MoveDirection,
     SavePlan, TextCompareOptions, TextCompareResult, TextDocument, TextEncoding, TextSubstitution,
-    compare_documents, compare_text, compare_text_files,
+    compare_documents, compare_documents_cancellable, compare_text, compare_text_files,
+    compare_text_files_cancellable,
 };
 pub use trash::{
     DeleteBackend, DeleteError, DeleteOutcome, DeletePlan, DeletePreference, DeleteRestoreGuidance,

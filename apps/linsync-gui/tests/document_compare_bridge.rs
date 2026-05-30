@@ -4,9 +4,49 @@
 // Bridge tests for `/compare/document`.
 // Tests skip automatically when pdftotext or bash are absent.
 
+use linsync::resolve_document_options;
 use linsync::test_support::document_compare_test;
+use linsync_core::{DocumentCompareMode, DocumentCompareOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+// ── Phase 1: profile resolution + per-request query overrides ────────────────
+// `resolve_document_options` proves the /compare/document handler honours the
+// resolved profile's mode/ocr_language and lets per-request query params
+// override them — without needing pdftotext/tesseract on PATH.
+
+#[test]
+fn resolve_document_options_inherits_profile_mode_and_language_when_query_omits() {
+    let profile = DocumentCompareOptions {
+        mode: DocumentCompareMode::OcrText,
+        ocr_language: "deu".to_owned(),
+        ..Default::default()
+    };
+    let got = resolve_document_options("left=a.pdf&right=b.pdf", &profile);
+    assert_eq!(got.mode, DocumentCompareMode::OcrText);
+    assert_eq!(got.ocr_language, "deu");
+    // Fields with no query override pass through from the profile untouched.
+    assert_eq!(got.timeout_secs, profile.timeout_secs);
+}
+
+#[test]
+fn resolve_document_options_query_overrides_win_over_profile() {
+    let profile = DocumentCompareOptions {
+        mode: DocumentCompareMode::OcrText,
+        ocr_language: "deu".to_owned(),
+        ..Default::default()
+    };
+    let got = resolve_document_options(
+        "left=a.pdf&right=b.pdf&mode=text&ocr_language=eng",
+        &profile,
+    );
+    assert_eq!(
+        got.mode,
+        DocumentCompareMode::Text,
+        "?mode overrides profile"
+    );
+    assert_eq!(got.ocr_language, "eng", "?ocr_language overrides profile");
+}
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

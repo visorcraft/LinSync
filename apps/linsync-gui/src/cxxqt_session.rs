@@ -1,3 +1,20 @@
+//! In-process cxx-qt session transport (`LinSyncSessionBridge`).
+//!
+//! **Host parity (Phase 3).** This QObject is an intentionally-partial,
+//! future-optimization transport. It is currently **not** registered with the
+//! QML engine: `run_cxxqt_host` starts the HTTP bridge and `Main.qml`'s
+//! `sessionBridge` stays `null`, so *both* the external `qml6` host and the
+//! in-process cxx-qt host drive the UI over the same HTTP bridge. Host parity
+//! is therefore satisfied by construction — the two hosts run identical code
+//! over one transport — and operations not exposed here (filters, plugins,
+//! folder ops, the per-mode `/compare/*` routes, …) are intentionally served
+//! by the HTTP bridge through the QML's `hasSessionBridge()` fallback rather
+//! than duplicated as qinvokables. The qinvokables below mirror the HTTP
+//! handlers (several delegate straight into them) so that, if this transport is
+//! ever wired in, its compare / profile / settings / merge surface already
+//! matches HTTP. The shared `build_tab_for_paths_with_mode` keeps `compare_paths`
+//! and HTTP `/compare` in lock-step (see `http_route_and_shared_builder_agree_on_compare`).
+
 #[cxx_qt::bridge]
 pub mod ffi {
     unsafe extern "C++" {
@@ -81,6 +98,15 @@ pub mod ffi {
             mode: &QString,
             new_tab: bool,
         ) -> QString;
+
+        #[qinvokable]
+        fn profile_list(self: &LinSyncSessionBridge) -> QString;
+
+        #[qinvokable]
+        fn profile_active_get(self: &LinSyncSessionBridge) -> QString;
+
+        #[qinvokable]
+        fn profile_active_set(self: &LinSyncSessionBridge, id: &QString) -> QString;
 
         #[qinvokable]
         fn activate_tab(self: Pin<&mut LinSyncSessionBridge>, tab_id: i32) -> QString;
@@ -399,21 +425,49 @@ impl ffi::LinSyncSessionBridge {
         let left = String::from(left);
         let right = String::from(right);
         let mode = String::from(mode);
+        // Resolve text-compare options from the active profile (mirroring the
+        // HTTP bridge's `resolve_text_options_for_request`) instead of always
+        // using `TextCompareOptions::default()`. No QML-side per-request
+        // override is threaded here yet, so the params list is empty.
+        let paths = self.as_ref().get_ref().rust().paths.clone();
+        let text_options = crate::resolve_text_options_for_request(&paths, &[])
+            .unwrap_or_else(|_| TextCompareOptions::default());
         let tab = build_tab_for_paths_with_mode(
             Path::new(&left),
             Path::new(&right),
             Some(&mode),
-            &TextCompareOptions::default(),
+            &text_options,
         );
 
-        let (paths, context) = {
+        let context = {
             let mut rust = self.as_mut().rust_mut();
-            let context = rust.state.apply_compare(tab, new_tab);
-            (rust.paths.clone(), context)
+            rust.state.apply_compare(tab, new_tab)
         };
         record_recent_context(&paths, &context);
         self.as_mut().set_last_error(QString::default());
         self.set_context_json_from_context(&context)
+    }
+
+    /// In-process parity for the HTTP `GET /profiles/list` endpoint:
+    /// `{active, profiles[{id,name,description,builtin}]}`.
+    pub fn profile_list(&self) -> QString {
+        let bytes = crate::profiles_list_bridge_response(&self.rust().paths);
+        QString::from(String::from_utf8_lossy(&bytes).as_ref())
+    }
+
+    /// In-process parity for `GET /profiles/active/get`.
+    pub fn profile_active_get(&self) -> QString {
+        let bytes = crate::profiles_active_get_bridge_response(&self.rust().paths);
+        QString::from(String::from_utf8_lossy(&bytes).as_ref())
+    }
+
+    /// In-process parity for `GET /profiles/active/set?id=X`. Rejects unknown
+    /// ids exactly like the HTTP route (the response carries the 404 body).
+    pub fn profile_active_set(&self, id: &QString) -> QString {
+        let id = String::from(id);
+        let query = format!("id={id}");
+        let bytes = crate::profiles_active_set_bridge_response(&query, &self.rust().paths);
+        QString::from(String::from_utf8_lossy(&bytes).as_ref())
     }
 
     pub fn activate_tab(mut self: Pin<&mut Self>, tab_id: i32) -> QString {

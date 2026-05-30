@@ -386,6 +386,19 @@ impl ProfileStore {
             })?;
         write_atomic(&self.active_pointer, &bytes)
     }
+
+    /// Remove the active-profile pointer file, reverting the selection to the
+    /// built-in `default`. Idempotent: succeeds silently when no pointer exists.
+    ///
+    /// Used to clear a stale pointer once (e.g. when the selected profile has
+    /// been deleted) so the per-request resolver stops falling back — and
+    /// warning — on every request.
+    pub fn clear_active_pointer(&self) -> Result<(), ProfileStoreError> {
+        if self.active_pointer.exists() {
+            fs::remove_file(&self.active_pointer)?;
+        }
+        Ok(())
+    }
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ProfileStoreError> {
@@ -485,6 +498,25 @@ mod tests {
         let id = ProfileId::new("user1").unwrap();
         store.save_active_pointer(&id).unwrap();
         assert_eq!(store.load_active_pointer().unwrap(), Some(id));
+    }
+
+    #[test]
+    fn clear_active_pointer_removes_the_selection() {
+        let (_dir, store) = temp_store();
+        store
+            .save_active_pointer(&ProfileId::new("user1").unwrap())
+            .unwrap();
+        assert!(store.load_active_pointer().unwrap().is_some());
+        store.clear_active_pointer().unwrap();
+        assert!(store.load_active_pointer().unwrap().is_none());
+    }
+
+    #[test]
+    fn clear_active_pointer_is_idempotent_when_absent() {
+        let (_dir, store) = temp_store();
+        // No pointer written yet — clearing must succeed silently.
+        store.clear_active_pointer().unwrap();
+        assert!(store.load_active_pointer().unwrap().is_none());
     }
 
     #[test]
