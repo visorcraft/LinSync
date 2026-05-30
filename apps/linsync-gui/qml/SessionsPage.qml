@@ -19,6 +19,9 @@ Kirigami.ScrollablePage {
     signal navigateRequested(int section)
     signal reopenRecentRequested(int index)
     signal refreshRecentRequested()
+    signal saveCurrentSessionRequested()
+
+    required property string bridgeUrl
 
     Component.onCompleted: refreshRecentRequested()
 
@@ -93,6 +96,21 @@ Kirigami.ScrollablePage {
                         .arg(page.recentPaths.length).arg(page.recentPaths.length === 1 ? "" : "s")
                     opacity: 0.6
                     font.pixelSize: 12
+                }
+                AppButton {
+                    visible: page.tabs.length > 0
+                    icon.name: "document-save"
+                    text: qsTr("Save session")
+                    onClicked: {
+                        var req = new XMLHttpRequest()
+                        var title = "Session " + new Date().toLocaleString()
+                        req.onreadystatechange = function () {
+                            if (req.readyState === XMLHttpRequest.DONE && req.status === 200)
+                                page.refreshRecentRequested()
+                        }
+                        req.open("GET", page.bridgeUrl + "/sessions/save?title=" + encodeURIComponent(title))
+                        req.send()
+                    }
                 }
             }
         }

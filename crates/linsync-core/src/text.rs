@@ -292,6 +292,61 @@ pub fn compare_text_files_cancellable(
     ))
 }
 
+/// Apply a prediffer plugin to both sides before comparing.
+///
+/// If `prediffer_plugin_dir` is `Some` and the plugin is a valid prediffer,
+/// each side's file is preprocessed through the plugin before comparison.
+/// If the plugin fails or returns empty output, the original file content is used.
+pub fn compare_text_files_with_prediffer(
+    left: &Path,
+    right: &Path,
+    options: &TextCompareOptions,
+    prediffer_plugin_dir: Option<&Path>,
+    prediffer_manifest: Option<&crate::plugin::PluginManifest>,
+    execution_options: &crate::plugin::PluginExecutionOptions,
+) -> io::Result<TextCompareResult> {
+    let left_document = match apply_prediffer_to_side(
+        left,
+        "left",
+        prediffer_plugin_dir,
+        prediffer_manifest,
+        execution_options,
+    ) {
+        Some(doc) => doc,
+        None => TextDocument::from_path(left)?,
+    };
+    let right_document = match apply_prediffer_to_side(
+        right,
+        "right",
+        prediffer_plugin_dir,
+        prediffer_manifest,
+        execution_options,
+    ) {
+        Some(doc) => doc,
+        None => TextDocument::from_path(right)?,
+    };
+    Ok(compare_documents(left_document, right_document, options))
+}
+
+fn apply_prediffer_to_side(
+    path: &Path,
+    role: &str,
+    plugin_dir: Option<&Path>,
+    manifest: Option<&crate::plugin::PluginManifest>,
+    execution_options: &crate::plugin::PluginExecutionOptions,
+) -> Option<TextDocument> {
+    let (dir, man) = (plugin_dir?, manifest?);
+    let input = crate::plugin::PluginInputDescriptor::for_file(role, path);
+    let result = crate::plugin::run_prediffer_plugin(dir, man, input, execution_options).ok()?;
+    if result.text.is_empty() {
+        return None;
+    }
+    Some(TextDocument::from_text(
+        &path.display().to_string(),
+        &result.text,
+    ))
+}
+
 pub fn compare_text(
     left_name: &str,
     left: &str,
@@ -329,14 +384,26 @@ pub fn compare_documents_cancellable(
     }
     let left_lines = comparable_lines(&left_document, options);
     let right_lines = comparable_lines(&right_document, options);
-    let lcs = lcs_table_cancellable(&left_lines, &right_lines, should_cancel)?;
-    let raw_lines = raw_diff_lines(
-        &left_document,
-        &right_document,
-        &left_lines,
-        &right_lines,
-        &lcs,
-    );
+    let n = left_lines.len();
+    let m = right_lines.len();
+    let raw_lines = if n > LCS_FULL_TABLE_THRESHOLD || m > LCS_FULL_TABLE_THRESHOLD {
+        hirschberg_diff(
+            &left_document,
+            &right_document,
+            &left_lines,
+            &right_lines,
+            should_cancel,
+        )?
+    } else {
+        let lcs = lcs_table_cancellable(&left_lines, &right_lines, should_cancel)?;
+        raw_diff_lines(
+            &left_document,
+            &right_document,
+            &left_lines,
+            &right_lines,
+            &lcs,
+        )
+    };
     let lines = pair_changed_lines(raw_lines);
     let mut blocks = diff_blocks(&lines);
     if options.detect_moves {
@@ -794,18 +861,25 @@ fn inline_diff(left: &str, right: &str) -> Vec<InlineDiff> {
     }]
 }
 
+const LCS_FULL_TABLE_THRESHOLD: usize = 4000;
+
 fn lcs_table_cancellable(
     left: &[ComparableLine],
     right: &[ComparableLine],
     should_cancel: &dyn Fn() -> bool,
 ) -> Option<Vec<Vec<usize>>> {
-    let mut table = vec![vec![0; right.len() + 1]; left.len() + 1];
+    let n = left.len();
+    let m = right.len();
+    if n > LCS_FULL_TABLE_THRESHOLD || m > LCS_FULL_TABLE_THRESHOLD {
+        return Some(Vec::new());
+    }
+    let mut table = vec![vec![0; m + 1]; n + 1];
 
-    for i in (0..left.len()).rev() {
+    for i in (0..n).rev() {
         if should_cancel() {
             return None;
         }
-        for j in (0..right.len()).rev() {
+        for j in (0..m).rev() {
             table[i][j] = if left[i].text == right[j].text {
                 table[i + 1][j + 1] + 1
             } else {
@@ -815,6 +889,196 @@ fn lcs_table_cancellable(
     }
 
     Some(table)
+}
+
+/// Compute the LCS length row for positions left[0..n] vs right using only two
+/// rows. Returns the forward row (lengths at each column position).
+fn lcs_length_row(
+    left: &[ComparableLine],
+    right: &[ComparableLine],
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<Vec<usize>> {
+    let m = right.len();
+    let mut prev = vec![0usize; m + 1];
+    let mut curr = vec![0usize; m + 1];
+    for l in left {
+        if should_cancel() {
+            return None;
+        }
+        prev.copy_from_slice(&curr);
+        for (j, r) in right.iter().enumerate() {
+            curr[j + 1] = if l.text == r.text {
+                prev[j] + 1
+            } else {
+                prev[j + 1].max(curr[j])
+            };
+        }
+    }
+    Some(curr)
+}
+
+/// Compute the reverse LCS length row (from the end backwards).
+fn lcs_length_row_rev(
+    left: &[ComparableLine],
+    right: &[ComparableLine],
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<Vec<usize>> {
+    let m = right.len();
+    let mut prev = vec![0usize; m + 1];
+    let mut curr = vec![0usize; m + 1];
+    for l in left.iter().rev() {
+        if should_cancel() {
+            return None;
+        }
+        prev.copy_from_slice(&curr);
+        for j in (0..m).rev() {
+            curr[j] = if l.text == right[j].text {
+                prev[j + 1] + 1
+            } else {
+                prev[j].max(curr[j + 1])
+            };
+        }
+    }
+    Some(curr)
+}
+
+/// Hirschberg's algorithm: produce raw diff lines using O(min(n,m)) space.
+fn hirschberg_diff(
+    left_document: &TextDocument,
+    right_document: &TextDocument,
+    left: &[ComparableLine],
+    right: &[ComparableLine],
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<Vec<DiffLine>> {
+    let n = left.len();
+    let m = right.len();
+    let mut matches = Vec::new();
+    hirschberg_recursive(left, right, 0, n, 0, m, should_cancel, &mut matches)?;
+    Some(matches_to_diff_lines(
+        left_document,
+        right_document,
+        left,
+        right,
+        &matches,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hirschberg_recursive(
+    left: &[ComparableLine],
+    right: &[ComparableLine],
+    li: usize,
+    ln: usize,
+    ri: usize,
+    rn: usize,
+    should_cancel: &dyn Fn() -> bool,
+    matches: &mut Vec<(usize, usize)>,
+) -> Option<()> {
+    let n = ln - li;
+    let m = rn - ri;
+    if n == 0 && m == 0 {
+        return Some(());
+    }
+    if n == 0 {
+        return Some(());
+    }
+    if m == 0 {
+        return Some(());
+    }
+    if n == 1 {
+        for (j, r) in right[ri..rn].iter().enumerate() {
+            if left[li].text == r.text {
+                matches.push((li, ri + j));
+                break;
+            }
+        }
+        return Some(());
+    }
+    if should_cancel() {
+        return None;
+    }
+
+    let mid = li + n / 2;
+    let l_top = &left[li..mid];
+    let l_bot = &left[mid..ln];
+    let r_slice = &right[ri..rn];
+
+    let forward = lcs_length_row(l_top, r_slice, should_cancel)?;
+    let backward = lcs_length_row_rev(l_bot, r_slice, should_cancel)?;
+
+    let mut best_k = 0;
+    let mut best_sum = 0;
+    for k in 0..=m {
+        let sum = forward[k] + backward[m - k];
+        if sum > best_sum {
+            best_sum = sum;
+            best_k = k;
+        }
+    }
+
+    hirschberg_recursive(
+        left,
+        right,
+        li,
+        mid,
+        ri,
+        ri + best_k,
+        should_cancel,
+        matches,
+    )?;
+    hirschberg_recursive(
+        left,
+        right,
+        mid,
+        ln,
+        ri + best_k,
+        rn,
+        should_cancel,
+        matches,
+    )?;
+    Some(())
+}
+
+fn matches_to_diff_lines(
+    left_document: &TextDocument,
+    right_document: &TextDocument,
+    left: &[ComparableLine],
+    right: &[ComparableLine],
+    matches: &[(usize, usize)],
+) -> Vec<DiffLine> {
+    let mut lines = Vec::new();
+    let mut li = 0;
+    let mut ri = 0;
+    let mut sorted = matches.to_vec();
+    sorted.sort_by_key(|(i, j)| (*i, *j));
+
+    for (mi, mj) in &sorted {
+        while li < *mi {
+            lines.push(left_only_line(left_document, left[li].number));
+            li += 1;
+        }
+        while ri < *mj {
+            lines.push(right_only_line(right_document, right[ri].number));
+            ri += 1;
+        }
+        lines.push(equal_line(
+            left_document,
+            right_document,
+            left[*mi].number,
+            right[*mj].number,
+        ));
+        li = *mi + 1;
+        ri = *mj + 1;
+    }
+    while li < left.len() {
+        lines.push(left_only_line(left_document, left[li].number));
+        li += 1;
+    }
+    while ri < right.len() {
+        lines.push(right_only_line(right_document, right[ri].number));
+        ri += 1;
+    }
+    lines
 }
 
 fn diff_blocks(lines: &[DiffLine]) -> Vec<DiffBlock> {

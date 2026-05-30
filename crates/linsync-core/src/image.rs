@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use ::image::{DynamicImage, GenericImageView, ImageReader};
+use ::image::{DynamicImage, GenericImageView, ImageReader, RgbaImage};
 use lab::Lab;
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +60,8 @@ pub struct ImageCompareResult {
     /// RGBA8 overlay buffer. Empty in CLI mode; populated by the GUI bridge.
     #[serde(skip)]
     pub overlay: Vec<u8>,
+    /// True when images had different dimensions and were padded to a common canvas.
+    pub padded: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -99,23 +101,32 @@ pub fn compare_images(
     let left_img = open_image(left)?;
     let right_img = open_image(right)?;
 
-    let left_dims = left_img.dimensions();
-    let right_dims = right_img.dimensions();
+    let orig_left_dims = left_img.dimensions();
+    let orig_right_dims = right_img.dimensions();
 
-    if left_dims != right_dims {
-        return Err(ImageCompareError::DimensionMismatch {
-            left: left_dims,
-            right: right_dims,
-        });
-    }
+    let (left_img, right_img) = if orig_left_dims != orig_right_dims {
+        pad_to_common_canvas(left_img, right_img)
+    } else {
+        (left_img, right_img)
+    };
 
-    match &options.mode {
+    let mut result = match &options.mode {
         ImageCompareMode::Exact => compare_exact(&left_img, &right_img),
         ImageCompareMode::Tolerance(tol) => compare_tolerance(&left_img, &right_img, *tol),
         ImageCompareMode::Perceptual => {
             compare_perceptual(&left_img, &right_img, options.delta_e_threshold)
         }
+    }?;
+
+    let padded = orig_left_dims != orig_right_dims;
+    if padded {
+        result.left_dims = orig_left_dims;
+        result.right_dims = orig_right_dims;
+        result.padded = true;
+        result.equal = false;
     }
+
+    Ok(result)
 }
 
 pub fn compare_images_streaming(
@@ -126,17 +137,16 @@ pub fn compare_images_streaming(
     let left_img = open_image(left)?;
     let right_img = open_image(right)?;
 
-    let left_dims = left_img.dimensions();
-    let right_dims = right_img.dimensions();
+    let orig_left_dims = left_img.dimensions();
+    let orig_right_dims = right_img.dimensions();
 
-    if left_dims != right_dims {
-        return Err(ImageCompareError::DimensionMismatch {
-            left: left_dims,
-            right: right_dims,
-        });
-    }
+    let (left_img, right_img) = if orig_left_dims != orig_right_dims {
+        pad_to_common_canvas(left_img, right_img)
+    } else {
+        (left_img, right_img)
+    };
 
-    let (width, height) = left_dims;
+    let (width, height) = left_img.dimensions();
     let stripe = options.stream_stripe_rows.max(1);
     let total = width as u64 * height as u64;
 
@@ -162,14 +172,22 @@ pub fn compare_images_streaming(
         y_start = y_end;
     }
 
-    Ok(build_result(
-        left_dims,
-        right_dims,
+    let mut result = build_result(
+        orig_left_dims,
+        orig_right_dims,
         total,
         differing,
         bbox,
         options.mode.clone(),
-    ))
+    );
+
+    let padded = orig_left_dims != orig_right_dims;
+    if padded {
+        result.padded = true;
+        result.equal = false;
+    }
+
+    Ok(result)
 }
 
 fn should_stream(left: &Path, right: &Path) -> bool {
@@ -200,6 +218,33 @@ fn open_image(path: &Path) -> Result<DynamicImage, ImageCompareError> {
         .map_err(|e| ImageCompareError::UnsupportedFormat(e.to_string()))?
         .decode()
         .map_err(|e| ImageCompareError::DecodeError(e.to_string()))
+}
+
+fn pad_to_common_canvas(left: DynamicImage, right: DynamicImage) -> (DynamicImage, DynamicImage) {
+    let lw = left.width();
+    let lh = left.height();
+    let rw = right.width();
+    let rh = right.height();
+    let cw = lw.max(rw);
+    let ch = lh.max(rh);
+
+    let left_padded = if lw < cw || lh < ch {
+        let mut buf = RgbaImage::from_pixel(cw, ch, ::image::Rgba([0, 0, 0, 0]));
+        ::image::imageops::overlay(&mut buf, &left.to_rgba8(), 0, 0);
+        DynamicImage::ImageRgba8(buf)
+    } else {
+        left
+    };
+
+    let right_padded = if rw < cw || rh < ch {
+        let mut buf = RgbaImage::from_pixel(cw, ch, ::image::Rgba([0, 0, 0, 0]));
+        ::image::imageops::overlay(&mut buf, &right.to_rgba8(), 0, 0);
+        DynamicImage::ImageRgba8(buf)
+    } else {
+        right
+    };
+
+    (left_padded, right_padded)
 }
 
 fn compare_exact(
@@ -329,8 +374,9 @@ pub(crate) fn build_result(
     bbox: Option<(u32, u32, u32, u32)>,
     mode_used: ImageCompareMode,
 ) -> ImageCompareResult {
+    let padded = left_dims != right_dims;
     ImageCompareResult {
-        equal: differing == 0,
+        equal: differing == 0 && !padded,
         left_dims,
         right_dims,
         total_pixels: total,
@@ -343,6 +389,7 @@ pub(crate) fn build_result(
         mode_used,
         diff_bbox: bbox,
         overlay: Vec::new(),
+        padded,
     }
 }
 
@@ -356,6 +403,70 @@ pub(crate) fn expand_bbox(bbox: &mut Option<(u32, u32, u32, u32)>, x: u32, y: u3
             *y1 = (*y1).max(y);
         }
     }
+}
+
+pub fn generate_overlay(
+    left: &Path,
+    right: &Path,
+    options: &ImageCompareOptions,
+) -> Result<ImageCompareResult, ImageCompareError> {
+    let left_img = open_image(left)?;
+    let right_img = open_image(right)?;
+    let orig_left_dims = left_img.dimensions();
+    let orig_right_dims = right_img.dimensions();
+
+    let (left_img, right_img) = if orig_left_dims != orig_right_dims {
+        pad_to_common_canvas(left_img, right_img)
+    } else {
+        (left_img, right_img)
+    };
+
+    let (width, height) = left_img.dimensions();
+    let left_rgba = left_img.to_rgba8();
+    let right_rgba = right_img.to_rgba8();
+    let total = width as u64 * height as u64;
+    let mut differing: u64 = 0;
+    let mut bbox = None;
+    let mut overlay_rgba = vec![0u8; (width * height * 4) as usize];
+
+    for y in 0..height {
+        for x in 0..width {
+            let lp = left_rgba.get_pixel(x, y).0;
+            let rp = right_rgba.get_pixel(x, y).0;
+            let idx = ((y * width + x) * 4) as usize;
+            if pixels_differ(&lp, &rp, options) {
+                differing += 1;
+                expand_bbox(&mut bbox, x, y);
+                overlay_rgba[idx] = 255;
+                overlay_rgba[idx + 1] = 0;
+                overlay_rgba[idx + 2] = 0;
+                overlay_rgba[idx + 3] = 160;
+            } else {
+                overlay_rgba[idx] = 0;
+                overlay_rgba[idx + 1] = 0;
+                overlay_rgba[idx + 2] = 0;
+                overlay_rgba[idx + 3] = 0;
+            }
+        }
+    }
+
+    let padded = orig_left_dims != orig_right_dims;
+    Ok(ImageCompareResult {
+        equal: differing == 0 && !padded,
+        left_dims: orig_left_dims,
+        right_dims: orig_right_dims,
+        total_pixels: total,
+        differing_pixels: differing,
+        diff_ratio: if total == 0 {
+            0.0
+        } else {
+            differing as f64 / total as f64
+        },
+        mode_used: options.mode.clone(),
+        diff_bbox: bbox,
+        overlay: overlay_rgba,
+        padded,
+    })
 }
 
 fn pixels_differ(left: &[u8; 4], right: &[u8; 4], options: &ImageCompareOptions) -> bool {

@@ -227,7 +227,11 @@ Controls.Pane {
                         ]
                         textRole: "text"
                         valueRole: "value"
-                        onActivated: root.subMode = currentValue
+                        onActivated: {
+                            if (currentValue === "rendered" || currentValue === "screenshot")
+                                return
+                            root.subMode = currentValue
+                        }
                         Accessible.name: qsTr("Compare mode")
                     }
                 }

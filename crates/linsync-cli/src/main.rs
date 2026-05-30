@@ -2439,6 +2439,9 @@ fn table_command(args: &[String]) -> Result<ExitCode, String> {
         &TableCompareOptions {
             delimiter,
             has_header,
+            key_columns: Vec::new(),
+            ignore_columns: Vec::new(),
+            ignore_row_order: false,
         },
     )
     .map_err(|err| err.to_string())?;

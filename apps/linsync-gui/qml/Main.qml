@@ -34,6 +34,10 @@ Kirigami.ApplicationWindow {
     property bool comparing: false
     property string activeRequestId: ""
     property int requestCounter: 0
+    property string progressPhase: "none"
+    property int progressCurrent: 0
+    property int progressTotal: 0
+    property string progressMessage: ""
     // Compare-profile selector state (Phase 1). `profileEntries` mirrors
     // /profiles/list (built-ins first, then user profiles); `activeProfileId`
     // is the persisted active pointer; `profileError` surfaces a 400/404 inline.
@@ -58,6 +62,15 @@ Kirigami.ApplicationWindow {
     property int bridgeModelRevision: 0
     property bool canUndo: false
     property bool canRedo: false
+    property string folderFilter: ""
+    property var unfilteredLeftRows: []
+    property var unfilteredRightRows: []
+    property var folderEntries: []
+    property string folderSortColumn: ""
+    property bool folderSortAscending: true
+    onFolderFilterChanged: root.applyFolderFilter()
+    onFolderSortColumnChanged: root.applyFolderSort()
+    onFolderSortAscendingChanged: root.applyFolderSort()
     property int pendingCloseTabId: 0
     property string pendingFolderOpKind: ""
     property var pendingFolderOpEntries: []
@@ -988,8 +1001,10 @@ Kirigami.ApplicationWindow {
         root.summaryItems = summaryItemsFromBridge(tab.summary || [], preferBridge)
         const fallbackLeftRows = tab.left_rows && tab.left_rows.length > 0 ? tab.left_rows : makeBlankRows()
         const fallbackRightRows = tab.right_rows && tab.right_rows.length > 0 ? tab.right_rows : makeBlankRows()
-        root.leftRows = fallbackLeftRows
-        root.rightRows = fallbackRightRows
+        root.unfilteredLeftRows = fallbackLeftRows
+        root.unfilteredRightRows = fallbackRightRows
+        root.folderEntries = tab.folder_entries || []
+        root.applyFolderFilter()
         if (preferBridge && hasSessionBridge())
             root.bridgeModelRevision += 1
         const validation = tab.validation || {}
@@ -1390,6 +1405,115 @@ Kirigami.ApplicationWindow {
             return
         root.statusText = "Cancelling…"
         root.bridgeGet("/cancel?id=" + encodeURIComponent(root.activeRequestId), function (ok) {})
+    }
+
+    function applyFolderFilter() {
+        if (root.compareMode !== "Folder" || root.folderFilter === "") {
+            root.leftRows = root.unfilteredLeftRows
+            root.rightRows = root.unfilteredRightRows
+            return
+        }
+        var filteredLeft = []
+        var filteredRight = []
+        for (var i = 0; i < root.unfilteredLeftRows.length; i++) {
+            var leftRow = root.unfilteredLeftRows[i]
+            var rightRow = root.unfilteredRightRows[i]
+            var state = leftRow.state || rightRow.state || ""
+            var include = false
+            if (root.folderFilter === "changed" && (state === "left_only" || state === "right_only" || state === "changed")) {
+                include = true
+            } else if (root.folderFilter === "left_only" && state === "left_only") {
+                include = true
+            } else if (root.folderFilter === "right_only" && state === "right_only") {
+                include = true
+            } else if (root.folderFilter === "diff" && (state === "left_only" || state === "right_only" || state === "changed")) {
+                include = true
+            }
+            if (include) {
+                filteredLeft.push(leftRow)
+                filteredRight.push(rightRow)
+            }
+        }
+        root.leftRows = filteredLeft.length > 0 ? filteredLeft : makeBlankRows()
+        root.rightRows = filteredRight.length > 0 ? filteredRight : makeBlankRows()
+    }
+
+    function toggleFolderSort(column) {
+        if (root.folderSortColumn === column) {
+            root.folderSortAscending = !root.folderSortAscending
+        } else {
+            root.folderSortColumn = column
+            root.folderSortAscending = true
+        }
+    }
+
+    function applyFolderSort() {
+        if (root.compareMode !== "Folder" || root.folderSortColumn === "" || root.folderEntries.length === 0) {
+            return
+        }
+        var col = root.folderSortColumn
+        var asc = root.folderSortAscending
+        var entries = root.folderEntries.slice()
+        var indices = []
+        for (var i = 0; i < entries.length; i++) {
+            indices.push(i)
+        }
+        indices.sort(function (a, b) {
+            var ea = entries[a]
+            var eb = entries[b]
+            var va, vb
+            if (col === "path") {
+                va = ea.path || ""
+                vb = eb.path || ""
+            } else if (col === "state") {
+                va = ea.state || ""
+                vb = eb.state || ""
+            } else if (col === "leftSize") {
+                va = ea.leftSize || 0
+                vb = eb.leftSize || 0
+            } else if (col === "rightSize") {
+                va = ea.rightSize || 0
+                vb = eb.rightSize || 0
+            } else if (col === "method") {
+                va = ea.method || ""
+                vb = eb.method || ""
+            } else {
+                return 0
+            }
+            if (va < vb) return asc ? -1 : 1
+            if (va > vb) return asc ? 1 : -1
+            return 0
+        })
+        var srcLeft = root.unfilteredLeftRows
+        var srcRight = root.unfilteredRightRows
+        var sortedLeft = []
+        var sortedRight = []
+        for (var j = 0; j < indices.length; j++) {
+            sortedLeft.push(srcLeft[indices[j]])
+            sortedRight.push(srcRight[indices[j]])
+        }
+        root.leftRows = sortedLeft.length > 0 ? sortedLeft : makeBlankRows()
+        root.rightRows = sortedRight.length > 0 ? sortedRight : makeBlankRows()
+    }
+
+    function copyToClipboard(text) {
+        root.bridgeGet("/copy-clipboard?text=" + encodeURIComponent(text))
+    }
+
+    function exportReport() {
+        if (!root.bridgeUrl || root.leftPath === "")
+            return
+        var req = new XMLHttpRequest()
+        req.onreadystatechange = function () {
+            if (req.readyState === XMLHttpRequest.DONE && req.status === 200) {
+                var payload = JSON.parse(req.responseText)
+                if (payload && payload.content)
+                    root.copyToClipboard(payload.content)
+                root.statusText = payload && payload.content ? "Report copied to clipboard" : "Export failed"
+            }
+        }
+        req.open("GET", root.bridgeUrl + "/report?format=unified")
+        req.send()
     }
 
     function browseSide(side) {
@@ -2797,7 +2921,7 @@ Kirigami.ApplicationWindow {
                         implicitHeight: 36
                         Layout.preferredWidth: 140
                         implicitWidth: 140
-                        model: ["Text", "Folder", "Table", "Hex"]
+                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document"]
                         Accessible.name: "Compare mode"
                         palette.button: root.activeBgAlt
                         palette.buttonText: root.activeText
@@ -2859,6 +2983,12 @@ Kirigami.ApplicationWindow {
                         Controls.ToolTip.text: "Swap sides"
                         Controls.ToolTip.visible: hovered
                         Accessible.name: "Swap sides"
+                        onClicked: {
+                            var tmp = root.leftPath
+                            root.leftPath = root.rightPath
+                            root.rightPath = tmp
+                            root.updateActiveTabSnapshot()
+                        }
                     }
 
                     AppTextField {
@@ -2911,9 +3041,6 @@ Kirigami.ApplicationWindow {
                     Controls.ToolButton {
                         icon.name: "process-stop"
                         icon.color: root.activeText
-                        // Enabled only while a compare is in flight; clicking
-                        // fires /cancel?id=<activeRequestId>, which flips the
-                        // request's cancel flag in the bridge (Phase 3).
                         enabled: root.comparing
                         Controls.ToolTip.text: root.comparing
                             ? qsTr("Stop the running compare")
@@ -2925,6 +3052,53 @@ Kirigami.ApplicationWindow {
 
                     Kirigami.Separator {
                         Layout.fillHeight: true
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "edit-copy"
+                        icon.color: root.activeText
+                        enabled: root.leftPath !== "" || root.rightPath !== ""
+                        Controls.ToolTip.text: qsTr("Copy paths to clipboard")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Copy paths")
+                        onClicked: {
+                            var text = root.leftPath + "\n" + root.rightPath
+                            root.copyToClipboard(text)
+                        }
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "folder"
+                        icon.color: root.activeText
+                        enabled: root.activeTabId >= 0 && root.leftPath !== ""
+                        Controls.ToolTip.text: qsTr("Reveal left in file manager")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Reveal in file manager")
+                        onClicked: root.bridgeGet("/reveal?path=" + encodeURIComponent(root.leftPath))
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "window"
+                        icon.color: root.activeText
+                        enabled: root.activeTabId >= 0 && root.leftPath !== ""
+                        Controls.ToolTip.text: qsTr("Open left with default application")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Open externally")
+                        onClicked: root.bridgeGet("/open-external?path=" + encodeURIComponent(root.leftPath))
+                    }
+
+                    Kirigami.Separator {
+                        Layout.fillHeight: true
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "document-export"
+                        icon.color: root.activeText
+                        enabled: root.activeTabId >= 0 && root.leftPath !== ""
+                        Controls.ToolTip.text: qsTr("Export unified diff report")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Export report")
+                        onClicked: root.exportReport()
                     }
 
                     Controls.ToolButton {
@@ -3085,6 +3259,78 @@ Kirigami.ApplicationWindow {
                         text: qsTr("Refresh")
                         display: Controls.AbstractButton.TextBesideIcon
                         onClicked: root.requestCompare(false)
+                    }
+
+                    Kirigami.Separator { Layout.fillHeight: true }
+
+                    Controls.Label {
+                        text: qsTr("Filter:")
+                        color: root.activeText
+                        opacity: 0.7
+                    }
+
+                    AppButton {
+                        text: qsTr("Changed")
+                        flat: true
+                        highlighted: root.folderFilter === "changed"
+                        onClicked: root.folderFilter = root.folderFilter === "changed" ? "" : "changed"
+                    }
+
+                    AppButton {
+                        text: qsTr("Left only")
+                        flat: true
+                        highlighted: root.folderFilter === "left_only"
+                        onClicked: root.folderFilter = root.folderFilter === "left_only" ? "" : "left_only"
+                    }
+
+                    AppButton {
+                        text: qsTr("Right only")
+                        flat: true
+                        highlighted: root.folderFilter === "right_only"
+                        onClicked: root.folderFilter = root.folderFilter === "right_only" ? "" : "right_only"
+                    }
+
+                    AppButton {
+                        text: qsTr("Different")
+                        flat: true
+                        highlighted: root.folderFilter === "diff"
+                        onClicked: root.folderFilter = root.folderFilter === "diff" ? "" : "diff"
+                    }
+
+                    Kirigami.Separator { Layout.fillHeight: true }
+
+                    Controls.Label {
+                        text: qsTr("Sort:")
+                        color: root.activeText
+                        opacity: 0.7
+                    }
+
+                    AppButton {
+                        text: qsTr("Path") + (root.folderSortColumn === "path" ? (root.folderSortAscending ? " ▲" : " ▼") : "")
+                        flat: true
+                        highlighted: root.folderSortColumn === "path"
+                        onClicked: root.toggleFolderSort("path")
+                    }
+
+                    AppButton {
+                        text: qsTr("Status") + (root.folderSortColumn === "state" ? (root.folderSortAscending ? " ▲" : " ▼") : "")
+                        flat: true
+                        highlighted: root.folderSortColumn === "state"
+                        onClicked: root.toggleFolderSort("state")
+                    }
+
+                    AppButton {
+                        text: qsTr("Size") + (root.folderSortColumn === "leftSize" ? (root.folderSortAscending ? " ▲" : " ▼") : "")
+                        flat: true
+                        highlighted: root.folderSortColumn === "leftSize"
+                        onClicked: root.toggleFolderSort("leftSize")
+                    }
+
+                    AppButton {
+                        text: qsTr("Method") + (root.folderSortColumn === "method" ? (root.folderSortAscending ? " ▲" : " ▼") : "")
+                        flat: true
+                        highlighted: root.folderSortColumn === "method"
+                        onClicked: root.toggleFolderSort("method")
                     }
 
                     Item { Layout.fillWidth: true }
@@ -3399,6 +3645,14 @@ Kirigami.ApplicationWindow {
                     spacing: 16
 
                     Controls.Label { text: root.statusText; color: root.activeText }
+                    Controls.ProgressBar {
+                        visible: root.comparing && root.progressTotal > 0
+                        from: 0
+                        to: root.progressTotal
+                        value: root.progressCurrent
+                        implicitWidth: 120
+                        implicitHeight: root.activeText !== "" ? 16 : 16
+                    }
                     Controls.Label { text: root.differenceText; color: root.activeText }
                     Controls.Label {
                         text: root.currentDiffPosition >= 0 ? "Current: " + (root.currentDiffPosition + 1) + "/" + root.diffRowIndexes.length : "Current: -"
@@ -3444,6 +3698,7 @@ Kirigami.ApplicationWindow {
                 Kirigami.Theme.positiveTextColor:        root.activePositiveText
                 Kirigami.Theme.negativeTextColor:        root.activeNegativeText
                 Kirigami.Theme.neutralTextColor:         root.activeNeutralText
+                bridgeUrl: root.bridgeUrl
                 sessionState: root.sessionState
                 activeTabId: root.activeTabId
                 onTabActivated: tabId => root.activateSessionTab(tabId)
@@ -4040,6 +4295,53 @@ Kirigami.ApplicationWindow {
                     }
                 }
             }
+        }
+    }
+
+    Timer {
+        id: progressTimer
+        interval: 200
+        repeat: true
+        onTriggered: {
+            if (!root.comparing || !root.activeRequestId || !root.bridgeUrl) {
+                progressTimer.stop()
+                return
+            }
+            var req = new XMLHttpRequest()
+            req.onreadystatechange = function () {
+                if (req.readyState === XMLHttpRequest.DONE && req.status === 200) {
+                    var p = JSON.parse(req.responseText)
+                    if (p) {
+                        root.progressPhase = p.phase || "none"
+                        root.progressCurrent = p.current || 0
+                        root.progressTotal = p.total || 0
+                        root.progressMessage = p.message || ""
+                        if (root.progressTotal > 0) {
+                            root.statusText = qsTr("Comparing %1/%2").arg(root.progressCurrent).arg(root.progressTotal)
+                        } else if (root.progressMessage) {
+                            root.statusText = qsTr("Comparing — %1").arg(root.progressMessage)
+                        }
+                    }
+                }
+            }
+            req.open("GET", root.bridgeUrl + "/progress?id=" + encodeURIComponent(root.activeRequestId))
+            req.send()
+        }
+    }
+
+    onComparingChanged: {
+        if (root.comparing) {
+            root.progressPhase = "starting"
+            root.progressCurrent = 0
+            root.progressTotal = 0
+            root.progressMessage = ""
+            progressTimer.start()
+        } else {
+            progressTimer.stop()
+            root.progressPhase = "none"
+            root.progressCurrent = 0
+            root.progressTotal = 0
+            root.progressMessage = ""
         }
     }
 }

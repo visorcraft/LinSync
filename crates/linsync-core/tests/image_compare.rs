@@ -83,6 +83,7 @@ mod image_compare_tests {
             mode_used: ImageCompareMode::Exact,
             diff_bbox: None,
             overlay: Vec::new(),
+            padded: false,
         };
         assert!(result.equal);
         assert_eq!(result.differing_pixels, 0);
@@ -146,21 +147,22 @@ mod image_compare_tests {
     }
 
     #[test]
-    fn exact_dimension_mismatch_returns_error() {
+    fn exact_dimension_mismatch_pads_and_compares() {
         let dir = TempDir::new().unwrap();
         let small: RgbaImage = ImageBuffer::from_fn(8, 8, |_, _| Rgba([0u8, 0, 0, 255]));
         let large: RgbaImage = ImageBuffer::from_fn(16, 16, |_, _| Rgba([0u8, 0, 0, 255]));
         let left = save_png(&dir, "left.png", &small);
         let right = save_png(&dir, "right.png", &large);
         let opts = ImageCompareOptions::default();
-        let err = compare_images(&left, &right, &opts).unwrap_err();
-        assert!(matches!(
-            err,
-            ImageCompareError::DimensionMismatch {
-                left: (8, 8),
-                right: (16, 16)
-            }
-        ));
+        let result = compare_images(&left, &right, &opts).unwrap();
+        assert!(!result.equal, "padded images with different dims should not be equal");
+        assert!(result.padded);
+        assert_eq!(result.left_dims, (8, 8));
+        assert_eq!(result.right_dims, (16, 16));
+        assert!(
+            result.differing_pixels > 0,
+            "padded region should count as differing pixels"
+        );
     }
 
     #[test]

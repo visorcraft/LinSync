@@ -376,27 +376,21 @@ Item {
 
     // ── Conflict range helpers ────────────────────────────────────────────────
 
-    function currentConflictStart(side) {
-        if (root.currentConflict < 0 || root.conflicts.length === 0)
-            return -1
-        const c = root.conflicts[root.currentConflict]
-        if (!c) return -1
-        if (side === "left")  return (c.left_lines  && c.left_lines.length  > 0) ? c.left_lines[0]  - 1 : -1
-        if (side === "right") return (c.right_lines && c.right_lines.length > 0) ? c.right_lines[0] - 1 : -1
-        if (side === "base")  return (c.base_lines  && c.base_lines.length  > 0) ? c.base_lines[0]  - 1 : -1
+function currentConflictStart(side) {
+    if (root.currentConflict < 0 || root.conflicts.length === 0)
         return -1
-    }
+    const c = root.conflicts[root.currentConflict]
+    if (!c) return -1
+    return (c.start_line || 0) - 1
+}
 
-    function currentConflictEnd(side) {
-        if (root.currentConflict < 0 || root.conflicts.length === 0)
-            return -1
-        const c = root.conflicts[root.currentConflict]
-        if (!c) return -1
-        if (side === "left")  return (c.left_lines  && c.left_lines.length  > 0) ? c.left_lines[c.left_lines.length   - 1] - 1 : -1
-        if (side === "right") return (c.right_lines && c.right_lines.length > 0) ? c.right_lines[c.right_lines.length - 1] - 1 : -1
-        if (side === "base")  return (c.base_lines  && c.base_lines.length  > 0) ? c.base_lines[c.base_lines.length   - 1] - 1 : -1
+function currentConflictEnd(side) {
+    if (root.currentConflict < 0 || root.conflicts.length === 0)
         return -1
-    }
+    const c = root.conflicts[root.currentConflict]
+    if (!c) return -1
+    return (c.end_line || 0) - 1
+}
 
     // ── Inner component: a single file column ─────────────────────────────────
 

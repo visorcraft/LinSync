@@ -246,6 +246,9 @@ fn moved_block_detection_smoke() {
     let result = compare_documents(
         TextDocument::from_text("left", left),
         TextDocument::from_text("right", right),
+        &optsnts(
+        TextDocument::from_text("left", left),
+        TextDocument::from_text("right", right),
         &opts,
     );
 

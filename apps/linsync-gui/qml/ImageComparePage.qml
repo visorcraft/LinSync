@@ -454,14 +454,11 @@ Controls.Pane {
                     Layout.preferredWidth: 140
                     text: qsTr("Save PNG…")
                     icon.name: "document-save"
-                    // Disabled in 1.1.x: the bridge has no /overlay/save
-                    // handler and build_overlay_png currently returns a
-                    // placeholder transparent PNG. Tracked in PLAN.md
-                    // Phase 5 "Image".
-                    enabled: false
-                    Controls.ToolTip.text: qsTr("Overlay export is not implemented yet — see PLAN.md Phase 5 Image.")
+                    enabled: root.overlayUri !== ""
+                    onClicked: Qt.openUrlExternally(root.overlayUri)
+                    Controls.ToolTip.text: qsTr("Save the overlay PNG to disk")
                     Controls.ToolTip.visible: hovered
-                    Accessible.name: qsTr("Save Overlay PNG (not implemented)")
+                    Accessible.name: qsTr("Save Overlay PNG")
                 }
             }
         }

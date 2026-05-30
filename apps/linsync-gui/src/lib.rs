@@ -121,7 +121,7 @@ pub fn image_compare_bridge_response_with_profile(
     };
 
     let overlay_path_uri = if want_overlay {
-        build_overlay_png(&result)
+        build_overlay_png(&result, &left, &right, &opts)
     } else {
         None
     };
@@ -135,6 +135,7 @@ pub fn image_compare_bridge_response_with_profile(
         "diff_ratio": result.diff_ratio,
         "mode": mode_str.unwrap_or_default(),
         "diff_bbox": result.diff_bbox,
+        "padded": result.padded,
     });
 
     if let Some(uri) = overlay_path_uri {
@@ -144,21 +145,46 @@ pub fn image_compare_bridge_response_with_profile(
     serde_json::to_string(&json).unwrap_or_else(|_| r#"{"error":"serialization error"}"#.to_owned())
 }
 
-/// Generate a placeholder transparent RGBA8 overlay PNG and return a `file://` URI.
-fn build_overlay_png(result: &linsync_core::ImageCompareResult) -> Option<String> {
+/// Generate an RGBA8 overlay PNG highlighting differing pixels and return a `file://` URI.
+fn build_overlay_png(
+    result: &linsync_core::ImageCompareResult,
+    left: &std::path::Path,
+    right: &std::path::Path,
+    options: &linsync_core::ImageCompareOptions,
+) -> Option<String> {
     use ::image::ImageBuffer;
-    let (width, height) = result.left_dims;
-    let overlay: Vec<u8> = vec![0u8; width as usize * height as usize * 4];
-    let img: image::RgbaImage = ImageBuffer::from_raw(width, height, overlay)?;
-    let tmp_path = std::env::temp_dir().join(format!(
-        "linsync-overlay-{}.png",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0)
-    ));
-    img.save(&tmp_path).ok()?;
-    Some(format!("file://{}", tmp_path.display()))
+    if result.overlay.is_empty() {
+        let overlay_result = linsync_core::generate_overlay(left, right, options).ok()?;
+        let (width, height) = (
+            result.left_dims.0.max(result.right_dims.0),
+            result.left_dims.1.max(result.right_dims.1),
+        );
+        let img: image::RgbaImage = ImageBuffer::from_raw(width, height, overlay_result.overlay)?;
+        let tmp_path = std::env::temp_dir().join(format!(
+            "linsync-overlay-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        img.save(&tmp_path).ok()?;
+        Some(format!("file://{}", tmp_path.display()))
+    } else {
+        let (width, height) = (
+            result.left_dims.0.max(result.right_dims.0),
+            result.left_dims.1.max(result.right_dims.1),
+        );
+        let img: image::RgbaImage = ImageBuffer::from_raw(width, height, result.overlay.clone())?;
+        let tmp_path = std::env::temp_dir().join(format!(
+            "linsync-overlay-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        img.save(&tmp_path).ok()?;
+        Some(format!("file://{}", tmp_path.display()))
+    }
 }
 
 // ── Document compare bridge ───────────────────────────────────────────────────
@@ -245,13 +271,37 @@ pub fn document_compare_bridge_response_with_profile(
     let is_equal = text_result.map(|t| t.is_equal()).unwrap_or(false);
     let diff_count = text_result.map(|t| t.difference_count()).unwrap_or(0);
 
-    let json = serde_json::json!({
+    let left_text = text_result.map(|t| {
+        t.left_document
+            .lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    let right_text = text_result.map(|t| {
+        t.right_document
+            .lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+
+    let mut json = serde_json::json!({
         "equal": is_equal,
         "left_extractor": result.left_extractor,
         "right_extractor": result.right_extractor,
         "differing_lines": diff_count,
         "mode": mode_str.unwrap_or_default(),
     });
+
+    if let Some(ref lt) = left_text {
+        json["left_text"] = serde_json::Value::String(lt.clone());
+    }
+    if let Some(ref rt) = right_text {
+        json["right_text"] = serde_json::Value::String(rt.clone());
+    }
 
     serde_json::to_string(&json).unwrap_or_else(|_| r#"{"error":"serialization error"}"#.to_owned())
 }

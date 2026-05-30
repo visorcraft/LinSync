@@ -143,6 +143,8 @@ pub enum MergeChoice {
 #[derive(Debug, Clone)]
 pub struct ThreeWayConflict {
     pub id: ConflictId,
+    pub start_line: usize,
+    pub end_line: usize,
     pub base_lines: Vec<String>,
     pub left_lines: Vec<String>,
     pub right_lines: Vec<String>,
@@ -256,6 +258,8 @@ impl ThreeWayMergeState {
             .zip(self.conflict_ids.iter().copied())
             .map(|(marker, id)| ThreeWayConflict {
                 id,
+                start_line: marker.start_line,
+                end_line: marker.end_line,
                 base_lines: marker.base_lines,
                 left_lines: marker.left_lines,
                 right_lines: marker.right_lines,

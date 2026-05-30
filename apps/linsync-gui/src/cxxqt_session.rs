@@ -194,11 +194,10 @@ use linsync_core::AppPaths;
 
 use std::sync::{Arc, Mutex};
 
-use linsync_core::TextCompareOptions;
-
 use crate::{
-    GuiBridgeState, GuiLaunchContext, GuiLineRow, build_tab_for_paths_with_mode, context_to_json,
-    load_gui_settings_json, record_recent_context, reset_gui_settings_json,
+    GuiBridgeState, GuiCompareOptions, GuiLaunchContext, GuiLineRow, build_tab_for_paths_with_mode,
+    context_to_json, load_gui_settings_json, record_recent_context, reset_gui_settings_json,
+    resolve_compare_options_for_request,
     resolve_three_way_conflict as resolve_three_way_conflict_impl, save_gui_setting_json,
     save_three_way_merge_output, start_three_way_merge_session,
 };
@@ -425,18 +424,18 @@ impl ffi::LinSyncSessionBridge {
         let left = String::from(left);
         let right = String::from(right);
         let mode = String::from(mode);
-        // Resolve text-compare options from the active profile (mirroring the
-        // HTTP bridge's `resolve_text_options_for_request`) instead of always
-        // using `TextCompareOptions::default()`. No QML-side per-request
-        // override is threaded here yet, so the params list is empty.
+        // Resolve all mode options from the active profile (mirroring the
+        // HTTP bridge's `resolve_compare_options_for_request`) instead of
+        // always using per-mode defaults. No QML-side per-request override
+        // is threaded here yet, so the params list is empty.
         let paths = self.as_ref().get_ref().rust().paths.clone();
-        let text_options = crate::resolve_text_options_for_request(&paths, &[])
-            .unwrap_or_else(|_| TextCompareOptions::default());
+        let options = resolve_compare_options_for_request(&paths, &[])
+            .unwrap_or_else(|_| GuiCompareOptions::default());
         let tab = build_tab_for_paths_with_mode(
             Path::new(&left),
             Path::new(&right),
             Some(&mode),
-            &text_options,
+            &options,
         );
 
         let context = {

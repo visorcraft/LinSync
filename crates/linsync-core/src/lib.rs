@@ -43,7 +43,7 @@ pub use folder::{
 #[cfg(feature = "image-compare")]
 pub use image::{
     ImageCompareError, ImageCompareMode, ImageCompareOptions, ImageCompareResult, compare_images,
-    compare_images_streaming,
+    compare_images_streaming, generate_overlay,
 };
 pub use logging::{LoggingError, init_file_logging, install_panic_log_hook};
 pub use merge::{
@@ -84,7 +84,7 @@ pub use text::{
     DiffLine, DiffLineKind, InlineDiff, LineEnding, MergeAction, MergeConflict, MoveDirection,
     SavePlan, TextCompareOptions, TextCompareResult, TextDocument, TextEncoding, TextSubstitution,
     compare_documents, compare_documents_cancellable, compare_text, compare_text_files,
-    compare_text_files_cancellable,
+    compare_text_files_cancellable, compare_text_files_with_prediffer,
 };
 pub use trash::{
     DeleteBackend, DeleteError, DeleteOutcome, DeletePlan, DeletePreference, DeleteRestoreGuidance,
