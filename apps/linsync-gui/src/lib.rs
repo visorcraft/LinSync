@@ -62,6 +62,22 @@ fn error_json(message: impl Into<String>) -> String {
     json_with_schema(serde_json::json!({ "error": message.into() }))
 }
 
+fn image_mode_label(mode: &linsync_core::ImageCompareMode) -> &'static str {
+    match mode {
+        linsync_core::ImageCompareMode::Exact => "exact",
+        linsync_core::ImageCompareMode::Tolerance(_) => "tolerance",
+        linsync_core::ImageCompareMode::Perceptual => "perceptual",
+    }
+}
+
+fn document_mode_label(mode: linsync_core::DocumentCompareMode) -> &'static str {
+    match mode {
+        linsync_core::DocumentCompareMode::Text => "text",
+        linsync_core::DocumentCompareMode::OcrText => "ocr_text",
+        linsync_core::DocumentCompareMode::Rendered => "rendered",
+    }
+}
+
 fn image_query_param(query: &str, key: &str) -> Option<String> {
     for part in query.split('&') {
         if let Some((_k, v)) = part.split_once('=').filter(|(k, _)| *k == key) {
@@ -151,7 +167,7 @@ pub fn image_compare_bridge_response_with_profile(
         "total_pixels": result.total_pixels,
         "differing_pixels": result.differing_pixels,
         "diff_ratio": result.diff_ratio,
-        "mode": mode_str.unwrap_or_default(),
+        "mode": image_mode_label(&opts.mode),
         "diff_bbox": result.diff_bbox,
         "padded": result.padded,
         "diff_regions": result.diff_regions,
@@ -264,7 +280,6 @@ pub fn document_compare_bridge_response_with_profile(
         Some(v) => std::path::PathBuf::from(v),
         None => return error_json("missing 'right' parameter"),
     };
-    let mode_str = image_query_param(query, "mode");
     let opts = resolve_document_options(query, profile_options);
 
     // Locate the plugins root (same logic as the CLI helper).
@@ -308,7 +323,7 @@ pub fn document_compare_bridge_response_with_profile(
         "left_extractor": result.left_extractor,
         "right_extractor": result.right_extractor,
         "differing_lines": diff_count,
-        "mode": mode_str.unwrap_or_default(),
+        "mode": document_mode_label(opts.mode),
     });
 
     if let Some(ref lt) = left_text {

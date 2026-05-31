@@ -4,8 +4,8 @@
 // Bridge tests for `/compare/document`.
 // Tests skip automatically when pdftotext or bash are absent.
 
-use linsync::resolve_document_options;
 use linsync::test_support::document_compare_test;
+use linsync::{document_compare_bridge_response_with_profile, resolve_document_options};
 use linsync_core::{DocumentCompareMode, DocumentCompareOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -46,6 +46,34 @@ fn resolve_document_options_query_overrides_win_over_profile() {
         "?mode overrides profile"
     );
     assert_eq!(got.ocr_language, "eng", "?ocr_language overrides profile");
+}
+
+#[test]
+fn response_mode_reports_effective_profile_mode_when_query_omits_mode() {
+    if !tools_available(&["pdftotext", "bash", "python3"]) {
+        eprintln!("SKIP: pdftotext, bash, or python3 not on PATH");
+        return;
+    }
+
+    let pdf = document_fixture_dir().join("simple.pdf");
+    let profile = DocumentCompareOptions {
+        mode: DocumentCompareMode::Text,
+        ocr_language: "deu".to_owned(),
+        ..Default::default()
+    };
+    let query = format!(
+        "left={}&right={}",
+        urlencoding::encode(pdf.to_str().unwrap()),
+        urlencoding::encode(pdf.to_str().unwrap()),
+    );
+
+    let body = document_compare_bridge_response_with_profile(&query, &profile);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["mode"], serde_json::json!("text"));
+    assert!(
+        v.get("error").is_none(),
+        "expected successful document compare, got: {body}"
+    );
 }
 
 fn workspace_root() -> PathBuf {

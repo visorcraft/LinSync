@@ -16,19 +16,19 @@ use linsync_core::plugin::{PluginClass, PluginExecutionOptions};
 use linsync_core::{
     AppPaths, BinaryCompareOptions, CompareOptions, CompareProfile, CompareSession, CompareSide,
     CompareViewMode, ConflictId, DeletePreference, DiffBlockKind, DiffLine, DiffLineKind,
-    DiscoveredPlugin, EncodingSummary, FileFilter, FilterStore, FolderCompareControl,
-    FolderCompareEvent, FolderCompareOptions, FolderEntryDiff, FolderEntryState,
-    FolderOperationKind, FolderOperationOutcome, FolderOperationStatus, ImageCompareOptions,
-    ImageCompareResult, MergeAction, MergeChoice, NamedFilters, ProfileId, ProfileStore,
-    RecentPathStore, RecentSessionStore, RecentSessions, SessionFile, Settings, SettingsStore,
-    TableCompareOptions, TextBookmark, TextCompareOptions, TextCompareResult, TextDocument,
-    TextFindOptions, TextInputEncoding, TextRenderMode, TextSyntaxMode, ThemePreference,
-    ThreeWayMergeState, TwoWayMergeState, TypedValueKind, builtin_profiles, cleanup_artifacts,
-    compare_binary, compare_binary_files, compare_documents, compare_documents_cancellable,
-    compare_folders, compare_folders_with_progress, compare_images, compare_table_files,
-    compare_text, compare_text_files_with_prediffer, create_save_plan, discover_installed_plugins,
-    execute_folder_operation_plan, find_builtin, is_likely_binary, plan_folder_operation,
-    save_artifact, write_encoded_text_with_plan,
+    DiscoveredPlugin, DocumentCompareMode, DocumentCompareOptions, EncodingSummary, FileFilter,
+    FilterStore, FolderCompareControl, FolderCompareEvent, FolderCompareOptions, FolderEntryDiff,
+    FolderEntryState, FolderOperationKind, FolderOperationOutcome, FolderOperationStatus,
+    ImageCompareOptions, ImageCompareResult, MergeAction, MergeChoice, NamedFilters, ProfileId,
+    ProfileStore, RecentPathStore, RecentSessionStore, RecentSessions, SessionFile, Settings,
+    SettingsStore, TableCompareOptions, TextBookmark, TextCompareOptions, TextCompareResult,
+    TextDocument, TextFindOptions, TextInputEncoding, TextRenderMode, TextSyntaxMode,
+    ThemePreference, ThreeWayMergeState, TwoWayMergeState, TypedValueKind, builtin_profiles,
+    cleanup_artifacts, compare_binary, compare_binary_files, compare_documents,
+    compare_documents_cancellable, compare_folders, compare_folders_with_progress, compare_images,
+    compare_table_files, compare_text, compare_text_files_with_prediffer, create_save_plan,
+    discover_installed_plugins, execute_folder_operation_plan, find_builtin, is_likely_binary,
+    plan_folder_operation, save_artifact, write_encoded_text_with_plan,
 };
 use serde::{Deserialize, Serialize};
 
@@ -213,7 +213,9 @@ struct GuiCompareTab {
     can_redo: bool,
     validation: GuiOpenValidation,
     summary: Vec<GuiSummaryItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     left_rows: Vec<GuiLineRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     right_rows: Vec<GuiLineRow>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     folder_entries: Vec<GuiFolderEntry>,
@@ -414,6 +416,7 @@ struct GuiCompareOptions {
     table: TableCompareOptions,
     binary: BinaryCompareOptions,
     image: ImageCompareOptions,
+    document: DocumentCompareOptions,
 }
 
 impl GuiLaunchContext {
@@ -1230,7 +1233,18 @@ fn write_owner_only(path: &Path, data: &[u8]) -> std::io::Result<()> {
 }
 
 fn context_to_json(context: &GuiLaunchContext) -> Result<String, String> {
-    serde_json::to_string(context).map_err(|err| format!("failed to serialize GUI context: {err}"))
+    let mut value = serde_json::to_value(context)
+        .map_err(|err| format!("failed to serialize GUI context: {err}"))?;
+    insert_response_schema_version(&mut value);
+    serde_json::to_string(&value).map_err(|err| format!("failed to serialize GUI context: {err}"))
+}
+
+fn insert_response_schema_version(value: &mut serde_json::Value) {
+    if let Some(object) = value.as_object_mut() {
+        object
+            .entry("schema_version".to_owned())
+            .or_insert_with(|| serde_json::json!(RESPONSE_SCHEMA_VERSION));
+    }
 }
 
 fn attach_session_to_response_body(
@@ -1619,7 +1633,15 @@ fn explicit_tab_for_paths_cancellable(
                 right_path,
                 &options.image,
             )),
-            GuiCompareMode::Document => Some(document_tab(left, right, left_path, right_path)),
+            GuiCompareMode::Document => document_tab(
+                left,
+                right,
+                left_path,
+                right_path,
+                &options.document,
+                should_cancel,
+                progress,
+            ),
             GuiCompareMode::Webpage => Some(invalid_compare_tab(
                 mode.label(),
                 left_path,
@@ -1762,7 +1784,7 @@ fn folder_tab_cancellable(
                 + result.summary.one_sided_count
                 + result.summary.errors_count
                 + result.summary.aborted_count;
-            let (left_rows, right_rows, folder_entries) = folder_rows_for_gui(&result.entries);
+            let folder_entries = folder_entries_for_gui(&result.entries);
             compare_tab(
                 "Folder",
                 (left_path, right_path),
@@ -1781,7 +1803,7 @@ fn folder_tab_cancellable(
                     summary_item("Skipped", result.summary.skipped_count),
                     summary_item("Errors", result.summary.errors_count),
                 ],
-                (left_rows, right_rows),
+                (Vec::new(), Vec::new()),
                 folder_entries,
                 None,
                 None,
@@ -1808,10 +1830,8 @@ fn folder_tab_cancellable(
     })
 }
 
-fn folder_rows_for_gui(
-    entries: &[FolderEntryDiff],
-) -> (Vec<GuiLineRow>, Vec<GuiLineRow>, Vec<GuiFolderEntry>) {
-    let folder_entries: Vec<GuiFolderEntry> = entries
+fn folder_entries_for_gui(entries: &[FolderEntryDiff]) -> Vec<GuiFolderEntry> {
+    entries
         .iter()
         .map(|entry| {
             let method_label = entry
@@ -1829,86 +1849,7 @@ fn folder_rows_for_gui(
                 method: method_label,
             }
         })
-        .collect();
-
-    let (left_rows, right_rows): (Vec<GuiLineRow>, Vec<GuiLineRow>) = entries
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            let state = gui_folder_state(entry.state);
-            let path = entry.relative_path.display().to_string();
-            let row_id = format!("folder:{path}");
-            let display_path = if entry.is_dir {
-                format!("{path}/")
-            } else {
-                path.clone()
-            };
-            let size_label = |size: Option<u64>| -> String {
-                match size {
-                    Some(s) if s < 1024 => format!("{s} B"),
-                    Some(s) if s < 1024 * 1024 => format!("{:.1} KB", s as f64 / 1024.0),
-                    Some(s) if s < 1024 * 1024 * 1024 => {
-                        format!("{:.1} MB", s as f64 / (1024.0 * 1024.0))
-                    }
-                    Some(s) => format!("{:.1} GB", s as f64 / (1024.0 * 1024.0 * 1024.0)),
-                    None => String::new(),
-                }
-            };
-            let fe = &folder_entries[index];
-            let method_label = &fe.method;
-            let left_text = if matches!(entry.state, FolderEntryState::RightOnly) {
-                String::new()
-            } else {
-                let mut parts = vec![display_path.clone()];
-                if let Some(sz) = entry.left_size {
-                    parts.push(size_label(Some(sz)));
-                }
-                if !method_label.is_empty() && !entry.is_dir {
-                    parts.push(method_label.clone());
-                }
-                parts.join("  ")
-            };
-            let right_text = if matches!(entry.state, FolderEntryState::LeftOnly) {
-                String::new()
-            } else {
-                let mut parts = vec![display_path];
-                if let Some(sz) = entry.right_size {
-                    parts.push(size_label(Some(sz)));
-                }
-                if !method_label.is_empty() && !entry.is_dir {
-                    parts.push(method_label.clone());
-                }
-                parts.join("  ")
-            };
-
-            (
-                GuiLineRow {
-                    row_id: row_id.clone(),
-                    number: Some(index + 1),
-                    text: left_text,
-                    state: state.to_owned(),
-                    block_kind: String::new(),
-                    folded_count: None,
-                    syntax_spans: Vec::new(),
-                    has_find_match: false,
-                    bookmarked: false,
-                },
-                GuiLineRow {
-                    row_id,
-                    number: Some(index + 1),
-                    text: right_text,
-                    state: state.to_owned(),
-                    block_kind: String::new(),
-                    folded_count: None,
-                    syntax_spans: Vec::new(),
-                    has_find_match: false,
-                    bookmarked: false,
-                },
-            )
-        })
-        .unzip();
-
-    (left_rows, right_rows, folder_entries)
+        .collect()
 }
 
 fn gui_folder_state(state: FolderEntryState) -> &'static str {
@@ -2575,58 +2516,88 @@ fn image_tab(
     }
 }
 
-fn document_tab(left: &Path, right: &Path, left_path: String, right_path: String) -> GuiCompareTab {
-    match fs::read_to_string(left).and_then(|l| fs::read_to_string(right).map(|r| (l, r))) {
-        Ok((left_text, right_text)) => {
-            let result = compare_text(
-                &left_path,
-                &left_text,
-                &right_path,
-                &right_text,
-                &TextCompareOptions::default(),
-            );
-            let diff_count = result.difference_count();
-            let encoding = Some(result.encoding_summary());
-            compare_tab(
-                "Document",
-                (left_path, right_path),
-                if diff_count == 0 {
-                    "Documents are identical".to_owned()
-                } else {
-                    format!("Documents differ: {diff_count} differences")
-                },
-                diff_count,
-                GuiOpenValidation {
-                    compatible: true,
-                    path_kind: "Files".to_owned(),
-                    message: "Validated two document files".to_owned(),
-                },
-                vec![summary_item("Differences", diff_count)],
-                (Vec::new(), Vec::new()),
-                vec![],
-                encoding,
-                None,
-                Vec::new(),
-            )
-        }
-        Err(err) => compare_tab(
-            "Document",
-            (left_path, right_path),
-            format!("Document compare failed: {err}"),
-            0,
-            GuiOpenValidation {
-                compatible: true,
-                path_kind: "Files".to_owned(),
-                message: "Validated two document files; compare failed".to_owned(),
-            },
-            Vec::new(),
-            (Vec::new(), Vec::new()),
-            vec![],
-            None,
-            None,
-            Vec::new(),
-        ),
+fn document_mode_query_value(mode: DocumentCompareMode) -> &'static str {
+    match mode {
+        DocumentCompareMode::Text => "text",
+        DocumentCompareMode::OcrText => "ocr_text",
+        DocumentCompareMode::Rendered => "rendered",
     }
+}
+
+fn document_tab(
+    left: &Path,
+    right: &Path,
+    left_path: String,
+    right_path: String,
+    document_options: &DocumentCompareOptions,
+    should_cancel: &dyn Fn() -> bool,
+    progress: Option<Arc<Mutex<CompareProgress>>>,
+) -> Option<GuiCompareTab> {
+    if should_cancel() {
+        return None;
+    }
+    set_progress(
+        &progress,
+        "extracting",
+        1,
+        3,
+        "Running document extractor".to_owned(),
+    );
+    let query = format!(
+        "left={}&right={}&mode={}&ocr_language={}",
+        urlencoding::encode(&left.display().to_string()),
+        urlencoding::encode(&right.display().to_string()),
+        document_mode_query_value(document_options.mode),
+        urlencoding::encode(&document_options.ocr_language),
+    );
+    let body = linsync::document_compare_bridge_response_with_profile(&query, document_options);
+    set_progress(
+        &progress,
+        "finalizing",
+        2,
+        3,
+        "Building document tab".to_owned(),
+    );
+    if should_cancel() {
+        return None;
+    }
+    let value = match serde_json::from_str::<serde_json::Value>(&body) {
+        Ok(value) => value,
+        Err(err) => {
+            return Some(invalid_compare_tab(
+                "Document",
+                left_path,
+                right_path,
+                format!("Document compare failed: {err}"),
+            ));
+        }
+    };
+    if let Some(tab) = document_tab_from_response(left_path.clone(), right_path.clone(), &value) {
+        set_progress(&progress, "done", 3, 3, String::new());
+        return Some(tab);
+    }
+    let message = value
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("document compare failed");
+    set_progress(&progress, "done", 3, 3, String::new());
+    Some(compare_tab(
+        "Document",
+        (left_path, right_path),
+        format!("Document compare failed: {message}"),
+        0,
+        GuiOpenValidation {
+            compatible: true,
+            path_kind: "Files".to_owned(),
+            message: "Validated two document files; compare failed".to_owned(),
+        },
+        Vec::new(),
+        (Vec::new(), Vec::new()),
+        vec![],
+        None,
+        None,
+        Vec::new(),
+    ))
 }
 
 fn image_tab_from_result(
@@ -3803,6 +3774,9 @@ fn resolve_compare_options_for_request(
         folder.include_skipped = parsed;
     }
 
+    let mut document = profile.document;
+    apply_document_query_overrides(&mut document, params)?;
+
     let mut table = profile.table;
     if let Some(v) = query_value(params, "delimiter") {
         table.delimiter = match v {
@@ -3840,7 +3814,32 @@ fn resolve_compare_options_for_request(
         table,
         binary,
         image: profile.image,
+        document,
     })
+}
+
+fn apply_document_query_overrides(
+    opts: &mut DocumentCompareOptions,
+    params: &[(String, String)],
+) -> Result<(), String> {
+    if let Some(v) = query_value(params, "mode") {
+        opts.mode = match v {
+            "Document" | "document" => opts.mode,
+            "text" => DocumentCompareMode::Text,
+            "ocr_text" | "ocr-text" => DocumentCompareMode::OcrText,
+            "rendered" => DocumentCompareMode::Rendered,
+            _ => opts.mode,
+        };
+    }
+    if let Some(v) = query_value(params, "ocr_language") {
+        opts.ocr_language = v.to_owned();
+    }
+    if let Some(v) = query_value(params, "document_timeout") {
+        opts.timeout_secs = v
+            .parse::<u64>()
+            .map_err(|_| format!("invalid document_timeout '{v}'"))?;
+    }
+    Ok(())
 }
 
 fn compare_bridge_response(
@@ -5888,12 +5887,10 @@ fn version_json_response_body(content_type: &str, body: Vec<u8>) -> Vec<u8> {
     let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return body;
     };
-    let Some(object) = value.as_object_mut() else {
+    if !value.is_object() {
         return body;
-    };
-    object
-        .entry("schema_version".to_owned())
-        .or_insert_with(|| serde_json::json!(RESPONSE_SCHEMA_VERSION));
+    }
+    insert_response_schema_version(&mut value);
     serde_json::to_vec(&value).unwrap_or(body)
 }
 
@@ -6081,6 +6078,14 @@ mod tests {
         let root = env::temp_dir().join(format!("linsync-gui-files-{name}-{}", process::id()));
         fs::create_dir_all(&root).expect("test file root should be created");
         root
+    }
+
+    fn command_available(command: &str) -> bool {
+        Command::new("which")
+            .arg(command)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
     }
 
     // ── Phase 3: Table / Hex modes emit real navigable rows ──────────────────
@@ -6352,6 +6357,45 @@ mod tests {
     }
 
     #[test]
+    fn source_tree_qml_titles_include_all_compare_sections() {
+        let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
+        let qml = fs::read_to_string(&source_file).expect("Main.qml should be readable");
+        for title in ["Image Compare", "Webpage Compare", "Document Compare"] {
+            assert!(
+                qml.contains(title),
+                "Main.qml section titles should include {title}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_tree_qml_exposes_webpage_mode_without_bypassing_consent() {
+        let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
+        let qml = fs::read_to_string(&source_file).expect("Main.qml should be readable");
+        assert!(qml.contains("\"Webpage\""));
+        assert!(
+            qml.contains("webpageComparePage.startFromMain"),
+            "Main Compare Webpage mode should hand off to the consent-gated Webpage page"
+        );
+    }
+
+    #[test]
+    fn source_tree_qml_keeps_folder_table_on_entry_model() {
+        let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
+        let qml = fs::read_to_string(&source_file).expect("Main.qml should be readable");
+        assert!(qml.contains("model: root.visibleFolderEntries"));
+        assert!(qml.contains("root.visibleFolderEntries.length : root.leftRows.length"));
+        assert!(
+            !qml.contains("function folderRowForEntry"),
+            "folder rows should not be duplicated into text-row objects"
+        );
+        assert!(
+            !qml.contains("folderRowForEntry("),
+            "folder table should use the entry model directly"
+        );
+    }
+
+    #[test]
     fn source_tree_window_icon_file_exists() {
         let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
         let icon_file = resolve_window_icon_file(&source_file).expect("missing window icon file");
@@ -6405,7 +6449,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_context_includes_folder_rows() {
+    fn launch_context_uses_folder_entries_for_virtual_table() {
         let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let left = fixture_root.join("tests/fixtures/folders/left");
         let right = fixture_root.join("tests/fixtures/folders/right");
@@ -6416,14 +6460,51 @@ mod tests {
         assert_eq!(tab.mode, "Folder");
         assert!(tab.validation.compatible);
         assert_eq!(tab.validation.path_kind, "Folders");
-        assert!(!tab.left_rows.is_empty());
         assert!(
-            tab.left_rows
-                .iter()
-                .all(|row| row.row_id.starts_with("folder:"))
+            tab.left_rows.is_empty() && tab.right_rows.is_empty(),
+            "folder tabs should not duplicate the virtualized table model into text rows"
         );
-        assert!(tab.left_rows.iter().any(|row| row.state == "left_only"));
-        assert!(tab.right_rows.iter().any(|row| row.state == "right_only"));
+        assert!(!tab.folder_entries.is_empty());
+        assert!(
+            tab.folder_entries
+                .iter()
+                .any(|row| row.state == "left_only")
+        );
+        assert!(
+            tab.folder_entries
+                .iter()
+                .any(|row| row.state == "right_only")
+        );
+    }
+
+    #[test]
+    fn folder_compare_response_omits_text_rows_for_virtual_table() {
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let left = fixture_root.join("tests/fixtures/folders/left");
+        let right = fixture_root.join("tests/fixtures/folders/right");
+        let paths = test_app_paths("folder-virtual-table");
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            &format!(
+                "GET /compare?left={}&right={}&mode=Folder HTTP/1.1\r\n",
+                urlencoding::encode(left.to_str().unwrap()),
+                urlencoding::encode(right.to_str().unwrap())
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        let body = json_response_body(&resp);
+        let tab = &body["session"]["tabs"][0];
+        assert!(
+            tab["folder_entries"]
+                .as_array()
+                .is_some_and(|v| !v.is_empty())
+        );
+        assert!(
+            tab.get("left_rows").is_none() && tab.get("right_rows").is_none(),
+            "folder response should not duplicate virtual table data into text rows: {body}"
+        );
     }
 
     #[test]
@@ -7133,6 +7214,21 @@ mod tests {
 
         assert_eq!(body["session"]["active_tab_id"], 1);
         assert_eq!(body["session"]["tabs"][0]["mode"], "Text");
+    }
+
+    #[test]
+    fn context_json_includes_schema_version_for_all_transports() {
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let left = fixture_root.join("tests/fixtures/text/left.txt");
+        let right = fixture_root.join("tests/fixtures/text/right.txt");
+        let context = build_context_for_paths(&left, &right);
+        let body: serde_json::Value =
+            serde_json::from_str(&context_to_json(&context).expect("context JSON")).unwrap();
+        assert_eq!(
+            body["schema_version"],
+            serde_json::json!(RESPONSE_SCHEMA_VERSION)
+        );
+        assert!(body["session"]["tabs"].is_array());
     }
 
     #[test]
@@ -9113,6 +9209,46 @@ mod tests {
         assert_eq!(tab.mode, "Document");
         assert_eq!(tab.difference_count, 1);
         assert_eq!(tab.left_rows.len(), tab.right_rows.len());
+    }
+
+    #[test]
+    fn document_mode_compare_endpoint_builds_extracted_session_tab() {
+        if !command_available("bash")
+            || !command_available("python3")
+            || !command_available("pdftotext")
+        {
+            eprintln!("SKIP: bash, python3, or pdftotext not on PATH");
+            return;
+        }
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let left = fixture_root.join("tests/fixtures/document/simple.pdf");
+        let right = fixture_root.join("tests/fixtures/document/simple-changed.pdf");
+        let paths = test_app_paths("document-main-compare");
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            &format!(
+                "GET /compare?left={}&right={}&mode=Document HTTP/1.1\r\n",
+                urlencoding::encode(left.to_str().unwrap()),
+                urlencoding::encode(right.to_str().unwrap())
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.contains("HTTP/1.1 200"), "{resp}");
+        let body = json_response_body(&resp);
+        let tab = &body["session"]["tabs"][0];
+        assert_eq!(tab["mode"], "Document");
+        assert!(
+            tab["left_rows"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty()),
+            "document tab should contain extracted text rows: {body}"
+        );
+        assert!(
+            tab["difference_count"].as_u64().unwrap_or_default() > 0,
+            "changed PDFs should produce document differences: {body}"
+        );
     }
 
     #[test]

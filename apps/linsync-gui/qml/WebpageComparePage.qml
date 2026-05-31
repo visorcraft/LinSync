@@ -53,6 +53,7 @@ Controls.Pane {
     property int progressCurrent: 0
     property int progressTotal: 0
     property string progressMessage: ""
+    property bool pendingNewTab: false
 
     // Per-row diff tints over the page background (left=red, right=green,
     // changed=amber); "equal" rows are absent → transparent.
@@ -122,9 +123,13 @@ Controls.Pane {
         const left = encodeURIComponent(root.leftUrl);
         const right = encodeURIComponent(root.rightUrl);
         const mode = encodeURIComponent(root.subMode);
-        root.bridgeGet("/compare/webpage?left=" + left + "&right=" + right + "&mode=" + mode + "&request_id=" + encodeURIComponent(root.activeRequestId), function (ok, payload) {
+        var query = "/compare/webpage?left=" + left + "&right=" + right + "&mode=" + mode + "&request_id=" + encodeURIComponent(root.activeRequestId);
+        if (root.pendingNewTab)
+            query += "&new_tab=1";
+        root.bridgeGet(query, function (ok, payload) {
             root.busy = false;
             root.activeRequestId = "";
+            root.pendingNewTab = false;
             if (!ok || !payload) {
                 root.resultError = true;
                 root.resultSummary = qsTr("Error: bridge request failed");
@@ -143,6 +148,13 @@ Controls.Pane {
                 root.sessionUpdated(payload);
             root.rebuildDiffRows();
         });
+    }
+
+    function startFromMain(left, right, newTab) {
+        root.leftUrl = left;
+        root.rightUrl = right;
+        root.pendingNewTab = !!newTab;
+        confirmDialog.open();
     }
 
     Timer {
@@ -565,6 +577,7 @@ Controls.Pane {
 
         onAccepted: root.runCompare()
         onRejected: {
+            root.pendingNewTab = false
         }
     }
 }

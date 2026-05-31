@@ -1,7 +1,7 @@
 use image::{ImageBuffer, Rgba, RgbaImage};
 use linsync::image_compare_bridge_response_with_profile;
 use linsync::test_support::image_compare_test;
-use linsync_core::ImageCompareOptions;
+use linsync_core::{ImageCompareMode, ImageCompareOptions};
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -55,6 +55,27 @@ fn with_profile_honours_profile_tolerance_when_query_omits_it() {
         serde_json::json!(false),
         "profile tolerance 4 must treat a +30 delta as different: {body_low}"
     );
+}
+
+#[test]
+fn response_mode_reports_effective_profile_mode_when_query_omits_mode() {
+    let dir = TempDir::new().unwrap();
+    let img: RgbaImage = ImageBuffer::from_fn(4, 4, |_, _| Rgba([12u8, 34, 56, 255]));
+    let left = save_png(&dir, "left.png", &img);
+    let right = save_png(&dir, "right.png", &img);
+    let query = format!(
+        "left={}&right={}",
+        left.to_str().unwrap(),
+        right.to_str().unwrap()
+    );
+    let profile = ImageCompareOptions {
+        mode: ImageCompareMode::Perceptual,
+        ..Default::default()
+    };
+
+    let (body, _) = image_compare_bridge_response_with_profile(&query, &profile);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["mode"], serde_json::json!("perceptual"));
 }
 
 #[test]

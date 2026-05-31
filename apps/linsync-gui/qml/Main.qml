@@ -394,6 +394,18 @@ Kirigami.ApplicationWindow {
 
     function rebuildDiffRows() {
         const rows = []
+        if (root.compareMode === "Folder") {
+            for (let index = 0; index < root.visibleFolderEntries.length; index++) {
+                const state = root.visibleFolderEntries[index] ? root.visibleFolderEntries[index].state : ""
+                if (isDifferenceState(state))
+                    rows.push(index)
+            }
+            root.diffRowIndexes = rows
+            root.currentDiffPosition = rows.length > 0 ? 0 : -1
+            root.currentDiffRow = rows.length > 0 ? rows[0] : -1
+            scrollToCurrentDifference()
+            return
+        }
         for (let index = 0; index < root.leftRows.length; index++) {
             const leftState = root.leftRows[index] ? root.leftRows[index].state : ""
             const rightState = root.rightRows[index] ? root.rightRows[index].state : ""
@@ -480,6 +492,33 @@ Kirigami.ApplicationWindow {
         if (root.searchText === "")
             return false
 
+        if (root.compareMode === "Folder") {
+            const entry = root.visibleFolderEntries[index]
+            if (!entry)
+                return false
+            const folderText = [
+                entry.path || "",
+                entry.state || "",
+                folderSizeLabel(entry.leftSize),
+                folderSizeLabel(entry.rightSize),
+                entry.method || ""
+            ].join(" ")
+            if (root.searchRegex) {
+                try {
+                    const flags = root.searchCaseSensitive ? "" : "i"
+                    const re = new RegExp(root.searchText, flags)
+                    return re.test(folderText)
+                } catch (e) {
+                    root.statusText = qsTr("Invalid find regex")
+                    return false
+                }
+            }
+
+            const needle = root.searchCaseSensitive ? root.searchText : root.searchText.toLocaleLowerCase()
+            const haystack = root.searchCaseSensitive ? folderText : folderText.toLocaleLowerCase()
+            return haystack.indexOf(needle) >= 0
+        }
+
         const leftText = root.leftRows[index] ? String(root.leftRows[index].text || "") : ""
         const rightText = root.rightRows[index] ? String(root.rightRows[index].text || "") : ""
         if (root.searchRegex) {
@@ -501,7 +540,8 @@ Kirigami.ApplicationWindow {
 
     function rebuildSearchRows() {
         const rows = []
-        for (let index = 0; index < root.leftRows.length; index++) {
+        const rowCount = root.compareMode === "Folder" ? root.visibleFolderEntries.length : root.leftRows.length
+        for (let index = 0; index < rowCount; index++) {
             if (rowMatchesSearch(index))
                 rows.push(index)
         }
@@ -1341,8 +1381,8 @@ Kirigami.ApplicationWindow {
                 tab.can_undo = root.canUndo
                 tab.can_redo = root.canRedo
                 tab.summary = root.summaryItems
-                tab.left_rows = root.leftRows
-                tab.right_rows = root.rightRows
+                tab.left_rows = root.compareMode === "Folder" ? [] : root.leftRows
+                tab.right_rows = root.compareMode === "Folder" ? [] : root.rightRows
                 tab.folder_entries = root.folderEntries
                 tabs[index] = tab
                 root.sessionState = Object.assign({}, root.sessionState, { "active_tab_id": root.activeTabId, "tabs": tabs })
@@ -1584,12 +1624,18 @@ Kirigami.ApplicationWindow {
     }
 
     function requestCompare(newTab) {
-        if (hasSessionBridge()) {
-            if (root.leftPath === "" || root.rightPath === "") {
-                root.statusText = "Select two paths"
-                return
-            }
+        if (root.leftPath === "" || root.rightPath === "") {
+            root.statusText = "Select two paths"
+            return
+        }
 
+        if (root.compareMode === "Webpage") {
+            root.activeSection = 10
+            webpageComparePage.startFromMain(root.leftPath, root.rightPath, newTab)
+            return
+        }
+
+        if (hasSessionBridge()) {
             root.statusText = "Comparing"
             applySessionContextJson(sessionBridgeCall("comparePaths", [root.leftPath, root.rightPath, root.compareMode, newTab]))
             return
@@ -1597,11 +1643,6 @@ Kirigami.ApplicationWindow {
 
         if (root.bridgeUrl === "") {
             root.statusText = "Compare bridge unavailable"
-            return
-        }
-
-        if (root.leftPath === "" || root.rightPath === "") {
-            root.statusText = "Select two paths"
             return
         }
 
@@ -1706,27 +1747,6 @@ Kirigami.ApplicationWindow {
         return true
     }
 
-    function folderRowForEntry(entry, index, side) {
-        const path = String(entry.path || "")
-        const displayPath = entry.isDir ? path + "/" : path
-        const rightOnly = entry.state === "right_only"
-        const leftOnly = entry.state === "left_only"
-        const hidden = side === "left" ? rightOnly : leftOnly
-        const size = side === "left" ? entry.leftSize : entry.rightSize
-        const parts = hidden ? [] : [displayPath]
-        const sizeLabel = folderSizeLabel(size)
-        if (sizeLabel !== "")
-            parts.push(sizeLabel)
-        if (!entry.isDir && entry.method)
-            parts.push(entry.method)
-        return {
-            "row_id": "folder:" + path,
-            "number": index + 1,
-            "text": parts.join("  "),
-            "state": entry.state || "equal"
-        }
-    }
-
     function rebuildFolderView() {
         if (root.compareMode !== "Folder") {
             root.leftRows = root.unfilteredLeftRows
@@ -1735,8 +1755,8 @@ Kirigami.ApplicationWindow {
             return
         }
         if (!root.folderEntries || root.folderEntries.length === 0) {
-            root.leftRows = root.unfilteredLeftRows
-            root.rightRows = root.unfilteredRightRows
+            root.leftRows = []
+            root.rightRows = []
             root.visibleFolderEntries = []
             rebuildDiffRows()
             rebuildSearchRows()
@@ -1775,15 +1795,9 @@ Kirigami.ApplicationWindow {
                 return 0
             })
         }
-        var left = []
-        var right = []
-        for (var j = 0; j < entries.length; j++) {
-            left.push(folderRowForEntry(entries[j], j, "left"))
-            right.push(folderRowForEntry(entries[j], j, "right"))
-        }
         root.visibleFolderEntries = entries
-        root.leftRows = left.length > 0 ? left : makeBlankRows()
-        root.rightRows = right.length > 0 ? right : makeBlankRows()
+        root.leftRows = []
+        root.rightRows = []
         rebuildDiffRows()
         rebuildSearchRows()
     }
@@ -2267,7 +2281,7 @@ Kirigami.ApplicationWindow {
 
                     AppComboBox {
                         id: newCompareModeCombo
-                        model: ["Text", "Folder", "Table", "Hex"]
+                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document", "Webpage"]
                         Accessible.name: "Compare mode"
                         implicitWidth: 140
                         implicitHeight: 30
@@ -2993,7 +3007,7 @@ Kirigami.ApplicationWindow {
     pageStack.initialPage: Kirigami.Page {
         id: comparePage
 
-        readonly property var sectionTitles: ["Compare", "Sessions", "Filters", "Plugins", "Settings", "About", "Credits", "Licenses", "Three-way Merge", "Image Compare", "Document Compare"]
+        readonly property var sectionTitles: ["Compare", "Sessions", "Filters", "Plugins", "Settings", "About", "Credits", "Licenses", "Three-way Merge", "Image Compare", "Webpage Compare", "Document Compare"]
         title: sectionTitles[root.activeSection] || "LinSync"
         padding: 0
         // Hide the auto-rendered title bar — each section paints its own
@@ -3230,7 +3244,7 @@ Kirigami.ApplicationWindow {
                         implicitHeight: 36
                         Layout.preferredWidth: 140
                         implicitWidth: 140
-                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document"]
+                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document", "Webpage"]
                         Accessible.name: "Compare mode"
                         palette.button: root.activeBgAlt
                         palette.buttonText: root.activeText

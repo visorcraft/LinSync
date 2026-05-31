@@ -910,6 +910,10 @@ fn read_context_file(path: &Path) -> Result<GuiLaunchContext, String> {
 }
 
 fn error_context_json(message: &str) -> String {
-    serde_json::json!({ "session": { "active_tab_id": 0, "tabs": [], "recent_paths": [] }, "error": message })
-        .to_string()
+    serde_json::json!({
+        "schema_version": crate::RESPONSE_SCHEMA_VERSION,
+        "session": { "active_tab_id": 0, "tabs": [], "recent_paths": [] },
+        "error": message,
+    })
+    .to_string()
 }
