@@ -10,10 +10,12 @@ use linsync_core::{
     DiffLineKind, FileFilter, FilterMatchOptions, FilterParseErrorKind, FilterStore,
     FolderCompareOptions, FolderCompareResult, FolderEntryFilter, FolderEntryState, HashAlgorithm,
     InlineGranularity, MergeChoice, MoveDirection, ProfileId, ProfileStore, ProfileStoreError,
-    SymlinkPolicy, TableCellState, TableCompareOptions, TextCompareOptions, TextDocument,
-    TextSubstitution, ThreeWayMergeState, assess_operation_risks, builtin_profiles,
-    compare_binary_files, compare_folders, compare_table_files, compare_text, compare_text_files,
-    find_builtin, is_likely_binary, merge_three_way, parse_conflict_markers, plan_folder_operation,
+    SymlinkPolicy, TableCellState, TableCompareOptions, TextBookmark, TextCompareOptions,
+    TextDocument, TextFindOptions, TextInputEncoding, TextRenderMode, TextSubstitution,
+    TextSyntaxMode, ThreeWayMergeState, assess_operation_risks, builtin_profiles,
+    builtin_text_regex_rule_sets, compare_binary_files, compare_folders, compare_table_files,
+    compare_text, compare_text_files, find_builtin, is_likely_binary, merge_three_way,
+    parse_conflict_markers, plan_folder_operation,
 };
 
 fn main() -> ExitCode {
@@ -113,6 +115,16 @@ const COMPARE_FLAGS: &[&str] = &[
     "--detect-moves",
     "--diff-algorithm",
     "--inline-granularity",
+    "--regex-rule-set",
+    "--context",
+    "--show-only-changes",
+    "--render",
+    "--syntax",
+    "--find",
+    "--find-regex",
+    "--find-case-sensitive",
+    "--bookmark",
+    "--encoding",
     "--type",
     "--image-mode",
     "--image-tolerance",
@@ -208,7 +220,7 @@ fn compare_command(args: &[String]) -> Result<ExitCode, String> {
     let compare_args = split_compare_args(args)?;
     if compare_args.paths.len() != 2 {
         return Err(
-            "usage: linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT"
+            "usage: linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT"
                 .to_owned(),
         );
     }
@@ -410,22 +422,44 @@ fn compare_text_command(
                 result.difference_count()
             );
 
-            for line in result.lines.iter().filter(|line| {
-                matches!(
-                    line.kind,
-                    DiffLineKind::Changed | DiffLineKind::LeftOnly | DiffLineKind::RightOnly
-                )
-            }) {
-                match line.kind {
-                    DiffLineKind::LeftOnly => println!("- {}", line.left.as_deref().unwrap_or("")),
-                    DiffLineKind::RightOnly => {
-                        println!("+ {}", line.right.as_deref().unwrap_or(""))
+            if uses_text_rendering_options(&compare_args.text_options) {
+                print!("{}", result.render_text(&compare_args.text_options));
+            } else {
+                for line in result.lines.iter().filter(|line| {
+                    matches!(
+                        line.kind,
+                        DiffLineKind::Changed | DiffLineKind::LeftOnly | DiffLineKind::RightOnly
+                    )
+                }) {
+                    match line.kind {
+                        DiffLineKind::LeftOnly => {
+                            println!("- {}", line.left.as_deref().unwrap_or(""))
+                        }
+                        DiffLineKind::RightOnly => {
+                            println!("+ {}", line.right.as_deref().unwrap_or(""))
+                        }
+                        DiffLineKind::Changed => {
+                            println!("~ {}", line.left.as_deref().unwrap_or(""));
+                            println!("~ {}", line.right.as_deref().unwrap_or(""));
+                        }
+                        DiffLineKind::Equal => {}
                     }
-                    DiffLineKind::Changed => {
-                        println!("~ {}", line.left.as_deref().unwrap_or(""));
-                        println!("~ {}", line.right.as_deref().unwrap_or(""));
-                    }
-                    DiffLineKind::Equal => {}
+                }
+            }
+
+            if let Some(find) = &compare_args.text_options.find {
+                let matches = result
+                    .find_matches(find)
+                    .map_err(|err| format!("invalid find regex: {err}"))?;
+                println!("find_matches={}", matches.len());
+                for m in matches.iter().take(20) {
+                    println!("  {:?}:{}:{}-{} {}", m.side, m.line, m.start, m.end, m.text);
+                }
+            }
+            if !compare_args.text_options.bookmarks.is_empty() {
+                println!("bookmarks={}", compare_args.text_options.bookmarks.len());
+                for bookmark in &compare_args.text_options.bookmarks {
+                    println!("  {:?}:{} {}", bookmark.side, bookmark.line, bookmark.label);
                 }
             }
         }
@@ -443,16 +477,38 @@ fn compare_text_command(
                     )
                 })
                 .count();
-            if let Some(profile_id) = compare_args.effective_profile.as_deref() {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "equal": result.is_equal(),
-                        "differences": result.difference_count(),
-                        "moved_blocks": moved_count,
-                        "profile": profile_id,
-                    })
-                );
+            if compare_args.effective_profile.is_some()
+                || uses_extended_text_json(&compare_args.text_options)
+            {
+                let mut json = serde_json::json!({
+                    "equal": result.is_equal(),
+                    "differences": result.difference_count(),
+                    "moved_blocks": moved_count,
+                });
+                if let Some(profile_id) = compare_args.effective_profile.as_deref() {
+                    json["profile"] = serde_json::json!(profile_id);
+                }
+                if uses_extended_text_json(&compare_args.text_options) {
+                    json["encoding"] = serde_json::json!(result.encoding_summary());
+                    json["render_mode"] = serde_json::json!(compare_args.text_options.render_mode);
+                    json["syntax_mode"] = serde_json::json!(compare_args.text_options.syntax_mode);
+                    json["context_lines"] =
+                        serde_json::json!(compare_args.text_options.context_lines);
+                    json["show_only_changes"] =
+                        serde_json::json!(compare_args.text_options.show_only_changes);
+                    json["regex_rule_sets"] =
+                        serde_json::json!(compare_args.text_options.regex_rule_sets);
+                    json["bookmarks"] = serde_json::json!(compare_args.text_options.bookmarks);
+                    if let Some(find) = &compare_args.text_options.find {
+                        json["find"] = serde_json::json!(find);
+                        json["find_matches"] = serde_json::json!(
+                            result
+                                .find_matches(find)
+                                .map_err(|err| format!("invalid find regex: {err}"))?
+                        );
+                    }
+                }
+                println!("{json}");
             } else {
                 println!(
                     "{{\"equal\":{},\"differences\":{},\"moved_blocks\":{}}}",
@@ -522,6 +578,21 @@ fn compare_binary_command(
     } else {
         ExitCode::from(1)
     })
+}
+
+fn uses_text_rendering_options(options: &TextCompareOptions) -> bool {
+    options.render_mode != TextRenderMode::SideBySide
+        || options.context_lines.is_some()
+        || options.show_only_changes
+}
+
+fn uses_extended_text_json(options: &TextCompareOptions) -> bool {
+    uses_text_rendering_options(options)
+        || options.syntax_mode != TextSyntaxMode::Plain
+        || options.encoding != TextInputEncoding::Auto
+        || !options.regex_rule_sets.is_empty()
+        || options.find.is_some()
+        || !options.bookmarks.is_empty()
 }
 
 fn compare_folder_command(
@@ -3330,6 +3401,92 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
                 };
                 index += 1;
             }
+            "--regex-rule-set" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--regex-rule-set requires a named rule set".to_owned());
+                };
+                text_options.regex_rule_sets.push(value.clone());
+                explicit_text_options = true;
+                index += 1;
+            }
+            "--context" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--context requires a non-negative integer".to_owned());
+                };
+                text_options.context_lines = Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| "--context requires a non-negative integer".to_owned())?,
+                );
+                explicit_text_options = true;
+                index += 1;
+            }
+            "--show-only-changes" => {
+                text_options.show_only_changes = true;
+                explicit_text_options = true;
+            }
+            "--render" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--render requires a value: side-by-side | unified | context | normal | html".to_owned());
+                };
+                text_options.render_mode = parse_text_render_mode(value)?;
+                explicit_text_options = true;
+                index += 1;
+            }
+            "--syntax" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--syntax requires a value: plain | auto | rust | json | html | markdown | shell | toml | yaml".to_owned());
+                };
+                text_options.syntax_mode = parse_text_syntax_mode(value)?;
+                explicit_text_options = true;
+                index += 1;
+            }
+            "--find" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--find requires a search pattern".to_owned());
+                };
+                text_options.find = Some(TextFindOptions {
+                    pattern: value.clone(),
+                    regex: text_options.find.as_ref().is_some_and(|f| f.regex),
+                    case_sensitive: text_options.find.as_ref().is_some_and(|f| f.case_sensitive),
+                });
+                explicit_text_options = true;
+                index += 1;
+            }
+            "--find-regex" => {
+                let find = text_options.find.get_or_insert_with(|| TextFindOptions {
+                    pattern: String::new(),
+                    regex: false,
+                    case_sensitive: false,
+                });
+                find.regex = true;
+                explicit_text_options = true;
+            }
+            "--find-case-sensitive" => {
+                let find = text_options.find.get_or_insert_with(|| TextFindOptions {
+                    pattern: String::new(),
+                    regex: false,
+                    case_sensitive: false,
+                });
+                find.case_sensitive = true;
+                explicit_text_options = true;
+            }
+            "--bookmark" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--bookmark requires SIDE:LINE[:LABEL]".to_owned());
+                };
+                text_options.bookmarks.push(parse_text_bookmark(value)?);
+                explicit_text_options = true;
+                index += 1;
+            }
+            "--encoding" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--encoding requires a value: auto | utf8 | utf8-bom | utf16le | utf16be | lossy-utf8".to_owned());
+                };
+                text_options.encoding = parse_text_input_encoding(value)?;
+                explicit_text_options = true;
+                index += 1;
+            }
             "--type" => {
                 let Some(value) = args.get(index + 1) else {
                     return Err("--type requires a value".to_owned());
@@ -3411,6 +3568,16 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
         index += 1;
     }
     text_options
+        .validate_rule_sets()
+        .map_err(|err| format!("invalid compare regex option: {err}"))?;
+    if text_options
+        .find
+        .as_ref()
+        .is_some_and(|find| find.pattern.is_empty())
+    {
+        return Err("--find-regex and --find-case-sensitive require --find PATTERN".to_owned());
+    }
+    text_options
         .validate_regex_options()
         .map_err(|err| format!("invalid compare regex option: {err}"))?;
     if explicit_text_options && !matches!(compare_type, CompareType::Auto | CompareType::Text) {
@@ -3444,6 +3611,68 @@ fn parse_compare_type(value: &str) -> Result<CompareType, String> {
         "document" => Ok(CompareType::Document),
         other => Err(format!("unknown compare type '{other}'")),
     }
+}
+
+fn parse_text_render_mode(value: &str) -> Result<TextRenderMode, String> {
+    match value {
+        "side-by-side" | "side_by_side" | "side" => Ok(TextRenderMode::SideBySide),
+        "unified" => Ok(TextRenderMode::Unified),
+        "context" => Ok(TextRenderMode::Context),
+        "normal" => Ok(TextRenderMode::Normal),
+        "html" => Ok(TextRenderMode::Html),
+        other => Err(format!("unknown --render '{other}'")),
+    }
+}
+
+fn parse_text_syntax_mode(value: &str) -> Result<TextSyntaxMode, String> {
+    match value {
+        "plain" | "none" => Ok(TextSyntaxMode::Plain),
+        "auto" => Ok(TextSyntaxMode::Auto),
+        "rust" | "rs" => Ok(TextSyntaxMode::Rust),
+        "json" => Ok(TextSyntaxMode::Json),
+        "html" | "xml" => Ok(TextSyntaxMode::Html),
+        "markdown" | "md" => Ok(TextSyntaxMode::Markdown),
+        "shell" | "sh" | "bash" => Ok(TextSyntaxMode::Shell),
+        "toml" => Ok(TextSyntaxMode::Toml),
+        "yaml" | "yml" => Ok(TextSyntaxMode::Yaml),
+        other => Err(format!("unknown --syntax '{other}'")),
+    }
+}
+
+fn parse_text_input_encoding(value: &str) -> Result<TextInputEncoding, String> {
+    match value {
+        "auto" => Ok(TextInputEncoding::Auto),
+        "utf8" | "utf-8" => Ok(TextInputEncoding::Utf8),
+        "utf8-bom" | "utf-8-bom" => Ok(TextInputEncoding::Utf8Bom),
+        "utf16le" | "utf-16le" | "utf-16-le" => Ok(TextInputEncoding::Utf16Le),
+        "utf16be" | "utf-16be" | "utf-16-be" => Ok(TextInputEncoding::Utf16Be),
+        "lossy-utf8" | "lossy-utf-8" => Ok(TextInputEncoding::LossyUtf8),
+        other => Err(format!("unknown --encoding '{other}'")),
+    }
+}
+
+fn parse_text_bookmark(value: &str) -> Result<TextBookmark, String> {
+    let mut parts = value.splitn(3, ':');
+    let side = match parts.next().unwrap_or_default() {
+        "left" | "l" => linsync_core::CompareSide::Left,
+        "right" | "r" => linsync_core::CompareSide::Right,
+        other => {
+            return Err(format!(
+                "bookmark side '{other}' must be left or right; expected SIDE:LINE[:LABEL]"
+            ));
+        }
+    };
+    let Some(line_raw) = parts.next() else {
+        return Err("--bookmark requires SIDE:LINE[:LABEL]".to_owned());
+    };
+    let line = line_raw
+        .parse::<usize>()
+        .map_err(|_| "--bookmark line must be a positive integer".to_owned())?;
+    if line == 0 {
+        return Err("--bookmark line must be a positive integer".to_owned());
+    }
+    let label = parts.next().unwrap_or_default().to_owned();
+    Ok(TextBookmark { side, line, label })
 }
 
 fn set_output_mode(
@@ -4031,6 +4260,26 @@ _linsync_cli() {{
         return 0
     fi
 
+    if [[ "$prev" == "--regex-rule-set" ]]; then
+        COMPREPLY=( $(compgen -W "{}" -- "$cur") )
+        return 0
+    fi
+
+    if [[ "$prev" == "--render" ]]; then
+        COMPREPLY=( $(compgen -W "side-by-side unified context normal html" -- "$cur") )
+        return 0
+    fi
+
+    if [[ "$prev" == "--syntax" ]]; then
+        COMPREPLY=( $(compgen -W "plain auto rust json html markdown shell toml yaml" -- "$cur") )
+        return 0
+    fi
+
+    if [[ "$prev" == "--encoding" ]]; then
+        COMPREPLY=( $(compgen -W "auto utf8 utf8-bom utf16le utf16be lossy-utf8" -- "$cur") )
+        return 0
+    fi
+
     if [[ "$prev" == "--image-mode" ]]; then
         COMPREPLY=( $(compgen -W "exact tolerance perceptual" -- "$cur") )
         return 0
@@ -4137,6 +4386,11 @@ _linsync_cli() {{
 complete -F _linsync_cli linsync-cli
 "#,
         CLI_COMMANDS.join(" "),
+        builtin_text_regex_rule_sets()
+            .into_iter()
+            .map(|rule_set| rule_set.id)
+            .collect::<Vec<_>>()
+            .join(" "),
         OPEN_EXTERNAL_PRESETS.join(" "),
         COMPARE_FLAGS.join(" "),
         COMPARE3_FLAGS.join(" "),
@@ -4348,7 +4602,7 @@ Compare two archive files by extracting them (via tar / unzip subprocesses) and 
 .B cache clear [--scope webcompare]
 Clear LinSync cache directories. Currently the only supported scope is webcompare (the webpage compare HTTP fetch cache under $XDG_CACHE_HOME/linsync/webcompare).
 .TP
-.B compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT
+.B compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT
 Compare two files and exit with 0 for equal files or 1 for differences. The --type auto default routes Folder/Binary/Table/Text; --type image and --type document must be selected explicitly because auto-detection does not route to those engines. --profile seeds every per-mode option from a built-in id (default, strict-bytes, ignore-formatting, code-review, prose-review, folder-sync-preview, webpage-source-safe), a saved user profile id, or a path to a profile JSON file; CLI flags after --profile override the profile values.
 .TP
 .B compare3 [--markers|--json] LEFT BASE RIGHT
@@ -4428,7 +4682,7 @@ linsync-cli {}
 USAGE:
     linsync-cli archive [--keep-temp] [--json] LEFT RIGHT
     linsync-cli cache clear [--scope webcompare]
-    linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT
+    linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT
     linsync-cli compare3 [--markers|--json] LEFT BASE RIGHT
     linsync-cli conflict [--json] FILE
     linsync-cli completions SHELL

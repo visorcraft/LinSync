@@ -84,10 +84,12 @@ pub use table::{
 pub use text::{
     CompareOptions, CompareSession, CompareSide, CompareSummary, DiffAlgorithm, DiffBlock,
     DiffBlockKind, DiffLine, DiffLineKind, EncodingSummary, InlineDiff, InlineGranularity,
-    LineEnding, MergeAction, MergeConflict, MoveDirection, SavePlan, TextCompareOptions,
-    TextCompareResult, TextDocument, TextEncoding, TextSubstitution, compare_documents,
+    LineEnding, MergeAction, MergeConflict, MoveDirection, SavePlan, SyntaxSpan, TextBookmark,
+    TextCompareOptions, TextCompareResult, TextDocument, TextEncoding, TextFindMatch,
+    TextFindOptions, TextInputEncoding, TextRegexRuleSet, TextRenderMode, TextSubstitution,
+    TextSyntaxMode, TextViewRow, builtin_text_regex_rule_sets, compare_documents,
     compare_documents_cancellable, compare_text, compare_text_files,
-    compare_text_files_cancellable, compare_text_files_with_prediffer,
+    compare_text_files_cancellable, compare_text_files_with_prediffer, text_regex_rule_set,
 };
 pub use trash::{
     DeleteBackend, DeleteError, DeleteOutcome, DeletePlan, DeletePreference, DeleteRestoreGuidance,

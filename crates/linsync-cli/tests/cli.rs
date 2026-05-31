@@ -388,6 +388,80 @@ fn compare_supports_substitution_filters() {
 }
 
 #[test]
+fn compare_supports_named_regex_rule_sets_find_render_and_encoding() {
+    let temp = TempFixture::new();
+    let left = temp.path.join("left.txt");
+    let right = temp.path.join("right.txt");
+    fs::write(
+        &left,
+        "same before\nid=9f3cf7aa-1d98-4a1a-a80d-d91f442ec4a7 at 2026-05-30T10:00:00Z\nsame after\n",
+    )
+    .unwrap();
+    fs::write(
+        &right,
+        "same before\nid=11111111-2222-4333-8444-555555555555 at 2026-05-31T11:12:13Z\nsame after\n",
+    )
+    .unwrap();
+
+    let json_output = run(&[
+        "compare",
+        "--json",
+        "--regex-rule-set",
+        "volatile",
+        "--find",
+        r"\d{4}-\d{2}-\d{2}",
+        "--find-regex",
+        "--bookmark",
+        "left:2:volatile",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+    assert!(json_output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&json_output.stdout).unwrap();
+    assert_eq!(json["equal"], true);
+    assert_eq!(json["regex_rule_sets"][0], "volatile");
+    assert_eq!(json["find_matches"].as_array().unwrap().len(), 2);
+    assert_eq!(json["bookmarks"][0]["label"], "volatile");
+
+    let render_output = run(&[
+        "compare",
+        "--render",
+        "unified",
+        "--context",
+        "0",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+    assert_eq!(render_output.status.code(), Some(1));
+    let stdout = String::from_utf8(render_output.stdout).unwrap();
+    assert!(stdout.contains("@@"));
+    assert!(!stdout.contains("same before"));
+}
+
+#[test]
+fn compare_encoding_flag_decodes_utf16_without_bom() {
+    let temp = TempFixture::new();
+    let left = temp.path.join("left.txt");
+    let right = temp.path.join("right.txt");
+    fs::write(&left, [b'a', 0, b'\n', 0]).unwrap();
+    fs::write(&right, [b'a', 0, b'\n', 0]).unwrap();
+
+    let output = run(&[
+        "compare",
+        "--json",
+        "--encoding",
+        "utf16le",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["equal"], true);
+    assert_eq!(json["encoding"]["left_encoding"], "utf16_le");
+}
+
+#[test]
 fn compare_rejects_invalid_ignore_line_regex() {
     let left = fixture("text/left.txt");
     let right = fixture("text/right.txt");

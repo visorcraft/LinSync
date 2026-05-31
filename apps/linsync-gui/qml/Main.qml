@@ -50,9 +50,18 @@ Kirigami.ApplicationWindow {
     property int currentDiffRow: -1
     property bool findVisible: false
     property string searchText: ""
+    property bool searchRegex: false
+    property bool searchCaseSensitive: false
     property var searchRowIndexes: []
     property int currentSearchPosition: -1
     property int currentSearchRow: -1
+    property string textRenderMode: "side-by-side"
+    property string syntaxMode: "plain"
+    property bool contextFolding: false
+    property int contextLines: 3
+    property bool showOnlyChanges: false
+    property var bookmarkRows: []
+    property int currentBookmarkPosition: -1
     property bool leftDirty: false
     property bool rightDirty: false
     property bool validationCompatible: false
@@ -249,6 +258,7 @@ Kirigami.ApplicationWindow {
         return c
     })()
     readonly property color searchRowColor: Kirigami.ColorUtils.tintWithAlpha(activeBg, activeHighlight, 0.16)
+    readonly property color bookmarkRowColor: Kirigami.ColorUtils.tintWithAlpha(activeBg, activeHighlight, 0.08)
     // Precomputed zebra colors
     readonly property color zebra0: activeBg
     readonly property color zebra1: activeBgAlt
@@ -348,10 +358,23 @@ Kirigami.ApplicationWindow {
         if (root.searchText === "")
             return false
 
-        const needle = root.searchText.toLocaleLowerCase()
-        const leftText = root.leftRows[index] ? root.leftRows[index].text.toLocaleLowerCase() : ""
-        const rightText = root.rightRows[index] ? root.rightRows[index].text.toLocaleLowerCase() : ""
-        return leftText.indexOf(needle) >= 0 || rightText.indexOf(needle) >= 0
+        const leftText = root.leftRows[index] ? String(root.leftRows[index].text || "") : ""
+        const rightText = root.rightRows[index] ? String(root.rightRows[index].text || "") : ""
+        if (root.searchRegex) {
+            try {
+                const flags = root.searchCaseSensitive ? "" : "i"
+                const re = new RegExp(root.searchText, flags)
+                return re.test(leftText) || re.test(rightText)
+            } catch (e) {
+                root.statusText = qsTr("Invalid find regex")
+                return false
+            }
+        }
+
+        const needle = root.searchCaseSensitive ? root.searchText : root.searchText.toLocaleLowerCase()
+        const leftHaystack = root.searchCaseSensitive ? leftText : leftText.toLocaleLowerCase()
+        const rightHaystack = root.searchCaseSensitive ? rightText : rightText.toLocaleLowerCase()
+        return leftHaystack.indexOf(needle) >= 0 || rightHaystack.indexOf(needle) >= 0
     }
 
     function rebuildSearchRows() {
@@ -401,6 +424,67 @@ Kirigami.ApplicationWindow {
             rightPane.positionAtRow(root.currentSearchRow)
         }
         root.syncingScroll = false
+    }
+
+    function rowBookmarked(index) {
+        return root.bookmarkRows.indexOf(index) >= 0
+    }
+
+    function rebuildBookmarkRows() {
+        const rows = []
+        for (let index = 0; index < root.leftRows.length; index++) {
+            const left = root.leftRows[index]
+            const right = root.rightRows[index]
+            if ((left && left.bookmarked) || (right && right.bookmarked))
+                rows.push(index)
+        }
+        root.bookmarkRows = rows
+        root.currentBookmarkPosition = rows.length > 0 ? 0 : -1
+    }
+
+    function toggleBookmarkCurrentRow() {
+        const row = root.currentDiffRow >= 0 ? root.currentDiffRow : root.currentSearchRow
+        if (row < 0)
+            return
+        const rows = root.bookmarkRows.slice()
+        const existing = rows.indexOf(row)
+        if (existing >= 0)
+            rows.splice(existing, 1)
+        else
+            rows.push(row)
+        rows.sort(function(a, b) { return a - b })
+        root.bookmarkRows = rows
+        root.currentBookmarkPosition = rows.indexOf(row)
+    }
+
+    function selectBookmark(position) {
+        if (root.bookmarkRows.length === 0) {
+            root.currentBookmarkPosition = -1
+            return
+        }
+        let nextPosition = position
+        if (nextPosition < 0)
+            nextPosition = root.bookmarkRows.length - 1
+        if (nextPosition >= root.bookmarkRows.length)
+            nextPosition = 0
+        root.currentBookmarkPosition = nextPosition
+        const row = root.bookmarkRows[nextPosition]
+        root.currentDiffRow = row
+        root.currentDiffPosition = root.diffRowIndexes.indexOf(row)
+        root.syncingScroll = true
+        if (leftPane && rightPane) {
+            leftPane.positionAtRow(row)
+            rightPane.positionAtRow(row)
+        }
+        root.syncingScroll = false
+    }
+
+    function nextBookmark() {
+        selectBookmark(root.currentBookmarkPosition + 1)
+    }
+
+    function previousBookmark() {
+        selectBookmark(root.currentBookmarkPosition - 1)
     }
 
     function loadLaunchArguments() {
@@ -1021,6 +1105,7 @@ Kirigami.ApplicationWindow {
         root.canRedo = sessionBridgeValue("canRedo", tab.can_redo || false, preferBridge)
         rebuildDiffRows()
         rebuildSearchRows()
+        rebuildBookmarkRows()
     }
 
     function activeSessionTab(context) {
@@ -1376,6 +1461,17 @@ Kirigami.ApplicationWindow {
         url += "&ignore_blank_lines=" + (root.ignoreBlankLines ? "1" : "0")
         url += "&ignore_eol=" + (root.ignoreEol ? "1" : "0")
         url += "&eol=" + encodeURIComponent(root.eolNormalization)
+        url += "&render_mode=" + encodeURIComponent(root.textRenderMode)
+        url += "&syntax=" + encodeURIComponent(root.syntaxMode)
+        if (root.contextFolding)
+            url += "&context_lines=" + encodeURIComponent(root.contextLines)
+        if (root.showOnlyChanges)
+            url += "&show_only_changes=1"
+        if (root.searchText !== "") {
+            url += "&find=" + encodeURIComponent(root.searchText)
+            url += "&find_regex=" + (root.searchRegex ? "1" : "0")
+            url += "&find_case_sensitive=" + (root.searchCaseSensitive ? "1" : "0")
+        }
         if (newTab)
             url += "&new_tab=1"
         request.onreadystatechange = function () {
@@ -3222,6 +3318,137 @@ Kirigami.ApplicationWindow {
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: visible ? 40 : 0
+                visible: root.compareMode === "Text"
+                color: root.activeBgAlt
+                border.color: root.separatorColor
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    spacing: 8
+
+                    Controls.Label {
+                        text: qsTr("View:")
+                        color: root.activeText
+                        opacity: 0.7
+                    }
+
+                    AppComboBox {
+                        id: textRenderSelector
+                        implicitHeight: 30
+                        Layout.preferredWidth: 150
+                        model: [qsTr("Side by side"), qsTr("Unified"), qsTr("Context"), qsTr("Normal")]
+                        Accessible.name: qsTr("Text render mode")
+                        onActivated: {
+                            const values = ["side-by-side", "unified", "context", "normal"]
+                            root.textRenderMode = values[currentIndex] || "side-by-side"
+                            root.requestCompare(false)
+                        }
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "view-filter"
+                        icon.color: root.activeText
+                        checkable: true
+                        checked: root.contextFolding
+                        Controls.ToolTip.text: qsTr("Fold unchanged context")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Fold unchanged context")
+                        onClicked: {
+                            root.contextFolding = checked
+                            root.requestCompare(false)
+                        }
+                    }
+
+                    AppSpinBox {
+                        implicitHeight: 30
+                        from: 0
+                        to: 99
+                        value: root.contextLines
+                        enabled: root.contextFolding
+                        Accessible.name: qsTr("Context lines")
+                        onValueModified: {
+                            root.contextLines = value
+                            if (root.contextFolding)
+                                root.requestCompare(false)
+                        }
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "view-list-details"
+                        icon.color: root.activeText
+                        checkable: true
+                        checked: root.showOnlyChanges
+                        Controls.ToolTip.text: qsTr("Show only changed rows")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Show only changed rows")
+                        onClicked: {
+                            root.showOnlyChanges = checked
+                            root.requestCompare(false)
+                        }
+                    }
+
+                    Kirigami.Separator { Layout.fillHeight: true }
+
+                    Controls.Label {
+                        text: qsTr("Syntax:")
+                        color: root.activeText
+                        opacity: 0.7
+                    }
+
+                    AppComboBox {
+                        id: syntaxSelector
+                        implicitHeight: 30
+                        Layout.preferredWidth: 130
+                        model: [qsTr("Plain"), qsTr("Auto"), qsTr("Rust"), qsTr("JSON"), qsTr("HTML"), qsTr("Markdown"), qsTr("Shell"), qsTr("TOML"), qsTr("YAML")]
+                        Accessible.name: qsTr("Syntax mode")
+                        onActivated: {
+                            const values = ["plain", "auto", "rust", "json", "html", "markdown", "shell", "toml", "yaml"]
+                            root.syntaxMode = values[currentIndex] || "plain"
+                            root.requestCompare(false)
+                        }
+                    }
+
+                    Kirigami.Separator { Layout.fillHeight: true }
+
+                    Controls.ToolButton {
+                        icon.name: "bookmark-new"
+                        icon.color: root.activeText
+                        enabled: root.currentDiffRow >= 0 || root.currentSearchRow >= 0
+                        Controls.ToolTip.text: qsTr("Toggle bookmark")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Toggle bookmark")
+                        onClicked: root.toggleBookmarkCurrentRow()
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "go-up"
+                        icon.color: root.activeText
+                        enabled: root.bookmarkRows.length > 0
+                        Controls.ToolTip.text: qsTr("Previous bookmark")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Previous bookmark")
+                        onClicked: root.previousBookmark()
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "go-down"
+                        icon.color: root.activeText
+                        enabled: root.bookmarkRows.length > 0
+                        Controls.ToolTip.text: qsTr("Next bookmark")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Next bookmark")
+                        onClicked: root.nextBookmark()
+                    }
+
+                    Item { Layout.fillWidth: true }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: visible ? 40 : 0
                 visible: root.compareMode === "Folder"
                 color: root.activeBgAlt
                 border.color: root.separatorColor
@@ -3496,6 +3723,34 @@ Kirigami.ApplicationWindow {
                     Controls.ToolTip.visible: hovered
                     Accessible.name: "Next match"
                     onClicked: root.nextSearchResult()
+                }
+
+                Controls.ToolButton {
+                    text: ".*"
+                    checkable: true
+                    checked: root.searchRegex
+                    implicitWidth: 36
+                    Controls.ToolTip.text: qsTr("Regex find")
+                    Controls.ToolTip.visible: hovered
+                    Accessible.name: qsTr("Regex find")
+                    onClicked: {
+                        root.searchRegex = checked
+                        root.rebuildSearchRows()
+                    }
+                }
+
+                Controls.ToolButton {
+                    text: "Aa"
+                    checkable: true
+                    checked: root.searchCaseSensitive
+                    implicitWidth: 36
+                    Controls.ToolTip.text: qsTr("Case-sensitive find")
+                    Controls.ToolTip.visible: hovered
+                    Accessible.name: qsTr("Case-sensitive find")
+                    onClicked: {
+                        root.searchCaseSensitive = checked
+                        root.rebuildSearchRows()
+                    }
                 }
 
                 Controls.Label {
@@ -4203,7 +4458,12 @@ Kirigami.ApplicationWindow {
                                 width: rowBackgrounds.width
                                 height: paneStack.lineHeight
                                 color: {
+                                    if (root.searchText !== "" && ((modelData && modelData.has_find_match) || index === root.currentSearchRow))
+                                        return root.searchRowColor
+                                    if ((modelData && modelData.bookmarked) || root.rowBookmarked(index))
+                                        return root.bookmarkRowColor
                                     var st = _state
+                                    if (st === "folded") return root.stateColors["skipped"]
                                     if (st === "left_only") return root.stateColors["left_only"]
                                     if (st === "right_only") return root.stateColors["right_only"]
                                     if (st === "changed") return root.stateColors["changed"]

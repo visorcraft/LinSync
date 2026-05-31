@@ -21,13 +21,14 @@ use linsync_core::{
     FolderOperationKind, FolderOperationOutcome, FolderOperationStatus, ImageCompareOptions,
     ImageCompareResult, MergeAction, MergeChoice, NamedFilters, ProfileId, ProfileStore,
     RecentPathStore, RecentSessionStore, RecentSessions, SessionFile, Settings, SettingsStore,
-    TableCompareOptions, TextCompareOptions, TextCompareResult, TextDocument, ThemePreference,
-    ThreeWayMergeState, TwoWayMergeState, TypedValueKind, builtin_profiles, cleanup_artifacts,
-    compare_binary, compare_binary_files, compare_documents, compare_folders,
-    compare_folders_with_progress, compare_images, compare_table_files, compare_text,
-    compare_text_files_cancellable, compare_text_files_with_prediffer, create_save_plan,
-    discover_installed_plugins, execute_folder_operation_plan, find_builtin, is_likely_binary,
-    plan_folder_operation, save_artifact, write_encoded_text_with_plan,
+    TableCompareOptions, TextCompareOptions, TextCompareResult, TextDocument, TextFindOptions,
+    TextInputEncoding, TextRenderMode, TextSyntaxMode, ThemePreference, ThreeWayMergeState,
+    TwoWayMergeState, TypedValueKind, builtin_profiles, cleanup_artifacts, compare_binary,
+    compare_binary_files, compare_documents, compare_folders, compare_folders_with_progress,
+    compare_images, compare_table_files, compare_text, compare_text_files_cancellable,
+    compare_text_files_with_prediffer, create_save_plan, discover_installed_plugins,
+    execute_folder_operation_plan, find_builtin, is_likely_binary, plan_folder_operation,
+    save_artifact, write_encoded_text_with_plan,
 };
 use serde::{Deserialize, Serialize};
 
@@ -251,6 +252,14 @@ struct GuiLineRow {
     /// Defaults to an empty string for rows produced without block info.
     #[serde(default)]
     block_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folded_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    syntax_spans: Vec<linsync_core::SyntaxSpan>,
+    #[serde(default)]
+    has_find_match: bool,
+    #[serde(default)]
+    bookmarked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -751,6 +760,10 @@ fn copy_tab_row(tab: &mut GuiCompareTab, row: usize, direction: &str) -> Result<
                 text: left.text,
                 state: "equal".to_owned(),
                 block_kind: "equal".to_owned(),
+                folded_count: None,
+                syntax_spans: Vec::new(),
+                has_find_match: false,
+                bookmarked: false,
             };
             tab.right_dirty = true;
             tab.status = "Copied left to right".to_owned();
@@ -762,6 +775,10 @@ fn copy_tab_row(tab: &mut GuiCompareTab, row: usize, direction: &str) -> Result<
                 text: right.text,
                 state: "equal".to_owned(),
                 block_kind: "equal".to_owned(),
+                folded_count: None,
+                syntax_spans: Vec::new(),
+                has_find_match: false,
+                bookmarked: false,
             };
             tab.left_dirty = true;
             tab.status = "Copied right to left".to_owned();
@@ -952,6 +969,10 @@ fn blank_gui_row(index: usize) -> GuiLineRow {
         text: String::new(),
         state: "empty".to_owned(),
         block_kind: String::new(),
+        folded_count: None,
+        syntax_spans: Vec::new(),
+        has_find_match: false,
+        bookmarked: false,
     }
 }
 
@@ -1711,6 +1732,10 @@ fn folder_rows_for_gui(
                     text: left_text,
                     state: state.to_owned(),
                     block_kind: String::new(),
+                    folded_count: None,
+                    syntax_spans: Vec::new(),
+                    has_find_match: false,
+                    bookmarked: false,
                 },
                 GuiLineRow {
                     row_id,
@@ -1718,6 +1743,10 @@ fn folder_rows_for_gui(
                     text: right_text,
                     state: state.to_owned(),
                     block_kind: String::new(),
+                    folded_count: None,
+                    syntax_spans: Vec::new(),
+                    has_find_match: false,
+                    bookmarked: false,
                 },
             )
         })
@@ -1792,7 +1821,7 @@ fn text_tab_cancellable(
     match result {
         Some(result) => {
             let encoding = Some(result.encoding_summary());
-            let (left_rows, right_rows) = text_rows_for_gui(&result.lines, &result.blocks);
+            let (left_rows, right_rows) = text_rows_for_gui_with_options(&result, text_options);
             Some(compare_tab(
                 "Text",
                 (left_path, right_path),
@@ -1924,6 +1953,10 @@ fn text_rows_for_gui(
                     text: line.left.clone().unwrap_or_default(),
                     state: state.to_owned(),
                     block_kind: block_kind.clone(),
+                    folded_count: None,
+                    syntax_spans: Vec::new(),
+                    has_find_match: false,
+                    bookmarked: false,
                 },
                 GuiLineRow {
                     row_id,
@@ -1931,6 +1964,109 @@ fn text_rows_for_gui(
                     text: line.right.clone().unwrap_or_default(),
                     state: state.to_owned(),
                     block_kind,
+                    folded_count: None,
+                    syntax_spans: Vec::new(),
+                    has_find_match: false,
+                    bookmarked: false,
+                },
+            )
+        })
+        .unzip()
+}
+
+fn text_rows_for_gui_with_options(
+    result: &TextCompareResult,
+    options: &TextCompareOptions,
+) -> (Vec<GuiLineRow>, Vec<GuiLineRow>) {
+    if options.render_mode != TextRenderMode::SideBySide {
+        let rendered = result.render_text(options);
+        let rows = rendered
+            .lines()
+            .enumerate()
+            .map(|(index, text)| {
+                let state = if text.starts_with('+') {
+                    "right_only"
+                } else if text.starts_with('-') {
+                    "left_only"
+                } else if text.starts_with('!') || text.starts_with('~') {
+                    "changed"
+                } else {
+                    "equal"
+                };
+                let block_kind = if state == "equal" {
+                    "equal"
+                } else {
+                    "difference"
+                };
+                GuiLineRow {
+                    row_id: format!("rendered:{index}"),
+                    number: Some(index + 1),
+                    text: text.to_owned(),
+                    state: state.to_owned(),
+                    block_kind: block_kind.to_owned(),
+                    folded_count: None,
+                    syntax_spans: Vec::new(),
+                    has_find_match: false,
+                    bookmarked: false,
+                }
+            })
+            .collect::<Vec<_>>();
+        let right_rows = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| GuiLineRow {
+                row_id: format!("rendered-right:{index}"),
+                number: row.number,
+                text: String::new(),
+                state: row.state.clone(),
+                block_kind: row.block_kind.clone(),
+                folded_count: row.folded_count,
+                syntax_spans: Vec::new(),
+                has_find_match: false,
+                bookmarked: false,
+            })
+            .collect();
+        return (rows, right_rows);
+    }
+
+    result
+        .view_rows(options)
+        .into_iter()
+        .map(|row| {
+            let row_id = if row.folded_count.is_some() {
+                format!("text-fold:{}", row.index)
+            } else {
+                format!(
+                    "text:{}:{}:{}",
+                    row.left_line.unwrap_or(0),
+                    row.right_line.unwrap_or(0),
+                    row.index
+                )
+            };
+            let has_find_match = !row.find_matches.is_empty();
+            let bookmarked = !row.bookmarks.is_empty();
+            (
+                GuiLineRow {
+                    row_id: row_id.clone(),
+                    number: row.left_line,
+                    text: row.left,
+                    state: row.state.clone(),
+                    block_kind: row.block_kind.clone(),
+                    folded_count: row.folded_count,
+                    syntax_spans: row.left_syntax,
+                    has_find_match,
+                    bookmarked,
+                },
+                GuiLineRow {
+                    row_id,
+                    number: row.right_line,
+                    text: row.right,
+                    state: row.state,
+                    block_kind: row.block_kind,
+                    folded_count: row.folded_count,
+                    syntax_spans: row.right_syntax,
+                    has_find_match,
+                    bookmarked,
                 },
             )
         })
@@ -1992,6 +2128,10 @@ fn table_rows_for_gui(
             text: left_text,
             state: state.to_owned(),
             block_kind: block_kind.to_owned(),
+            folded_count: None,
+            syntax_spans: Vec::new(),
+            has_find_match: false,
+            bookmarked: false,
         });
         right_rows.push(GuiLineRow {
             row_id,
@@ -1999,6 +2139,10 @@ fn table_rows_for_gui(
             text: right_text,
             state: state.to_owned(),
             block_kind: block_kind.to_owned(),
+            folded_count: None,
+            syntax_spans: Vec::new(),
+            has_find_match: false,
+            bookmarked: false,
         });
     }
     (left_rows, right_rows)
@@ -2031,6 +2175,10 @@ fn hex_rows_for_gui(
             text: format!("{:08x}  {}  {}", row.offset, row.left_hex, row.left_ascii),
             state: state.to_owned(),
             block_kind: block_kind.to_owned(),
+            folded_count: None,
+            syntax_spans: Vec::new(),
+            has_find_match: false,
+            bookmarked: false,
         });
         right_rows.push(GuiLineRow {
             row_id,
@@ -2038,6 +2186,10 @@ fn hex_rows_for_gui(
             text: format!("{:08x}  {}  {}", row.offset, row.right_hex, row.right_ascii),
             state: state.to_owned(),
             block_kind: block_kind.to_owned(),
+            folded_count: None,
+            syntax_spans: Vec::new(),
+            has_find_match: false,
+            bookmarked: false,
         });
     }
     (left_rows, right_rows)
@@ -2873,6 +3025,14 @@ fn resolve_text_options_for_request(
 ) -> Result<TextCompareOptions, String> {
     let profile = resolve_profile_for_request(paths, params)?;
     let mut opts = profile.text;
+    apply_text_query_overrides(&mut opts, params)?;
+    Ok(opts)
+}
+
+fn apply_text_query_overrides(
+    opts: &mut TextCompareOptions,
+    params: &[(String, String)],
+) -> Result<(), String> {
     if let Some(v) = query_value(params, "ignore_case")
         && let Some(parsed) = parse_bool_query_param(v)
     {
@@ -2898,7 +3058,61 @@ fn resolve_text_options_for_request(
     {
         opts.detect_moves = parsed;
     }
-    Ok(opts)
+    if let Some(v) = query_value(params, "diff_algorithm") {
+        opts.diff_algorithm = match v {
+            "lcs" => linsync_core::DiffAlgorithm::Lcs,
+            "patience" => linsync_core::DiffAlgorithm::Patience,
+            "myers" => linsync_core::DiffAlgorithm::Myers,
+            _ => return Err(format!("unknown diff_algorithm '{v}'")),
+        };
+    }
+    if let Some(v) = query_value(params, "inline_granularity") {
+        opts.inline_granularity = match v {
+            "char" => linsync_core::InlineGranularity::Char,
+            "word" => linsync_core::InlineGranularity::Word,
+            "grapheme" => linsync_core::InlineGranularity::Grapheme,
+            _ => return Err(format!("unknown inline_granularity '{v}'")),
+        };
+    }
+    for value in params
+        .iter()
+        .filter(|(key, _)| key == "regex_rule_set")
+        .map(|(_, value)| value)
+    {
+        opts.regex_rule_sets.push(value.clone());
+    }
+    if let Some(v) = query_value(params, "context_lines") {
+        opts.context_lines = Some(
+            v.parse::<usize>()
+                .map_err(|_| format!("invalid context_lines '{v}'"))?,
+        );
+    }
+    if let Some(v) = query_value(params, "show_only_changes")
+        && let Some(parsed) = parse_bool_query_param(v)
+    {
+        opts.show_only_changes = parsed;
+    }
+    if let Some(v) = query_value(params, "render_mode") {
+        opts.render_mode = parse_text_render_mode_query(v)?;
+    }
+    if let Some(v) = query_value(params, "syntax") {
+        opts.syntax_mode = parse_text_syntax_mode_query(v)?;
+    }
+    if let Some(v) = query_value(params, "encoding") {
+        opts.encoding = parse_text_encoding_query(v)?;
+    }
+    if let Some(pattern) = query_value(params, "find") {
+        opts.find = Some(TextFindOptions {
+            pattern: pattern.to_owned(),
+            regex: query_bool(params, "find_regex"),
+            case_sensitive: query_bool(params, "find_case_sensitive"),
+        });
+    }
+    opts.validate_rule_sets()
+        .map_err(|err| format!("invalid text options: {err}"))?;
+    opts.validate_regex_options()
+        .map_err(|err| format!("invalid text regex option: {err}"))?;
+    Ok(())
 }
 
 fn parse_bool_query_param(v: &str) -> Option<bool> {
@@ -2906,6 +3120,44 @@ fn parse_bool_query_param(v: &str) -> Option<bool> {
         "true" | "1" | "yes" | "on" => Some(true),
         "false" | "0" | "no" | "off" => Some(false),
         _ => None,
+    }
+}
+
+fn parse_text_render_mode_query(value: &str) -> Result<TextRenderMode, String> {
+    match value {
+        "side-by-side" | "side_by_side" | "side" => Ok(TextRenderMode::SideBySide),
+        "unified" => Ok(TextRenderMode::Unified),
+        "context" => Ok(TextRenderMode::Context),
+        "normal" => Ok(TextRenderMode::Normal),
+        "html" => Ok(TextRenderMode::Html),
+        _ => Err(format!("unknown render_mode '{value}'")),
+    }
+}
+
+fn parse_text_syntax_mode_query(value: &str) -> Result<TextSyntaxMode, String> {
+    match value {
+        "plain" | "none" => Ok(TextSyntaxMode::Plain),
+        "auto" => Ok(TextSyntaxMode::Auto),
+        "rust" | "rs" => Ok(TextSyntaxMode::Rust),
+        "json" => Ok(TextSyntaxMode::Json),
+        "html" | "xml" => Ok(TextSyntaxMode::Html),
+        "markdown" | "md" => Ok(TextSyntaxMode::Markdown),
+        "shell" | "sh" | "bash" => Ok(TextSyntaxMode::Shell),
+        "toml" => Ok(TextSyntaxMode::Toml),
+        "yaml" | "yml" => Ok(TextSyntaxMode::Yaml),
+        _ => Err(format!("unknown syntax '{value}'")),
+    }
+}
+
+fn parse_text_encoding_query(value: &str) -> Result<TextInputEncoding, String> {
+    match value {
+        "auto" => Ok(TextInputEncoding::Auto),
+        "utf8" | "utf-8" => Ok(TextInputEncoding::Utf8),
+        "utf8-bom" | "utf-8-bom" => Ok(TextInputEncoding::Utf8Bom),
+        "utf16le" | "utf-16le" | "utf-16-le" => Ok(TextInputEncoding::Utf16Le),
+        "utf16be" | "utf-16be" | "utf-16-be" => Ok(TextInputEncoding::Utf16Be),
+        "lossy-utf8" | "lossy-utf-8" => Ok(TextInputEncoding::LossyUtf8),
+        _ => Err(format!("unknown encoding '{value}'")),
     }
 }
 
@@ -2962,31 +3214,7 @@ fn resolve_compare_options_for_request(
     let profile = resolve_profile_for_request(paths, params)?;
 
     let mut text = profile.text;
-    if let Some(v) = query_value(params, "ignore_case")
-        && let Some(parsed) = parse_bool_query_param(v)
-    {
-        text.ignore_case = parsed;
-    }
-    if let Some(v) = query_value(params, "ignore_whitespace")
-        && let Some(parsed) = parse_bool_query_param(v)
-    {
-        text.ignore_whitespace = parsed;
-    }
-    if let Some(v) = query_value(params, "ignore_blank_lines")
-        && let Some(parsed) = parse_bool_query_param(v)
-    {
-        text.ignore_blank_lines = parsed;
-    }
-    if let Some(v) = query_value(params, "ignore_eol")
-        && let Some(parsed) = parse_bool_query_param(v)
-    {
-        text.ignore_eol = parsed;
-    }
-    if let Some(v) = query_value(params, "detect_moves")
-        && let Some(parsed) = parse_bool_query_param(v)
-    {
-        text.detect_moves = parsed;
-    }
+    apply_text_query_overrides(&mut text, params)?;
 
     let mut folder = profile.folder;
     if let Some(v) = query_value(params, "recursive")
@@ -3248,7 +3476,7 @@ fn raw_compare_bridge_response(
         &right_text,
         &text_options,
     );
-    let (left_rows, right_rows) = text_rows_for_gui(&result.lines, &result.blocks);
+    let (left_rows, right_rows) = text_rows_for_gui_with_options(&result, &text_options);
 
     let tab = GuiCompareTab {
         id: 1,
@@ -7350,6 +7578,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn compare_text_bridge_applies_view_find_syntax_options() {
+        let root = test_file_root("text-view-options");
+        let left_path = root.join("left.rs");
+        let right_path = root.join("right.rs");
+        std::fs::write(&left_path, "fn main() {}\nlet value = 1;\n").unwrap();
+        std::fs::write(&right_path, "fn main() {}\nlet value = 2;\n").unwrap();
+
+        let paths = test_app_paths("text-view-options-paths");
+        let state = test_bridge_state(None);
+        let query = format!(
+            "left={}&right={}&mode=Text&context_lines=0&syntax=rust&find=value",
+            urlencoding::encode(left_path.to_str().unwrap()),
+            urlencoding::encode(right_path.to_str().unwrap()),
+        );
+        let resp = String::from_utf8(bridge_response(
+            &format!("GET /compare?{query} HTTP/1.1\r\n"),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.contains("HTTP/1.1 200"), "compare should succeed");
+        let body = json_response_body(&resp);
+        let rows = body["session"]["tabs"][0]["left_rows"]
+            .as_array()
+            .expect("left rows");
+
+        assert!(
+            rows.iter()
+                .any(|row| row["folded_count"].as_u64().is_some()),
+            "context_lines=0 should create folded rows; body={body}"
+        );
+        assert!(
+            rows.iter().any(|row| row["has_find_match"] == true),
+            "find=value should mark matching rows; body={body}"
+        );
+        assert!(
+            rows.iter().any(|row| row["syntax_spans"]
+                .as_array()
+                .is_some_and(|spans| !spans.is_empty())),
+            "syntax=rust should attach syntax spans; body={body}"
+        );
     }
 
     #[test]

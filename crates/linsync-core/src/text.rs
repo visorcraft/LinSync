@@ -3,7 +3,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use regex::{Regex, RegexSet, RegexSetBuilder};
+use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -34,6 +34,44 @@ pub enum InlineGranularity {
     Grapheme,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TextInputEncoding {
+    #[default]
+    Auto,
+    Utf8,
+    Utf8Bom,
+    Utf16Le,
+    Utf16Be,
+    LossyUtf8,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TextRenderMode {
+    #[default]
+    SideBySide,
+    Unified,
+    Context,
+    Normal,
+    Html,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TextSyntaxMode {
+    #[default]
+    Plain,
+    Auto,
+    Rust,
+    Json,
+    Html,
+    Markdown,
+    Shell,
+    Toml,
+    Yaml,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CompareOptions {
@@ -58,6 +96,7 @@ pub struct TextCompareOptions {
     pub ignore_whitespace: bool,
     pub ignore_eol: bool,
     pub ignore_blank_lines: bool,
+    pub regex_rule_sets: Vec<String>,
     pub ignore_line_patterns: Vec<String>,
     pub substitutions: Vec<TextSubstitution>,
     pub detect_moves: bool,
@@ -67,6 +106,20 @@ pub struct TextCompareOptions {
     pub diff_algorithm: DiffAlgorithm,
     #[serde(default)]
     pub inline_granularity: InlineGranularity,
+    #[serde(default)]
+    pub encoding: TextInputEncoding,
+    #[serde(default)]
+    pub render_mode: TextRenderMode,
+    #[serde(default)]
+    pub syntax_mode: TextSyntaxMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_lines: Option<usize>,
+    #[serde(default)]
+    pub show_only_changes: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub find: Option<TextFindOptions>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bookmarks: Vec<TextBookmark>,
 }
 
 fn default_min_move_lines() -> usize {
@@ -80,12 +133,20 @@ impl Default for TextCompareOptions {
             ignore_whitespace: false,
             ignore_eol: false,
             ignore_blank_lines: false,
+            regex_rule_sets: Vec::new(),
             ignore_line_patterns: Vec::new(),
             substitutions: Vec::new(),
             detect_moves: false,
             min_move_lines: default_min_move_lines(),
             diff_algorithm: DiffAlgorithm::default(),
             inline_granularity: InlineGranularity::default(),
+            encoding: TextInputEncoding::default(),
+            render_mode: TextRenderMode::default(),
+            syntax_mode: TextSyntaxMode::default(),
+            context_lines: None,
+            show_only_changes: false,
+            find: None,
+            bookmarks: Vec::new(),
         }
     }
 }
@@ -96,17 +157,172 @@ pub struct TextSubstitution {
     pub replacement: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextRegexRuleSet {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub ignore_line_patterns: Vec<String>,
+    pub substitutions: Vec<TextSubstitution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextFindOptions {
+    pub pattern: String,
+    #[serde(default)]
+    pub regex: bool,
+    #[serde(default)]
+    pub case_sensitive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextFindMatch {
+    pub side: CompareSide,
+    pub line: usize,
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextBookmark {
+    pub side: CompareSide,
+    pub line: usize,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyntaxSpan {
+    pub start: usize,
+    pub end: usize,
+    pub class: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextViewRow {
+    pub index: usize,
+    pub left_line: Option<usize>,
+    pub right_line: Option<usize>,
+    pub left: String,
+    pub right: String,
+    pub state: String,
+    pub block_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folded_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_syntax: Vec<SyntaxSpan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub right_syntax: Vec<SyntaxSpan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub find_matches: Vec<TextFindMatch>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bookmarks: Vec<TextBookmark>,
+}
+
+pub fn builtin_text_regex_rule_sets() -> Vec<TextRegexRuleSet> {
+    vec![
+        TextRegexRuleSet {
+            id: "generated".to_owned(),
+            name: "Generated headers".to_owned(),
+            description: "Ignore common generated-file banner lines.".to_owned(),
+            ignore_line_patterns: vec![
+                r"(?i)^\s*(//|#|;|--)?\s*(generated|auto-generated|autogenerated)\b.*$"
+                    .to_owned(),
+                r"(?i)^\s*(//|#|;|--)?\s*do not edit\b.*$".to_owned(),
+            ],
+            substitutions: Vec::new(),
+        },
+        TextRegexRuleSet {
+            id: "volatile".to_owned(),
+            name: "Volatile values".to_owned(),
+            description: "Normalize UUIDs, ISO timestamps, and hex addresses.".to_owned(),
+            ignore_line_patterns: Vec::new(),
+            substitutions: vec![
+                TextSubstitution {
+                    pattern:
+                        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+                            .to_owned(),
+                    replacement: "<uuid>".to_owned(),
+                },
+                TextSubstitution {
+                    pattern: r"\b\d{4}-\d{2}-\d{2}[T ][0-9:.+-Zz]+\b".to_owned(),
+                    replacement: "<timestamp>".to_owned(),
+                },
+                TextSubstitution {
+                    pattern: r"\b0x[0-9a-fA-F]+\b".to_owned(),
+                    replacement: "<hex>".to_owned(),
+                },
+            ],
+        },
+        TextRegexRuleSet {
+            id: "comments".to_owned(),
+            name: "Comment-only lines".to_owned(),
+            description: "Ignore lines that only contain a line comment.".to_owned(),
+            ignore_line_patterns: vec![r"^\s*(//|#|;|--).*$".to_owned()],
+            substitutions: Vec::new(),
+        },
+        TextRegexRuleSet {
+            id: "whitespace".to_owned(),
+            name: "Whitespace noise".to_owned(),
+            description: "Normalize repeated horizontal whitespace.".to_owned(),
+            ignore_line_patterns: Vec::new(),
+            substitutions: vec![TextSubstitution {
+                pattern: r"[ \t]+".to_owned(),
+                replacement: " ".to_owned(),
+            }],
+        },
+    ]
+}
+
+pub fn text_regex_rule_set(id: &str) -> Option<TextRegexRuleSet> {
+    builtin_text_regex_rule_sets()
+        .into_iter()
+        .find(|rule_set| rule_set.id == id)
+}
+
 impl TextCompareOptions {
     pub fn validate_regex_options(&self) -> Result<(), regex::Error> {
-        RegexSetBuilder::new(&self.ignore_line_patterns)
+        let mut ignore_patterns = self.ignore_line_patterns.clone();
+        let mut substitutions = self.substitutions.clone();
+        for id in &self.regex_rule_sets {
+            if let Some(rule_set) = text_regex_rule_set(id) {
+                ignore_patterns.extend(rule_set.ignore_line_patterns);
+                substitutions.extend(rule_set.substitutions);
+            };
+        }
+
+        RegexSetBuilder::new(&ignore_patterns)
             .case_insensitive(self.ignore_case)
             .build()
             .map(|_| ())?;
 
-        for substitution in &self.substitutions {
+        for substitution in &substitutions {
             Regex::new(&substitution.pattern)?;
         }
 
+        if let Some(find) = &self.find
+            && find.regex
+        {
+            Regex::new(&find.pattern)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_rule_sets(&self) -> Result<(), String> {
+        for id in &self.regex_rule_sets {
+            if text_regex_rule_set(id).is_none() {
+                let known = builtin_text_regex_rule_sets()
+                    .into_iter()
+                    .map(|rule_set| rule_set.id)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(format!(
+                    "unknown text regex rule set '{id}'; expected one of: {known}"
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -193,11 +409,11 @@ impl TextCompareResult {
     }
 
     pub fn to_html_report(&self) -> String {
-        html_report(self, None)
+        html_report(self, None, TextSyntaxMode::Plain)
     }
 
     pub fn to_html_report_with_context(&self, context: Option<usize>) -> String {
-        html_report(self, context)
+        html_report(self, context, TextSyntaxMode::Plain)
     }
 
     pub fn encoding_summary(&self) -> EncodingSummary {
@@ -212,6 +428,98 @@ impl TextCompareResult {
             line_ending_differs: self.left_document.line_ending != self.right_document.line_ending,
             bom_differs: self.left_document.has_bom != self.right_document.has_bom,
         }
+    }
+
+    pub fn render_text(&self, options: &TextCompareOptions) -> String {
+        let context = options.context_lines.unwrap_or(3);
+        match options.render_mode {
+            TextRenderMode::SideBySide => side_by_side_text(self, options),
+            TextRenderMode::Unified => self.to_unified_diff(context),
+            TextRenderMode::Context => self.to_context_diff(context),
+            TextRenderMode::Normal => self.to_normal_diff(),
+            TextRenderMode::Html => {
+                self.to_html_report_with_options(options.context_lines, options.syntax_mode)
+            }
+        }
+    }
+
+    pub fn to_html_report_with_options(
+        &self,
+        context: Option<usize>,
+        syntax_mode: TextSyntaxMode,
+    ) -> String {
+        html_report(self, context, syntax_mode)
+    }
+
+    pub fn view_rows(&self, options: &TextCompareOptions) -> Vec<TextViewRow> {
+        let visible = visible_line_ranges(&self.lines, options);
+        let find_matches = options
+            .find
+            .as_ref()
+            .and_then(|find| self.find_matches(find).ok())
+            .unwrap_or_default();
+        let syntax_mode = resolved_syntax_mode(
+            options.syntax_mode,
+            self.left_document.path.as_deref(),
+            self.right_document.path.as_deref(),
+        );
+        let mut rows = Vec::new();
+        let mut previous_end = 0;
+
+        for range in visible {
+            if range.start > previous_end && !options.show_only_changes {
+                rows.push(fold_row(rows.len(), range.start - previous_end));
+            }
+            for (offset, line) in self.lines[range.start..range.end].iter().enumerate() {
+                let source_index = range.start + offset;
+                rows.push(view_row_for_line(
+                    rows.len(),
+                    source_index,
+                    line,
+                    self,
+                    syntax_mode,
+                    &find_matches,
+                    &options.bookmarks,
+                ));
+            }
+            previous_end = range.end;
+        }
+
+        if previous_end < self.lines.len() && !options.show_only_changes {
+            rows.push(fold_row(rows.len(), self.lines.len() - previous_end));
+        }
+
+        if rows.is_empty() && self.lines.is_empty() {
+            return rows;
+        }
+
+        rows
+    }
+
+    pub fn find_matches(&self, find: &TextFindOptions) -> Result<Vec<TextFindMatch>, regex::Error> {
+        if find.pattern.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let pattern = if find.regex {
+            find.pattern.clone()
+        } else {
+            regex::escape(&find.pattern)
+        };
+        let regex = RegexBuilder::new(&pattern)
+            .case_insensitive(!find.case_sensitive)
+            .build()?;
+
+        let mut matches = Vec::new();
+        for line in &self.lines {
+            if let (Some(number), Some(text)) = (line.left_line, line.left.as_deref()) {
+                collect_find_matches(CompareSide::Left, number, text, &regex, &mut matches);
+            }
+            if let (Some(number), Some(text)) = (line.right_line, line.right.as_deref()) {
+                collect_find_matches(CompareSide::Right, number, text, &regex, &mut matches);
+            }
+        }
+        Ok(matches)
     }
 }
 
@@ -325,8 +633,8 @@ pub fn compare_text_files(
     right: &Path,
     options: &TextCompareOptions,
 ) -> io::Result<TextCompareResult> {
-    let left_document = TextDocument::from_path(left)?;
-    let right_document = TextDocument::from_path(right)?;
+    let left_document = TextDocument::from_path_with_encoding(left, options.encoding)?;
+    let right_document = TextDocument::from_path_with_encoding(right, options.encoding)?;
     Ok(compare_documents(left_document, right_document, options))
 }
 
@@ -340,8 +648,8 @@ pub fn compare_text_files_cancellable(
     options: &TextCompareOptions,
     should_cancel: &dyn Fn() -> bool,
 ) -> io::Result<Option<TextCompareResult>> {
-    let left_document = TextDocument::from_path(left)?;
-    let right_document = TextDocument::from_path(right)?;
+    let left_document = TextDocument::from_path_with_encoding(left, options.encoding)?;
+    let right_document = TextDocument::from_path_with_encoding(right, options.encoding)?;
     Ok(compare_documents_cancellable(
         left_document,
         right_document,
@@ -371,7 +679,7 @@ pub fn compare_text_files_with_prediffer(
         execution_options,
     ) {
         Some(doc) => doc,
-        None => TextDocument::from_path(left)?,
+        None => TextDocument::from_path_with_encoding(left, options.encoding)?,
     };
     let right_document = match apply_prediffer_to_side(
         right,
@@ -381,7 +689,7 @@ pub fn compare_text_files_with_prediffer(
         execution_options,
     ) {
         Some(doc) => doc,
-        None => TextDocument::from_path(right)?,
+        None => TextDocument::from_path_with_encoding(right, options.encoding)?,
     };
     Ok(compare_documents(left_document, right_document, options))
 }
@@ -500,15 +808,20 @@ pub fn compare_documents_cancellable(
 
 impl TextDocument {
     pub fn from_path(path: &Path) -> io::Result<Self> {
+        Self::from_path_with_encoding(path, TextInputEncoding::Auto)
+    }
+
+    pub fn from_path_with_encoding(path: &Path, encoding: TextInputEncoding) -> io::Result<Self> {
         let bytes = fs::read(path)?;
         let read_only = fs::metadata(path)
             .map(|metadata| metadata.permissions().readonly())
             .unwrap_or(false);
-        Ok(Self::from_bytes(
+        Ok(Self::from_bytes_with_encoding(
             path.display().to_string(),
             Some(path.to_path_buf()),
             &bytes,
             read_only,
+            encoding,
         ))
     }
 
@@ -517,7 +830,17 @@ impl TextDocument {
     }
 
     pub fn from_bytes(name: String, path: Option<PathBuf>, bytes: &[u8], read_only: bool) -> Self {
-        let decoded = decode_text(bytes);
+        Self::from_bytes_with_encoding(name, path, bytes, read_only, TextInputEncoding::Auto)
+    }
+
+    pub fn from_bytes_with_encoding(
+        name: String,
+        path: Option<PathBuf>,
+        bytes: &[u8],
+        read_only: bool,
+        encoding: TextInputEncoding,
+    ) -> Self {
+        let decoded = decode_text_with_encoding(bytes, encoding);
         let lines = split_lines(&decoded.text);
         let line_ending = detect_line_ending(&lines);
 
@@ -540,6 +863,59 @@ struct DecodedText {
     encoding: TextEncoding,
     has_bom: bool,
     had_replacement_characters: bool,
+}
+
+fn decode_text_with_encoding(bytes: &[u8], encoding: TextInputEncoding) -> DecodedText {
+    match encoding {
+        TextInputEncoding::Auto => decode_text(bytes),
+        TextInputEncoding::Utf8 => {
+            let (text, had_replacement_characters) = decode_utf8_lossy(bytes);
+            DecodedText {
+                text,
+                encoding: if had_replacement_characters {
+                    TextEncoding::LossyUtf8
+                } else {
+                    TextEncoding::Utf8
+                },
+                has_bom: false,
+                had_replacement_characters,
+            }
+        }
+        TextInputEncoding::Utf8Bom => {
+            let has_bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
+            let body = if has_bom { &bytes[3..] } else { bytes };
+            let (text, had_replacement_characters) = decode_utf8_lossy(body);
+            DecodedText {
+                text,
+                encoding: TextEncoding::Utf8Bom,
+                has_bom,
+                had_replacement_characters,
+            }
+        }
+        TextInputEncoding::Utf16Le => {
+            let has_bom = bytes.starts_with(&[0xFF, 0xFE]);
+            let body = if has_bom { &bytes[2..] } else { bytes };
+            let mut decoded = decode_utf16(body, true);
+            decoded.has_bom = has_bom;
+            decoded
+        }
+        TextInputEncoding::Utf16Be => {
+            let has_bom = bytes.starts_with(&[0xFE, 0xFF]);
+            let body = if has_bom { &bytes[2..] } else { bytes };
+            let mut decoded = decode_utf16(body, false);
+            decoded.has_bom = has_bom;
+            decoded
+        }
+        TextInputEncoding::LossyUtf8 => {
+            let text = String::from_utf8_lossy(bytes).into_owned();
+            DecodedText {
+                had_replacement_characters: text.contains(char::REPLACEMENT_CHARACTER),
+                text,
+                encoding: TextEncoding::LossyUtf8,
+                has_bom: false,
+            }
+        }
+    }
 }
 
 fn decode_text(bytes: &[u8]) -> DecodedText {
@@ -734,22 +1110,30 @@ fn comparable_lines(document: &TextDocument, options: &TextCompareOptions) -> Ve
 struct NormalizationPlan<'a> {
     options: &'a TextCompareOptions,
     ignore_line_patterns: Option<RegexSet>,
-    substitutions: Vec<(Regex, &'a str)>,
+    substitutions: Vec<(Regex, String)>,
 }
 
 impl<'a> NormalizationPlan<'a> {
     fn new(options: &'a TextCompareOptions) -> Self {
-        let ignore_line_patterns = RegexSetBuilder::new(&options.ignore_line_patterns)
+        let mut ignore_line_patterns_raw = options.ignore_line_patterns.clone();
+        let mut substitutions_raw = options.substitutions.clone();
+        for id in &options.regex_rule_sets {
+            if let Some(rule_set) = text_regex_rule_set(id) {
+                ignore_line_patterns_raw.extend(rule_set.ignore_line_patterns);
+                substitutions_raw.extend(rule_set.substitutions);
+            }
+        }
+
+        let ignore_line_patterns = RegexSetBuilder::new(&ignore_line_patterns_raw)
             .case_insensitive(options.ignore_case)
             .build()
             .ok();
-        let substitutions = options
-            .substitutions
+        let substitutions = substitutions_raw
             .iter()
             .filter_map(|substitution| {
                 Regex::new(&substitution.pattern)
                     .ok()
-                    .map(|regex| (regex, substitution.replacement.as_str()))
+                    .map(|regex| (regex, substitution.replacement.clone()))
             })
             .collect();
 
@@ -763,7 +1147,9 @@ impl<'a> NormalizationPlan<'a> {
     fn normalize_line(&self, line: &str) -> String {
         let mut normalized = line.to_owned();
         for (regex, replacement) in &self.substitutions {
-            normalized = regex.replace_all(&normalized, *replacement).into_owned();
+            normalized = regex
+                .replace_all(&normalized, replacement.as_str())
+                .into_owned();
         }
 
         if self.options.ignore_whitespace {
@@ -2189,6 +2575,157 @@ fn diff_hunks(lines: &[DiffLine], context: usize) -> Vec<DiffHunkRange> {
     ranges
 }
 
+fn visible_line_ranges(lines: &[DiffLine], options: &TextCompareOptions) -> Vec<DiffHunkRange> {
+    if options.show_only_changes {
+        return lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                (line.kind != DiffLineKind::Equal).then_some(DiffHunkRange {
+                    start: index,
+                    end: index + 1,
+                })
+            })
+            .collect();
+    }
+
+    match options.context_lines {
+        Some(context) => diff_hunks(lines, context),
+        None => {
+            if lines.is_empty() {
+                Vec::new()
+            } else {
+                vec![DiffHunkRange {
+                    start: 0,
+                    end: lines.len(),
+                }]
+            }
+        }
+    }
+}
+
+fn fold_row(index: usize, count: usize) -> TextViewRow {
+    TextViewRow {
+        index,
+        left_line: None,
+        right_line: None,
+        left: format!("... {count} unchanged line(s) folded ..."),
+        right: format!("... {count} unchanged line(s) folded ..."),
+        state: "folded".to_owned(),
+        block_kind: "folded".to_owned(),
+        folded_count: Some(count),
+        left_syntax: Vec::new(),
+        right_syntax: Vec::new(),
+        find_matches: Vec::new(),
+        bookmarks: Vec::new(),
+    }
+}
+
+fn view_row_for_line(
+    index: usize,
+    source_index: usize,
+    line: &DiffLine,
+    result: &TextCompareResult,
+    syntax_mode: TextSyntaxMode,
+    find_matches: &[TextFindMatch],
+    bookmarks: &[TextBookmark],
+) -> TextViewRow {
+    let state = gui_state_for_line(line.kind).to_owned();
+    let block_kind = block_kind_for_source_index(source_index, &result.blocks).to_owned();
+    let left_text = line.left.clone().unwrap_or_default();
+    let right_text = line.right.clone().unwrap_or_default();
+    let left_syntax = if left_text.is_empty() {
+        Vec::new()
+    } else {
+        syntax_spans(&left_text, syntax_mode)
+    };
+    let right_syntax = if right_text.is_empty() {
+        Vec::new()
+    } else {
+        syntax_spans(&right_text, syntax_mode)
+    };
+    let row_find_matches = find_matches
+        .iter()
+        .filter(|m| {
+            (m.side == CompareSide::Left && line.left_line == Some(m.line))
+                || (m.side == CompareSide::Right && line.right_line == Some(m.line))
+        })
+        .cloned()
+        .collect();
+    let row_bookmarks = bookmarks
+        .iter()
+        .filter(|b| {
+            (b.side == CompareSide::Left && line.left_line == Some(b.line))
+                || (b.side == CompareSide::Right && line.right_line == Some(b.line))
+        })
+        .cloned()
+        .collect();
+
+    TextViewRow {
+        index,
+        left_line: line.left_line,
+        right_line: line.right_line,
+        left: left_text,
+        right: right_text,
+        state,
+        block_kind,
+        folded_count: None,
+        left_syntax,
+        right_syntax,
+        find_matches: row_find_matches,
+        bookmarks: row_bookmarks,
+    }
+}
+
+fn gui_state_for_line(kind: DiffLineKind) -> &'static str {
+    match kind {
+        DiffLineKind::Equal => "equal",
+        DiffLineKind::Changed => "changed",
+        DiffLineKind::LeftOnly => "left_only",
+        DiffLineKind::RightOnly => "right_only",
+    }
+}
+
+fn block_kind_for_source_index(index: usize, blocks: &[DiffBlock]) -> &'static str {
+    let mut cursor = 0usize;
+    for block in blocks {
+        let span = block.left_len.max(block.right_len).max(1);
+        if index >= cursor && index < cursor + span {
+            return match block.kind {
+                DiffBlockKind::Equal => "equal",
+                DiffBlockKind::Difference => "difference",
+                DiffBlockKind::Moved { .. } => "moved",
+            };
+        }
+        cursor += span;
+    }
+    "equal"
+}
+
+fn side_by_side_text(result: &TextCompareResult, options: &TextCompareOptions) -> String {
+    let mut output = String::new();
+    for row in result.view_rows(options) {
+        if row.folded_count.is_some() {
+            output.push_str(&row.left);
+            output.push('\n');
+            continue;
+        }
+        let left_no = row
+            .left_line
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "-".to_owned());
+        let right_no = row
+            .right_line
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "-".to_owned());
+        output.push_str(&format!(
+            "{left_no:>6} | {right_no:>6} | {:<12} | {} || {}\n",
+            row.state, row.left, row.right
+        ));
+    }
+    output
+}
+
 fn range_stats(lines: &[DiffLine], start: usize, end: usize) -> DiffRangeStats {
     let left_len = lines[start..end].iter().map(left_line_count).sum();
     let right_len = lines[start..end].iter().map(right_line_count).sum();
@@ -2267,14 +2804,20 @@ fn normal_range(start: usize, len: usize) -> String {
     }
 }
 
-fn html_report(result: &TextCompareResult, context: Option<usize>) -> String {
+fn html_report(
+    result: &TextCompareResult,
+    context: Option<usize>,
+    syntax_mode: TextSyntaxMode,
+) -> String {
     let mut output = String::new();
     output.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">\n");
     output.push_str("<title>LinSync Compare Report</title>\n");
     output.push_str(
         "<style>body{font-family:sans-serif}table{border-collapse:collapse;width:100%}\
 td,th{border:1px solid #bbb;padding:0.25rem 0.4rem;font-family:monospace;white-space:pre-wrap}\
-.eq{background:#fff}.chg{background:#fff4c2}.del{background:#ffd9d9}.add{background:#daf5d7}</style>\n",
+.eq{background:#fff}.chg{background:#fff4c2}.del{background:#ffd9d9}.add{background:#daf5d7}\
+.syn-keyword{color:#7a3e9d;font-weight:600}.syn-string{color:#0b6b3a}.syn-number{color:#8a4b08}\
+.syn-comment{color:#69717a;font-style:italic}.syn-key{color:#005f9e}.syn-tag{color:#8a2b58}</style>\n",
     );
     output.push_str("</head><body>\n");
     output.push_str(&format!(
@@ -2285,6 +2828,11 @@ td,th{border:1px solid #bbb;padding:0.25rem 0.4rem;font-family:monospace;white-s
         result.summary.diff_blocks
     ));
     output.push_str("<table><thead><tr><th>Left</th><th>Right</th><th>Left Text</th><th>Right Text</th></tr></thead><tbody>\n");
+    let resolved_syntax = resolved_syntax_mode(
+        syntax_mode,
+        result.left_document.path.as_deref(),
+        result.right_document.path.as_deref(),
+    );
     for (index, line) in result.lines.iter().enumerate() {
         if let Some(context) = context
             && line.kind == DiffLineKind::Equal
@@ -2307,8 +2855,8 @@ td,th{border:1px solid #bbb;padding:0.25rem 0.4rem;font-family:monospace;white-s
             line.right_line
                 .map(|number| number.to_string())
                 .unwrap_or_default(),
-            escape_html(line.left.as_deref().unwrap_or("")),
-            escape_html(line.right.as_deref().unwrap_or(""))
+            syntax_highlight_html(line.left.as_deref().unwrap_or(""), resolved_syntax),
+            syntax_highlight_html(line.right.as_deref().unwrap_or(""), resolved_syntax)
         ));
     }
     output.push_str("</tbody></table>\n</body></html>\n");
@@ -2336,6 +2884,286 @@ fn escape_html(value: &str) -> String {
         }
     }
     escaped
+}
+
+fn collect_find_matches(
+    side: CompareSide,
+    line: usize,
+    text: &str,
+    regex: &Regex,
+    matches: &mut Vec<TextFindMatch>,
+) {
+    for m in regex.find_iter(text) {
+        matches.push(TextFindMatch {
+            side,
+            line,
+            start: byte_to_char_index(text, m.start()),
+            end: byte_to_char_index(text, m.end()),
+            text: m.as_str().to_owned(),
+        });
+    }
+}
+
+fn byte_to_char_index(text: &str, byte_index: usize) -> usize {
+    text[..byte_index.min(text.len())].chars().count()
+}
+
+fn resolved_syntax_mode(
+    requested: TextSyntaxMode,
+    left: Option<&Path>,
+    right: Option<&Path>,
+) -> TextSyntaxMode {
+    if requested != TextSyntaxMode::Auto {
+        return requested;
+    }
+    left.and_then(syntax_mode_from_path)
+        .or_else(|| right.and_then(syntax_mode_from_path))
+        .unwrap_or(TextSyntaxMode::Plain)
+}
+
+fn syntax_mode_from_path(path: &Path) -> Option<TextSyntaxMode> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "rs" => Some(TextSyntaxMode::Rust),
+        "json" => Some(TextSyntaxMode::Json),
+        "html" | "htm" | "xml" => Some(TextSyntaxMode::Html),
+        "md" | "markdown" => Some(TextSyntaxMode::Markdown),
+        "sh" | "bash" | "zsh" | "fish" => Some(TextSyntaxMode::Shell),
+        "toml" => Some(TextSyntaxMode::Toml),
+        "yaml" | "yml" => Some(TextSyntaxMode::Yaml),
+        _ => None,
+    }
+}
+
+fn syntax_spans(text: &str, mode: TextSyntaxMode) -> Vec<SyntaxSpan> {
+    match mode {
+        TextSyntaxMode::Plain | TextSyntaxMode::Auto => Vec::new(),
+        TextSyntaxMode::Json => json_syntax_spans(text),
+        TextSyntaxMode::Html => html_syntax_spans(text),
+        TextSyntaxMode::Rust
+        | TextSyntaxMode::Markdown
+        | TextSyntaxMode::Shell
+        | TextSyntaxMode::Toml
+        | TextSyntaxMode::Yaml => generic_syntax_spans(text, mode),
+    }
+}
+
+fn syntax_highlight_html(text: &str, mode: TextSyntaxMode) -> String {
+    let spans = syntax_spans(text, mode);
+    if spans.is_empty() {
+        return escape_html(text);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut output = String::new();
+    let mut cursor = 0usize;
+    for span in spans {
+        let start = span.start.min(chars.len());
+        let end = span.end.min(chars.len());
+        if start > cursor {
+            output.push_str(&escape_html(
+                &chars[cursor..start].iter().collect::<String>(),
+            ));
+        }
+        if end > start {
+            output.push_str(&format!(
+                "<span class=\"syn-{}\">{}</span>",
+                span.class,
+                escape_html(&chars[start..end].iter().collect::<String>())
+            ));
+        }
+        cursor = end.max(cursor);
+    }
+    if cursor < chars.len() {
+        output.push_str(&escape_html(&chars[cursor..].iter().collect::<String>()));
+    }
+    output
+}
+
+fn json_syntax_spans(text: &str) -> Vec<SyntaxSpan> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '"' {
+            let start = i;
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == '"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            let mut j = i;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            let class = if j < chars.len() && chars[j] == ':' {
+                "key"
+            } else {
+                "string"
+            };
+            spans.push(span(start, i, class));
+        } else if ch.is_ascii_digit() || ch == '-' {
+            let start = i;
+            i += 1;
+            while i < chars.len()
+                && (chars[i].is_ascii_digit() || matches!(chars[i], '.' | 'e' | 'E' | '+' | '-'))
+            {
+                i += 1;
+            }
+            spans.push(span(start, i, "number"));
+        } else if starts_keyword(&chars, i, &["true", "false", "null"]) {
+            let end = keyword_end(&chars, i);
+            spans.push(span(i, end, "keyword"));
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    spans
+}
+
+fn html_syntax_spans(text: &str) -> Vec<SyntaxSpan> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '<' {
+            let start = i;
+            while i < chars.len() && chars[i] != '>' {
+                i += 1;
+            }
+            if i < chars.len() {
+                i += 1;
+            }
+            spans.push(span(start, i, "tag"));
+        } else {
+            i += 1;
+        }
+    }
+    spans
+}
+
+fn generic_syntax_spans(text: &str, mode: TextSyntaxMode) -> Vec<SyntaxSpan> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut spans = Vec::new();
+    if let Some(comment_start) = comment_start(&chars, mode) {
+        spans.push(span(comment_start, chars.len(), "comment"));
+    }
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '"' || ch == '\'' {
+            let quote = ch;
+            let start = i;
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            spans.push(span(start, i, "string"));
+        } else if ch.is_ascii_digit() {
+            let start = i;
+            i += 1;
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
+            }
+            spans.push(span(start, i, "number"));
+        } else if ch.is_alphabetic() || ch == '_' {
+            let start = i;
+            i += 1;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            if keyword_list(mode).contains(&word.as_str()) {
+                spans.push(span(start, i, "keyword"));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    spans.sort_by_key(|s| (s.start, s.end));
+    spans
+}
+
+fn starts_keyword(chars: &[char], start: usize, candidates: &[&str]) -> bool {
+    candidates.iter().any(|candidate| {
+        let len = candidate.chars().count();
+        start + len <= chars.len()
+            && chars[start..start + len].iter().collect::<String>() == *candidate
+            && (start + len == chars.len()
+                || !chars[start + len].is_alphanumeric() && chars[start + len] != '_')
+    })
+}
+
+fn keyword_end(chars: &[char], start: usize) -> usize {
+    let mut end = start;
+    while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+        end += 1;
+    }
+    end
+}
+
+fn comment_start(chars: &[char], mode: TextSyntaxMode) -> Option<usize> {
+    for i in 0..chars.len() {
+        match mode {
+            TextSyntaxMode::Rust
+                if i + 1 < chars.len() && chars[i] == '/' && chars[i + 1] == '/' =>
+            {
+                return Some(i);
+            }
+            TextSyntaxMode::Shell
+            | TextSyntaxMode::Toml
+            | TextSyntaxMode::Yaml
+            | TextSyntaxMode::Markdown
+                if chars[i] == '#' =>
+            {
+                return Some(i);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn keyword_list(mode: TextSyntaxMode) -> &'static [&'static str] {
+    match mode {
+        TextSyntaxMode::Rust => &[
+            "as", "async", "await", "break", "const", "continue", "crate", "else", "enum", "false",
+            "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+            "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
+            "unsafe", "use", "where", "while",
+        ],
+        TextSyntaxMode::Shell => &[
+            "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in",
+            "then", "while",
+        ],
+        TextSyntaxMode::Toml | TextSyntaxMode::Yaml | TextSyntaxMode::Markdown => {
+            &["true", "false", "null"]
+        }
+        _ => &[],
+    }
+}
+
+fn span(start: usize, end: usize, class: &str) -> SyntaxSpan {
+    SyntaxSpan {
+        start,
+        end,
+        class: class.to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -2522,6 +3350,118 @@ mod tests {
 
         assert!(valid.validate_regex_options().is_ok());
         assert!(invalid.validate_regex_options().is_err());
+    }
+
+    #[test]
+    fn named_regex_rule_sets_normalize_volatile_values() {
+        let result = compare_text(
+            "left",
+            "id=9f3cf7aa-1d98-4a1a-a80d-d91f442ec4a7 at 2026-05-30T10:00:00Z\n",
+            "right",
+            "id=11111111-2222-4333-8444-555555555555 at 2026-05-31T11:12:13Z\n",
+            &TextCompareOptions {
+                regex_rule_sets: vec!["volatile".to_owned()],
+                ..TextCompareOptions::default()
+            },
+        );
+
+        assert!(result.is_equal());
+    }
+
+    #[test]
+    fn context_folding_returns_fold_rows() {
+        let result = compare_text(
+            "left",
+            "a\nb\nc\nd\ne\n",
+            "right",
+            "a\nb\nX\nd\ne\n",
+            &TextCompareOptions::default(),
+        );
+        let rows = result.view_rows(&TextCompareOptions {
+            context_lines: Some(0),
+            ..TextCompareOptions::default()
+        });
+
+        assert!(rows.iter().any(|row| row.folded_count == Some(2)));
+        assert!(rows.iter().any(|row| row.state == "changed"));
+    }
+
+    #[test]
+    fn regex_find_reports_side_line_and_char_spans() {
+        let result = compare_text(
+            "left",
+            "alpha 123\n",
+            "right",
+            "alpha 456\n",
+            &TextCompareOptions::default(),
+        );
+        let matches = result
+            .find_matches(&TextFindOptions {
+                pattern: r"\d+".to_owned(),
+                regex: true,
+                case_sensitive: true,
+            })
+            .unwrap();
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].side, CompareSide::Left);
+        assert_eq!(matches[0].line, 1);
+        assert_eq!(matches[0].start, 6);
+        assert_eq!(matches[0].end, 9);
+    }
+
+    #[test]
+    fn literal_find_is_unicode_safe_when_case_insensitive() {
+        let result = compare_text(
+            "left",
+            "İstanbul and foo.bar\n",
+            "right",
+            "istanbul and fooXbar\n",
+            &TextCompareOptions::default(),
+        );
+        let matches = result
+            .find_matches(&TextFindOptions {
+                pattern: "foo.bar".to_owned(),
+                regex: false,
+                case_sensitive: false,
+            })
+            .unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].side, CompareSide::Left);
+        assert_eq!(matches[0].start, 13);
+        assert_eq!(matches[0].end, 20);
+        assert_eq!(matches[0].text, "foo.bar");
+    }
+
+    #[test]
+    fn forced_utf16le_decodes_without_bom() {
+        let bytes = [b'a', 0, b'\n', 0];
+        let document = TextDocument::from_bytes_with_encoding(
+            "utf16".to_owned(),
+            None,
+            &bytes,
+            false,
+            TextInputEncoding::Utf16Le,
+        );
+
+        assert_eq!(document.encoding, TextEncoding::Utf16Le);
+        assert_eq!(document.lines[0].text, "a");
+    }
+
+    #[test]
+    fn html_render_can_include_syntax_spans() {
+        let result = compare_text(
+            "left.rs",
+            "fn main() {}\n",
+            "right.rs",
+            "fn main() { return; }\n",
+            &TextCompareOptions::default(),
+        );
+        let html = result.to_html_report_with_options(None, TextSyntaxMode::Rust);
+
+        assert!(html.contains("syn-keyword"));
+        assert!(html.contains("return"));
     }
 
     #[test]
