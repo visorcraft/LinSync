@@ -39,6 +39,8 @@ Item {
     property int    currentConflict: -1
     property string outputText:      ""
     property string statusText:      "Ready"
+    property bool   syncing:         false
+    property string customText:      ""
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -113,6 +115,29 @@ Item {
                         : "All conflicts resolved — ready to save"
                 } else {
                     root.statusText = "Resolve failed"
+                }
+            }
+        )
+    }
+
+    function resolveCustom(customText) {
+        if (root.currentConflict < 0 || root.conflicts.length === 0)
+            return
+        const id = root.conflicts[root.currentConflict].id
+        root.bridgeGet(
+            "/merge3/resolve?id=" + id + "&choice=custom&text=" + encodeURIComponent(customText),
+            function (ok, data) {
+                if (ok && data && data.ok) {
+                    root.conflicts  = data.conflicts  || []
+                    root.outputText = data.output_text || ""
+                    if (root.currentConflict >= root.conflicts.length)
+                        root.currentConflict = Math.max(0, root.conflicts.length - 1)
+                    const remaining = root.conflicts.length
+                    root.statusText = remaining > 0
+                        ? remaining + " conflict(s) remaining"
+                        : "All conflicts resolved — ready to save"
+                } else {
+                    root.statusText = "Custom resolve failed"
                 }
             }
         )
@@ -239,6 +264,55 @@ Item {
             }
         }
 
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 60
+            visible: root.currentConflict >= 0
+            color: root.activeBg
+            border.color: root.separatorColor
+            border.width: 1
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 6
+                spacing: 8
+
+                Controls.Label {
+                    text: qsTr("Custom text:")
+                    color: root.activeText
+                    font.pixelSize: 11
+                }
+
+                Controls.TextArea {
+                    id: customTextArea
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    placeholderText: qsTr("Enter custom resolution text…")
+                    text: root.currentConflict >= 0 && root.conflicts.length > 0
+                        ? (root.conflicts[root.currentConflict].left_lines || []).join("\n")
+                        : ""
+                    font.family: "monospace"
+                    font.pixelSize: 11
+                    color: root.activeText
+                    wrapMode: Controls.TextArea.NoWrap
+                    background: Rectangle {
+                        color: root.activeBg
+                        border.color: root.separatorColor
+                        border.width: 1
+                        radius: 4
+                    }
+                }
+
+                Controls.Button {
+                    text: qsTr("Use Custom")
+                    enabled: root.currentConflict >= 0 && customTextArea.text.length > 0
+                    palette.button: root.activeBgAlt
+                    palette.buttonText: root.activeText
+                    onClicked: root.resolveCustom(customTextArea.text)
+                }
+            }
+        }
+
         // ── Three-column pane ─────────────────────────────────────────────────
         Controls.SplitView {
             id: threePane
@@ -247,6 +321,7 @@ Item {
             orientation: Qt.Horizontal
 
             MergeFileColumn {
+                id: leftCol
                 Controls.SplitView.fillWidth: true
                 Controls.SplitView.minimumWidth: 180
                 label: qsTr("Left")
@@ -263,6 +338,7 @@ Item {
             }
 
             MergeFileColumn {
+                id: baseCol
                 Controls.SplitView.fillWidth: true
                 Controls.SplitView.minimumWidth: 180
                 label: qsTr("Base")
@@ -279,6 +355,7 @@ Item {
             }
 
             MergeFileColumn {
+                id: rightCol
                 Controls.SplitView.fillWidth: true
                 Controls.SplitView.minimumWidth: 180
                 label: qsTr("Right")
@@ -292,6 +369,40 @@ Item {
                 separatorColor: root.separatorColor
                 conflictStart: currentConflictStart("right")
                 conflictEnd: currentConflictEnd("right")
+            }
+        }
+
+        Connections {
+            target: leftCol
+            function onListViewContentYChanged() {
+                if (!root.syncing && leftCol.listViewMoving) {
+                    root.syncing = true
+                    baseCol.setListViewContentY(leftCol.listViewContentY)
+                    rightCol.setListViewContentY(leftCol.listViewContentY)
+                    root.syncing = false
+                }
+            }
+        }
+        Connections {
+            target: baseCol
+            function onListViewContentYChanged() {
+                if (!root.syncing && baseCol.listViewMoving) {
+                    root.syncing = true
+                    leftCol.setListViewContentY(baseCol.listViewContentY)
+                    rightCol.setListViewContentY(baseCol.listViewContentY)
+                    root.syncing = false
+                }
+            }
+        }
+        Connections {
+            target: rightCol
+            function onListViewContentYChanged() {
+                if (!root.syncing && rightCol.listViewMoving) {
+                    root.syncing = true
+                    leftCol.setListViewContentY(rightCol.listViewContentY)
+                    baseCol.setListViewContentY(rightCol.listViewContentY)
+                    root.syncing = false
+                }
             }
         }
 
@@ -409,6 +520,12 @@ function currentConflictEnd(side) {
         // First and last highlighted row index (-1 = none).
         property int conflictStart: -1
         property int conflictEnd:   -1
+        property alias listViewContentY: lineList.contentY
+        property alias listViewMoving: lineList.moving
+
+        function setListViewContentY(y) {
+            lineList.contentY = y
+        }
 
         color: activeBg
         border.color: separatorColor

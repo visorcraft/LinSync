@@ -227,9 +227,22 @@ Controls.Pane {
                         ]
                         textRole: "text"
                         valueRole: "value"
+                        property string _previousValidValue: "html"
                         onActivated: {
-                            if (currentValue === "rendered" || currentValue === "screenshot")
+                            if (currentValue === "rendered" || currentValue === "screenshot") {
+                                root.resultSummary = qsTr("%1 mode is not implemented yet").arg(currentValue)
+                                var prevIdx = -1
+                                for (var i = 0; i < model.length; i++) {
+                                    if (model[i].value === subModeCombo._previousValidValue) {
+                                        prevIdx = i
+                                        break
+                                    }
+                                }
+                                if (prevIdx >= 0)
+                                    currentIndex = prevIdx
                                 return
+                            }
+                            subModeCombo._previousValidValue = currentValue
                             root.subMode = currentValue
                         }
                         Accessible.name: qsTr("Compare mode")

@@ -411,6 +411,14 @@ pub(crate) fn url_tree_to_folder_result(
             method_note: None,
             is_dir: false,
             error: None,
+            left_permissions: None,
+            right_permissions: None,
+            left_owner: None,
+            right_owner: None,
+            left_group: None,
+            right_group: None,
+            left_hash: None,
+            right_hash: None,
         });
     }
 

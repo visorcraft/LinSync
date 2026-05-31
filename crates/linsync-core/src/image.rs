@@ -1,5 +1,6 @@
 // Image compare engine. Requires feature `image-compare`.
 
+use std::collections::VecDeque;
 use std::path::Path;
 
 use ::image::{DynamicImage, GenericImageView, ImageReader, RgbaImage};
@@ -8,6 +9,16 @@ use serde::{Deserialize, Serialize};
 
 const STREAM_SIZE_THRESHOLD: u64 = 100 * 1024 * 1024;
 const STREAM_DIM_THRESHOLD: u32 = 16_384;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffRegion {
+    pub id: usize,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub pixel_count: usize,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -62,6 +73,7 @@ pub struct ImageCompareResult {
     pub overlay: Vec<u8>,
     /// True when images had different dimensions and were padded to a common canvas.
     pub padded: bool,
+    pub diff_regions: Vec<DiffRegion>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +167,7 @@ pub fn compare_images_streaming(
 
     let mut differing = 0;
     let mut bbox = None;
+    let mut diff_mask = vec![vec![false; width as usize]; height as usize];
 
     let mut y_start = 0;
     while y_start < height {
@@ -166,11 +179,14 @@ pub fn compare_images_streaming(
                 if pixels_differ(&lp, &rp, options) {
                     differing += 1;
                     expand_bbox(&mut bbox, x, y);
+                    diff_mask[y as usize][x as usize] = true;
                 }
             }
         }
         y_start = y_end;
     }
+
+    let diff_regions = find_diff_regions(&diff_mask, width, height);
 
     let mut result = build_result(
         orig_left_dims,
@@ -179,6 +195,7 @@ pub fn compare_images_streaming(
         differing,
         bbox,
         options.mode.clone(),
+        diff_regions,
     );
 
     let padded = orig_left_dims != orig_right_dims;
@@ -261,6 +278,7 @@ fn compare_exact(
 
     let mut differing = 0;
     let mut bbox = None;
+    let mut diff_mask = vec![vec![false; width as usize]; height as usize];
 
     for y in 0..height {
         for x in 0..width {
@@ -269,9 +287,12 @@ fn compare_exact(
             if lp != rp {
                 differing += 1;
                 expand_bbox(&mut bbox, x, y);
+                diff_mask[y as usize][x as usize] = true;
             }
         }
     }
+
+    let diff_regions = find_diff_regions(&diff_mask, width, height);
 
     Ok(build_result(
         left_dims,
@@ -280,6 +301,7 @@ fn compare_exact(
         differing,
         bbox,
         ImageCompareMode::Exact,
+        diff_regions,
     ))
 }
 
@@ -298,6 +320,7 @@ fn compare_tolerance(
 
     let mut differing = 0;
     let mut bbox = None;
+    let mut diff_mask = vec![vec![false; width as usize]; height as usize];
 
     for y in 0..height {
         for x in 0..width {
@@ -310,9 +333,12 @@ fn compare_tolerance(
             if is_diff {
                 differing += 1;
                 expand_bbox(&mut bbox, x, y);
+                diff_mask[y as usize][x as usize] = true;
             }
         }
     }
+
+    let diff_regions = find_diff_regions(&diff_mask, width, height);
 
     Ok(build_result(
         left_dims,
@@ -321,6 +347,7 @@ fn compare_tolerance(
         differing,
         bbox,
         ImageCompareMode::Tolerance(tolerance),
+        diff_regions,
     ))
 }
 
@@ -339,6 +366,7 @@ fn compare_perceptual(
 
     let mut differing = 0;
     let mut bbox = None;
+    let mut diff_mask = vec![vec![false; width as usize]; height as usize];
 
     for y in 0..height {
         for x in 0..width {
@@ -352,9 +380,12 @@ fn compare_perceptual(
             if delta_e > delta_e_threshold {
                 differing += 1;
                 expand_bbox(&mut bbox, x, y);
+                diff_mask[y as usize][x as usize] = true;
             }
         }
     }
+
+    let diff_regions = find_diff_regions(&diff_mask, width, height);
 
     Ok(build_result(
         left_dims,
@@ -363,6 +394,7 @@ fn compare_perceptual(
         differing,
         bbox,
         ImageCompareMode::Perceptual,
+        diff_regions,
     ))
 }
 
@@ -373,6 +405,7 @@ pub(crate) fn build_result(
     differing: u64,
     bbox: Option<(u32, u32, u32, u32)>,
     mode_used: ImageCompareMode,
+    diff_regions: Vec<DiffRegion>,
 ) -> ImageCompareResult {
     let padded = left_dims != right_dims;
     ImageCompareResult {
@@ -390,6 +423,7 @@ pub(crate) fn build_result(
         diff_bbox: bbox,
         overlay: Vec::new(),
         padded,
+        diff_regions,
     }
 }
 
@@ -428,6 +462,7 @@ pub fn generate_overlay(
     let mut differing: u64 = 0;
     let mut bbox = None;
     let mut overlay_rgba = vec![0u8; (width * height * 4) as usize];
+    let mut diff_mask = vec![vec![false; width as usize]; height as usize];
 
     for y in 0..height {
         for x in 0..width {
@@ -441,6 +476,7 @@ pub fn generate_overlay(
                 overlay_rgba[idx + 1] = 0;
                 overlay_rgba[idx + 2] = 0;
                 overlay_rgba[idx + 3] = 160;
+                diff_mask[y as usize][x as usize] = true;
             } else {
                 overlay_rgba[idx] = 0;
                 overlay_rgba[idx + 1] = 0;
@@ -449,6 +485,8 @@ pub fn generate_overlay(
             }
         }
     }
+
+    let diff_regions = find_diff_regions(&diff_mask, width, height);
 
     let padded = orig_left_dims != orig_right_dims;
     Ok(ImageCompareResult {
@@ -466,6 +504,7 @@ pub fn generate_overlay(
         diff_bbox: bbox,
         overlay: overlay_rgba,
         padded,
+        diff_regions,
     })
 }
 
@@ -568,5 +607,219 @@ fn hue_average(c1_prime: f32, c2_prime: f32, h1_prime: f32, h2_prime: f32) -> f3
         } else {
             (h_sum - 360.0) * 0.5
         }
+    }
+}
+
+fn find_diff_regions(diff_mask: &[Vec<bool>], width: u32, height: u32) -> Vec<DiffRegion> {
+    let w = width as usize;
+    let h = height as usize;
+    let mut visited = vec![vec![false; w]; h];
+    let mut regions = Vec::new();
+    let mut next_id = 0usize;
+
+    for y in 0..h {
+        for x in 0..w {
+            if diff_mask[y][x] && !visited[y][x] {
+                let mut queue = VecDeque::new();
+                queue.push_back((x, y));
+                visited[y][x] = true;
+                let mut pixel_count = 0usize;
+                let mut min_x = x;
+                let mut min_y = y;
+                let mut max_x = x;
+                let mut max_y = y;
+
+                while let Some((cx, cy)) = queue.pop_front() {
+                    pixel_count += 1;
+                    min_x = min_x.min(cx);
+                    min_y = min_y.min(cy);
+                    max_x = max_x.max(cx);
+                    max_y = max_y.max(cy);
+
+                    for &(dx, dy) in &[(0i32, -1i32), (0, 1), (-1, 0), (1, 0)] {
+                        let nx = cx as i32 + dx;
+                        let ny = cy as i32 + dy;
+                        if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
+                            let nx = nx as usize;
+                            let ny = ny as usize;
+                            if diff_mask[ny][nx] && !visited[ny][nx] {
+                                visited[ny][nx] = true;
+                                queue.push_back((nx, ny));
+                            }
+                        }
+                    }
+                }
+
+                regions.push(DiffRegion {
+                    id: next_id,
+                    x: min_x as u32,
+                    y: min_y as u32,
+                    width: (max_x - min_x + 1) as u32,
+                    height: (max_y - min_y + 1) as u32,
+                    pixel_count,
+                });
+                next_id += 1;
+            }
+        }
+    }
+
+    regions
+}
+
+impl ImageCompareResult {
+    pub fn diff_region_count(&self) -> usize {
+        self.diff_regions.len()
+    }
+
+    pub fn first_diff_region(&self) -> Option<&DiffRegion> {
+        self.diff_regions.first()
+    }
+
+    pub fn next_diff_region_after(&self, id: usize) -> Option<&DiffRegion> {
+        let idx = self.diff_regions.iter().position(|r| r.id == id)?;
+        self.diff_regions.get(idx + 1)
+    }
+
+    pub fn diff_region_at(&self, x: u32, y: u32) -> Option<&DiffRegion> {
+        self.diff_regions
+            .iter()
+            .find(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_diff_regions_single_block() {
+        let mut mask = vec![vec![false; 10]; 10];
+        for row in mask.iter_mut().take(7).skip(2) {
+            for cell in row.iter_mut().take(8).skip(3) {
+                *cell = true;
+            }
+        }
+        let regions = find_diff_regions(&mask, 10, 10);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].x, 3);
+        assert_eq!(regions[0].y, 2);
+        assert_eq!(regions[0].width, 5);
+        assert_eq!(regions[0].height, 5);
+        assert_eq!(regions[0].pixel_count, 25);
+    }
+
+    #[test]
+    fn find_diff_regions_two_separate_blocks() {
+        let mut mask = vec![vec![false; 20]; 10];
+        for row in mask.iter_mut().take(4) {
+            for cell in row.iter_mut().take(4) {
+                *cell = true;
+            }
+        }
+        for row in mask.iter_mut().take(10).skip(6) {
+            for cell in row.iter_mut().take(20).skip(14) {
+                *cell = true;
+            }
+        }
+        let regions = find_diff_regions(&mask, 20, 10);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].x, 0);
+        assert_eq!(regions[0].y, 0);
+        assert_eq!(regions[1].x, 14);
+        assert_eq!(regions[1].y, 6);
+    }
+
+    #[test]
+    fn find_diff_regions_no_differences() {
+        let mask = vec![vec![false; 10]; 10];
+        let regions = find_diff_regions(&mask, 10, 10);
+        assert!(regions.is_empty());
+    }
+
+    #[test]
+    fn find_diff_regions_keeps_single_pixel_differences() {
+        let mut mask = vec![vec![false; 10]; 10];
+        mask[0][0] = true;
+        let regions = find_diff_regions(&mask, 10, 10);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].x, 0);
+        assert_eq!(regions[0].y, 0);
+        assert_eq!(regions[0].width, 1);
+        assert_eq!(regions[0].height, 1);
+        assert_eq!(regions[0].pixel_count, 1);
+    }
+
+    #[test]
+    fn diff_navigation_methods_work() {
+        let result = ImageCompareResult {
+            equal: false,
+            left_dims: (10, 10),
+            right_dims: (10, 10),
+            total_pixels: 100,
+            differing_pixels: 20,
+            diff_ratio: 0.2,
+            mode_used: ImageCompareMode::Exact,
+            diff_bbox: Some((0, 0, 9, 9)),
+            overlay: Vec::new(),
+            padded: false,
+            diff_regions: vec![
+                DiffRegion {
+                    id: 0,
+                    x: 0,
+                    y: 0,
+                    width: 5,
+                    height: 4,
+                    pixel_count: 16,
+                },
+                DiffRegion {
+                    id: 1,
+                    x: 6,
+                    y: 6,
+                    width: 4,
+                    height: 4,
+                    pixel_count: 4,
+                },
+            ],
+        };
+
+        assert_eq!(result.diff_region_count(), 2);
+        let first = result.first_diff_region().unwrap();
+        assert_eq!(first.id, 0);
+        let next = result.next_diff_region_after(0).unwrap();
+        assert_eq!(next.id, 1);
+        assert!(result.next_diff_region_after(1).is_none());
+        assert!(result.diff_region_at(2, 2).is_some());
+        assert!(result.diff_region_at(7, 7).is_some());
+        assert!(result.diff_region_at(5, 5).is_none());
+        assert!(result.next_diff_region_after(99).is_none());
+    }
+
+    #[test]
+    fn diff_regions_serialized_in_result() {
+        let result = ImageCompareResult {
+            equal: false,
+            left_dims: (10, 10),
+            right_dims: (10, 10),
+            total_pixels: 100,
+            differing_pixels: 5,
+            diff_ratio: 0.05,
+            mode_used: ImageCompareMode::Exact,
+            diff_bbox: None,
+            overlay: Vec::new(),
+            padded: false,
+            diff_regions: vec![DiffRegion {
+                id: 0,
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4,
+                pixel_count: 12,
+            }],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("diff_regions"));
+        assert!(json.contains("\"id\":0"));
+        assert!(json.contains("\"x\":1"));
+        assert!(json.contains("\"y\":2"));
     }
 }

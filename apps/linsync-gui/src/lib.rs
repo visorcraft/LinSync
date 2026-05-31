@@ -55,10 +55,12 @@ fn image_query_param(query: &str, key: &str) -> Option<String> {
 }
 
 /// Handle `/compare/image?left=…&right=…&mode=…&tolerance=…&delta_e=…&overlay=…`
-/// Returns a JSON string. Uses default options when no profile is in scope —
-/// see [`image_compare_bridge_response_with_profile`] for the profile-aware
-/// variant.
-pub fn image_compare_bridge_response(query: &str) -> String {
+/// Returns a JSON string and the optional compare result. Uses default options
+/// when no profile is in scope — see [`image_compare_bridge_response_with_profile`]
+/// for the profile-aware variant.
+pub fn image_compare_bridge_response(
+    query: &str,
+) -> (String, Option<linsync_core::ImageCompareResult>) {
     image_compare_bridge_response_with_profile(query, &linsync_core::ImageCompareOptions::default())
 }
 
@@ -67,19 +69,21 @@ pub fn image_compare_bridge_response(query: &str) -> String {
 /// Query parameters override the profile's options field-by-field:
 /// `mode` / `tolerance` / `delta_e` / `overlay`. Fields not present in the
 /// query inherit from `profile_options`.
+///
+/// Returns `(json_string, Some(result))` on success or `(error_json, None)` on failure.
 pub fn image_compare_bridge_response_with_profile(
     query: &str,
     profile_options: &linsync_core::ImageCompareOptions,
-) -> String {
+) -> (String, Option<linsync_core::ImageCompareResult>) {
     use linsync_core::{ImageCompareMode, ImageCompareOptions, compare_images};
 
     let left = match image_query_param(query, "left") {
         Some(v) => std::path::PathBuf::from(v),
-        None => return r#"{"error":"missing 'left' parameter"}"#.to_owned(),
+        None => return (r#"{"error":"missing 'left' parameter"}"#.to_owned(), None),
     };
     let right = match image_query_param(query, "right") {
         Some(v) => std::path::PathBuf::from(v),
-        None => return r#"{"error":"missing 'right' parameter"}"#.to_owned(),
+        None => return (r#"{"error":"missing 'right' parameter"}"#.to_owned(), None),
     };
     let mode_str = image_query_param(query, "mode");
     let want_overlay = image_query_param(query, "overlay")
@@ -113,9 +117,12 @@ pub fn image_compare_bridge_response_with_profile(
     let result = match compare_images(&left, &right, &opts) {
         Ok(r) => r,
         Err(e) => {
-            return format!(
-                r#"{{"error":{}}}"#,
-                serde_json::Value::String(e.to_string())
+            return (
+                format!(
+                    r#"{{"error":{}}}"#,
+                    serde_json::Value::String(e.to_string())
+                ),
+                None,
             );
         }
     };
@@ -136,13 +143,16 @@ pub fn image_compare_bridge_response_with_profile(
         "mode": mode_str.unwrap_or_default(),
         "diff_bbox": result.diff_bbox,
         "padded": result.padded,
+        "diff_regions": result.diff_regions,
     });
 
     if let Some(uri) = overlay_path_uri {
         json["overlay_path"] = serde_json::Value::String(uri);
     }
 
-    serde_json::to_string(&json).unwrap_or_else(|_| r#"{"error":"serialization error"}"#.to_owned())
+    let json_str = serde_json::to_string(&json)
+        .unwrap_or_else(|_| r#"{"error":"serialization error"}"#.to_owned());
+    (json_str, Some(result))
 }
 
 /// Generate an RGBA8 overlay PNG highlighting differing pixels and return a `file://` URI.
@@ -652,7 +662,7 @@ pub mod test_support {
             delta_e,
             overlay,
         );
-        let body = super::image_compare_bridge_response(&query);
+        let body = super::image_compare_bridge_response(&query).0;
         // If the body starts with {"error":, treat it as an Err.
         if body.starts_with(r#"{"error":"#) {
             Err(body)

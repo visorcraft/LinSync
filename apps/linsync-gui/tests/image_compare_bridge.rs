@@ -36,7 +36,7 @@ fn with_profile_honours_profile_tolerance_when_query_omits_it() {
         tolerance: 64,
         ..Default::default()
     };
-    let body = image_compare_bridge_response_with_profile(&query, &high);
+    let (body, _) = image_compare_bridge_response_with_profile(&query, &high);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(
         v["equal"],
@@ -48,7 +48,7 @@ fn with_profile_honours_profile_tolerance_when_query_omits_it() {
         tolerance: 4,
         ..Default::default()
     };
-    let body_low = image_compare_bridge_response_with_profile(&query, &low);
+    let (body_low, _) = image_compare_bridge_response_with_profile(&query, &low);
     let v_low: serde_json::Value = serde_json::from_str(&body_low).unwrap();
     assert_eq!(
         v_low["equal"],
@@ -131,14 +131,9 @@ fn bridge_overlay_populated_when_requested() {
     );
 }
 
-// ── Phase 0 drift regression ─────────────────────────────────────────────────
-// The image overlay PNG returned by the bridge is currently a transparent
-// placeholder (apps/linsync-gui/src/lib.rs::build_overlay_png allocates a
-// fully-zero RGBA buffer). When the contract is fixed (PLAN.md Phase 5
-// "Image"), the overlay must mark differing pixels with a non-transparent
-// channel so the GUI can render a meaningful diff layer.
+// The image overlay PNG returned by the bridge must mark differing pixels with
+// a non-transparent channel so the GUI can render a meaningful diff layer.
 #[test]
-#[ignore = "drift: build_overlay_png returns a transparent placeholder (PLAN.md Phase 5 Image)"]
 fn overlay_png_has_visible_pixels_for_diffs() {
     let dir = TempDir::new().unwrap();
     let red: RgbaImage = ImageBuffer::from_fn(4, 4, |_, _| Rgba([255u8, 0, 0, 255]));

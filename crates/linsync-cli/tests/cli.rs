@@ -460,6 +460,9 @@ fn completions_generate_supported_shells() {
         bash_stdout
             .contains("all differences identical different left-only right-only errors skipped")
     );
+    assert!(bash_stdout.contains("--inline-granularity"));
+    assert!(bash_stdout.contains("--dry-run"));
+    assert!(bash_stdout.contains("auto text binary hex folder table image document"));
     assert!(
         String::from_utf8(zsh.stdout)
             .unwrap()
@@ -469,6 +472,52 @@ fn completions_generate_supported_shells() {
         String::from_utf8(fish.stdout)
             .unwrap()
             .contains("__fish_seen_subcommand_from compare")
+    );
+}
+
+#[test]
+fn table_rejects_invalid_option_values() {
+    let left = fixture("table/left.csv");
+    let right = fixture("table/right.csv");
+    let invalid_tolerance = run(&[
+        "table",
+        "--numeric-tolerance",
+        "not-a-number",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+    let invalid_bool = run(&[
+        "table",
+        "--table-skip-blank",
+        "maybe",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+    let invalid_char = run(&[
+        "table",
+        "--table-quote",
+        "quote",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+
+    assert_eq!(invalid_tolerance.status.code(), Some(2));
+    assert!(
+        String::from_utf8(invalid_tolerance.stderr)
+            .unwrap()
+            .contains("--numeric-tolerance requires a number")
+    );
+    assert_eq!(invalid_bool.status.code(), Some(2));
+    assert!(
+        String::from_utf8(invalid_bool.stderr)
+            .unwrap()
+            .contains("--table-skip-blank requires true or false")
+    );
+    assert_eq!(invalid_char.status.code(), Some(2));
+    assert!(
+        String::from_utf8(invalid_char.stderr)
+            .unwrap()
+            .contains("--table-quote requires exactly one character")
     );
 }
 

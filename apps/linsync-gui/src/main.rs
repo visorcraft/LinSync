@@ -12,22 +12,23 @@ use std::thread;
 use std::time::Duration;
 
 use linsync::{apply_gui_setting, parse_bool_setting};
+use linsync_core::plugin::{PluginClass, PluginExecutionOptions};
 use linsync_core::{
     AppPaths, BinaryCompareOptions, CompareOptions, CompareProfile, CompareSession,
     CompareViewMode, ConflictId, DeletePreference, DiffBlockKind, DiffLine, DiffLineKind,
-    DiscoveredPlugin, FileFilter, FilterStore, FolderCompareControl, FolderCompareEvent,
-    FolderCompareOptions, FolderEntryDiff, FolderEntryState, FolderOperationKind,
-    FolderOperationOutcome, FolderOperationStatus, ImageCompareOptions, MergeAction, MergeChoice,
-    NamedFilters, ProfileId, ProfileStore, RecentPathStore, RecentSessionStore, RecentSessions,
-    SessionFile, Settings as CoreSettings, SettingsStore, TableCompareOptions, TextCompareOptions,
-    TextCompareResult, TextDocument, ThemePreference, ThreeWayMergeState, TwoWayMergeState,
-    builtin_profiles, compare_binary_files, compare_documents, compare_folders,
+    DiscoveredPlugin, EncodingSummary, FileFilter, FilterStore, FolderCompareControl,
+    FolderCompareEvent, FolderCompareOptions, FolderEntryDiff, FolderEntryState,
+    FolderOperationKind, FolderOperationOutcome, FolderOperationStatus, ImageCompareOptions,
+    ImageCompareResult, MergeAction, MergeChoice, NamedFilters, ProfileId, ProfileStore,
+    RecentPathStore, RecentSessionStore, RecentSessions, SessionFile, Settings, SettingsStore,
+    TableCompareOptions, TextCompareOptions, TextCompareResult, TextDocument, ThemePreference,
+    ThreeWayMergeState, TwoWayMergeState, TypedValueKind, builtin_profiles, cleanup_artifacts,
+    compare_binary, compare_binary_files, compare_documents, compare_folders,
     compare_folders_with_progress, compare_images, compare_table_files, compare_text,
     compare_text_files_cancellable, compare_text_files_with_prediffer, create_save_plan,
     discover_installed_plugins, execute_folder_operation_plan, find_builtin, is_likely_binary,
-    plan_folder_operation, write_encoded_text_with_plan,
+    plan_folder_operation, save_artifact, write_encoded_text_with_plan,
 };
-use linsync_core::plugin::{PluginClass, PluginExecutionOptions};
 use serde::{Deserialize, Serialize};
 
 const BRIDGE_VERSION: u32 = 1;
@@ -78,26 +79,23 @@ fn run(paths: &AppPaths, args: Vec<OsString>) -> Result<ExitCode, String> {
     }
     let mut launch_context = build_launch_context(&args);
 
-    if launch_context.is_none() {
-        if let Ok(settings) = SettingsStore::new(paths.settings_file()).load_or_default() {
-            if settings.open_last_session {
-                let recent_store = RecentSessionStore::new(
-                    paths.recent_sessions_file(),
-                    recent_limit(paths),
-                );
-                if let Ok(recent) = recent_store.load_or_default() {
-                    if let Some(session) = recent.sessions.first() {
-                        let mode_label = compare_view_mode_label(session.selected_view);
-                        let tab = build_tab_for_paths_with_mode(
-                            &session.session.left,
-                            &session.session.right,
-                            Some(mode_label),
-                            &GuiCompareOptions::default(),
-                        );
-                        launch_context = Some(GuiLaunchContext::single_tab(tab));
-                    }
-                }
-            }
+    if launch_context.is_none()
+        && let Ok(settings) = SettingsStore::new(paths.settings_file()).load_or_default()
+        && settings.open_last_session
+    {
+        let recent_store =
+            RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths));
+        if let Ok(recent) = recent_store.load_or_default()
+            && let Some(session) = recent.sessions.first()
+        {
+            let mode_label = compare_view_mode_label(session.selected_view);
+            let tab = build_tab_for_paths_with_mode(
+                &session.session.left,
+                &session.session.right,
+                Some(mode_label),
+                &GuiCompareOptions::default(),
+            );
+            launch_context = Some(GuiLaunchContext::single_tab(tab));
         }
     }
 
@@ -222,6 +220,12 @@ struct GuiCompareTab {
     right_rows: Vec<GuiLineRow>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     folder_entries: Vec<GuiFolderEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    encoding_metadata: Option<EncodingSummary>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    table_cells: Option<Vec<linsync_core::TableRowDiff>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    artifacts: Vec<linsync_core::CompareArtifact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,8 +289,8 @@ struct GuiSettings {
     max_recent_paths: usize,
 }
 
-impl From<&CoreSettings> for GuiSettings {
-    fn from(settings: &CoreSettings) -> Self {
+impl From<&Settings> for GuiSettings {
+    fn from(settings: &Settings) -> Self {
         Self {
             theme_preference: settings.theme_preference,
             font_size: settings.pane_font_size,
@@ -331,6 +335,7 @@ struct GuiBridgeState {
     /// Progress snapshots for in-flight `/compare` requests, keyed by
     /// `request_id`. Updated by the compare thread, read by `/progress?id=X`.
     compare_progress: HashMap<String, Arc<Mutex<CompareProgress>>>,
+    last_image_result: Option<ImageCompareResult>,
 }
 
 struct CompareProgress {
@@ -403,6 +408,7 @@ impl GuiBridgeState {
             plugin_enabled: Arc::new(Mutex::new(HashMap::new())),
             compare_cancels: HashMap::new(),
             compare_progress: HashMap::new(),
+            last_image_result: None,
         }
     }
 
@@ -1478,6 +1484,9 @@ fn invalid_compare_tab(
         Vec::new(),
         (Vec::new(), Vec::new()),
         Vec::new(),
+        None,
+        None,
+        Vec::new(),
     )
 }
 
@@ -1597,6 +1606,9 @@ fn folder_tab_cancellable(
                 ],
                 (left_rows, right_rows),
                 folder_entries,
+                None,
+                None,
+                Vec::new(),
             )
         }
         Err(err) => compare_tab(
@@ -1612,6 +1624,9 @@ fn folder_tab_cancellable(
             Vec::new(),
             (Vec::new(), Vec::new()),
             vec![],
+            None,
+            None,
+            Vec::new(),
         ),
     })
 }
@@ -1769,10 +1784,14 @@ fn text_tab_cancellable(
     text_options: &TextCompareOptions,
     should_cancel: &dyn Fn() -> bool,
 ) -> Option<GuiCompareTab> {
-    let result = try_prediffer_compare(left, right, text_options)
-        .or_else(|| compare_text_files_cancellable(left, right, text_options, should_cancel).ok().flatten());
+    let result = try_prediffer_compare(left, right, text_options).or_else(|| {
+        compare_text_files_cancellable(left, right, text_options, should_cancel)
+            .ok()
+            .flatten()
+    });
     match result {
         Some(result) => {
+            let encoding = Some(result.encoding_summary());
             let (left_rows, right_rows) = text_rows_for_gui(&result.lines, &result.blocks);
             Some(compare_tab(
                 "Text",
@@ -1792,6 +1811,9 @@ fn text_tab_cancellable(
                 ],
                 (left_rows, right_rows),
                 vec![],
+                encoding,
+                None,
+                Vec::new(),
             ))
         }
         None => None,
@@ -1805,10 +1827,17 @@ fn try_prediffer_compare(
 ) -> Option<TextCompareResult> {
     let paths = linsync_core::paths::AppPaths::from_env();
     let discovery = discover_installed_plugins(&paths);
-    let ext = left.extension().or_else(|| right.extension())?.to_str()?.to_lowercase();
+    let ext = left
+        .extension()
+        .or_else(|| right.extension())?
+        .to_str()?
+        .to_lowercase();
     let matched = discovery.plugins.iter().find(|p| {
         p.manifest.classes.contains(&PluginClass::Prediffer)
-            && p.manifest.extensions.iter().any(|e| e.to_lowercase() == ext)
+            && p.manifest
+                .extensions
+                .iter()
+                .any(|e| e.to_lowercase() == ext)
     })?;
     let exec_opts = PluginExecutionOptions::default();
     compare_text_files_with_prediffer(
@@ -2022,23 +2051,29 @@ fn table_tab(
     table_options: &TableCompareOptions,
 ) -> GuiCompareTab {
     match compare_table_files(left, right, table_options) {
-        Ok(result) => compare_tab(
-            "Table",
-            (left_path, right_path),
-            "Table compare complete".to_owned(),
-            result.changed_cells,
-            GuiOpenValidation {
-                compatible: true,
-                path_kind: "Files".to_owned(),
-                message: "Validated two table files".to_owned(),
-            },
-            vec![
-                summary_item("Rows", result.rows.len()),
-                summary_item("Changed cells", result.changed_cells),
-            ],
-            table_rows_for_gui(&result),
-            vec![],
-        ),
+        Ok(result) => {
+            let cells = result.rows.clone();
+            compare_tab(
+                "Table",
+                (left_path, right_path),
+                "Table compare complete".to_owned(),
+                result.changed_cells,
+                GuiOpenValidation {
+                    compatible: true,
+                    path_kind: "Files".to_owned(),
+                    message: "Validated two table files".to_owned(),
+                },
+                vec![
+                    summary_item("Rows", result.rows.len()),
+                    summary_item("Changed cells", result.changed_cells),
+                ],
+                table_rows_for_gui(&result),
+                vec![],
+                None,
+                Some(cells),
+                Vec::new(),
+            )
+        }
         Err(err) => compare_tab(
             "Table",
             (left_path, right_path),
@@ -2052,6 +2087,9 @@ fn table_tab(
             Vec::new(),
             (Vec::new(), Vec::new()),
             vec![],
+            None,
+            None,
+            Vec::new(),
         ),
     }
 }
@@ -2081,6 +2119,9 @@ fn binary_tab(
             ],
             hex_rows_for_gui(&result),
             vec![],
+            None,
+            None,
+            Vec::new(),
         ),
         Err(err) => compare_tab(
             "Hex",
@@ -2095,6 +2136,9 @@ fn binary_tab(
             Vec::new(),
             (Vec::new(), Vec::new()),
             vec![],
+            None,
+            None,
+            Vec::new(),
         ),
     }
 }
@@ -2143,6 +2187,9 @@ fn image_tab(
                 ],
                 (Vec::new(), Vec::new()),
                 vec![],
+                None,
+                None,
+                Vec::new(),
             )
         }
         Err(err) => compare_tab(
@@ -2158,6 +2205,9 @@ fn image_tab(
             Vec::new(),
             (Vec::new(), Vec::new()),
             vec![],
+            None,
+            None,
+            Vec::new(),
         ),
     }
 }
@@ -2173,6 +2223,7 @@ fn document_tab(left: &Path, right: &Path, left_path: String, right_path: String
                 &TextCompareOptions::default(),
             );
             let diff_count = result.difference_count();
+            let encoding = Some(result.encoding_summary());
             compare_tab(
                 "Document",
                 (left_path, right_path),
@@ -2190,6 +2241,9 @@ fn document_tab(left: &Path, right: &Path, left_path: String, right_path: String
                 vec![summary_item("Differences", diff_count)],
                 (Vec::new(), Vec::new()),
                 vec![],
+                encoding,
+                None,
+                Vec::new(),
             )
         }
         Err(err) => compare_tab(
@@ -2205,6 +2259,9 @@ fn document_tab(left: &Path, right: &Path, left_path: String, right_path: String
             Vec::new(),
             (Vec::new(), Vec::new()),
             vec![],
+            None,
+            None,
+            Vec::new(),
         ),
     }
 }
@@ -2219,6 +2276,9 @@ fn compare_tab(
     summary: Vec<GuiSummaryItem>,
     rows: (Vec<GuiLineRow>, Vec<GuiLineRow>),
     folder_entries: Vec<GuiFolderEntry>,
+    encoding_metadata: Option<EncodingSummary>,
+    table_cells: Option<Vec<linsync_core::TableRowDiff>>,
+    artifacts: Vec<linsync_core::CompareArtifact>,
 ) -> GuiCompareTab {
     let (left_path, right_path) = paths;
     let (left_rows, right_rows) = rows;
@@ -2239,6 +2299,9 @@ fn compare_tab(
         left_rows,
         right_rows,
         folder_entries,
+        encoding_metadata,
+        table_cells,
+        artifacts,
     }
 }
 
@@ -2524,9 +2587,14 @@ fn bridge_response_with_token(
                 Ok(p) => p,
                 Err(err) => return bridge_error(400, "Bad Request", &err),
             };
-            let body = linsync::image_compare_bridge_response_with_profile(query, &profile.image);
+            let (body, result) =
+                linsync::image_compare_bridge_response_with_profile(query, &profile.image);
+            if let Ok(mut s) = state.lock() {
+                s.last_image_result = result;
+            }
             http_response(200, "OK", "application/json", body.into_bytes())
         }
+        "/compare/image/regions" => image_regions_bridge_response(state),
         "/compare/webpage" => {
             let params = query_params(query);
             let profile = match resolve_profile_for_request(paths, &params) {
@@ -2544,11 +2612,14 @@ fn bridge_response_with_token(
             let body = linsync::webpage_clear_cache_bridge_response(paths);
             http_response(200, "OK", "application/json", body.into_bytes())
         }
+        "/binary/interpret" => binary_interpret_bridge_response(query, state),
         "/reveal" => reveal_bridge_response(query),
         "/open-external" => open_external_bridge_response(query),
         "/copy-clipboard" => copy_clipboard_bridge_response(query),
-        "/report" => report_bridge_response(query, state),
+        "/report" => report_bridge_response(query, state, paths),
         "/sessions/save" => sessions_save_bridge_response(query, paths, state),
+        "/artifacts/list" => artifacts_list_bridge_response(state),
+        "/artifacts/cleanup" => artifacts_cleanup_bridge_response(query, paths),
         _ => bridge_error(404, "Not Found", "unknown bridge endpoint"),
     }
 }
@@ -3205,6 +3276,9 @@ fn raw_compare_bridge_response(
         left_rows,
         right_rows,
         folder_entries: vec![],
+        encoding_metadata: Some(result.encoding_summary()),
+        table_cells: None,
+        artifacts: Vec::new(),
     };
 
     let context = match state.lock() {
@@ -3590,7 +3664,11 @@ fn sessions_reopen_bridge_response(
     }
 }
 
-fn report_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
+fn report_bridge_response(
+    query: &str,
+    state: &Arc<Mutex<GuiBridgeState>>,
+    paths: &AppPaths,
+) -> Vec<u8> {
     let params = query_params(query);
     let format = query_value(&params, "format").unwrap_or("json");
     let tab = match state.lock() {
@@ -3606,6 +3684,125 @@ fn report_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Ve
         return bridge_error(404, "Not Found", "no active tab");
     };
     match format {
+        "summary" => {
+            let mut blocks: Vec<serde_json::Value> = Vec::new();
+            let mut i = 0;
+            while i < tab.left_rows.len().max(tab.right_rows.len()) {
+                let left = tab.left_rows.get(i);
+                let right = tab.right_rows.get(i);
+                let state_str = left
+                    .map(|r| r.state.as_str())
+                    .or(right.map(|r| r.state.as_str()))
+                    .unwrap_or("equal");
+                if state_str != "equal" {
+                    blocks.push(serde_json::json!({
+                        "kind": "difference",
+                        "left_start": left.and_then(|r| r.number).unwrap_or(0),
+                        "right_start": right.and_then(|r| r.number).unwrap_or(0),
+                        "left_len": if left.is_some() { 1 } else { 0 },
+                        "right_len": if right.is_some() { 1 } else { 0 },
+                    }));
+                }
+                i += 1;
+            }
+
+            let mut summary = serde_json::json!({
+                "schema_version": 1,
+                "mode": tab.mode.to_lowercase(),
+                "left_path": tab.left_path,
+                "right_path": tab.right_path,
+                "equal": tab.difference_count == 0,
+                "differences": tab.difference_count,
+                "blocks": blocks,
+            });
+
+            if tab.mode == "Folder" {
+                let mut identical = 0usize;
+                let mut different = 0usize;
+                let mut left_only = 0usize;
+                let mut right_only = 0usize;
+                for entry in &tab.folder_entries {
+                    match entry.state.as_str() {
+                        "equal" => identical += 1,
+                        "changed" => different += 1,
+                        "left_only" => left_only += 1,
+                        "right_only" => right_only += 1,
+                        _ => {}
+                    }
+                }
+                summary["folder_summary"] = serde_json::json!({
+                    "identical": identical,
+                    "different": different,
+                    "left_only": left_only,
+                    "right_only": right_only,
+                });
+            }
+
+            http_response(
+                200,
+                "OK",
+                "application/json",
+                summary.to_string().into_bytes(),
+            )
+        }
+        "folder-plan" => {
+            if tab.mode != "Folder" {
+                return bridge_error(
+                    400,
+                    "Bad Request",
+                    "folder-plan format requires a folder compare tab",
+                );
+            }
+            let mut entries: Vec<serde_json::Value> = Vec::new();
+            let mut total = 0usize;
+            let mut identical = 0usize;
+            let mut different = 0usize;
+            let mut left_only = 0usize;
+            let mut right_only = 0usize;
+            for entry in &tab.folder_entries {
+                total += 1;
+                match entry.state.as_str() {
+                    "equal" => identical += 1,
+                    "changed" => different += 1,
+                    "left_only" => left_only += 1,
+                    "right_only" => right_only += 1,
+                    _ => {}
+                }
+                entries.push(serde_json::json!({
+                    "path": entry.path,
+                    "state": entry.state,
+                    "left_size": entry.left_size,
+                    "right_size": entry.right_size,
+                }));
+            }
+            let body = serde_json::json!({
+                "schema_version": 1,
+                "entries": entries,
+                "summary": {
+                    "total": total,
+                    "identical": identical,
+                    "different": different,
+                    "left_only": left_only,
+                    "right_only": right_only,
+                }
+            });
+            http_response(200, "OK", "application/json", body.to_string().into_bytes())
+        }
+        "full-json" => {
+            let mut artifact_entries: Vec<serde_json::Value> = Vec::new();
+            for a in &tab.artifacts {
+                artifact_entries.push(serde_json::to_value(a).unwrap_or_default());
+            }
+            let tab_json = serde_json::to_value(&tab).unwrap_or_default();
+            let body = serde_json::json!({
+                "schema_version": 1,
+                "mode": tab.mode.to_lowercase(),
+                "tab": tab_json,
+                "artifacts": artifact_entries,
+            })
+            .to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
+        }
         "unified" => {
             let mut lines = Vec::new();
             lines.push(format!("--- {}", tab.left_path));
@@ -3648,10 +3845,38 @@ fn report_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Ve
                     }
                 }
             }
-            let body = lines.join("\n");
-            http_response(200, "OK", "text/plain; charset=utf-8", body.into_bytes())
+            let report_text = lines.join("\n");
+            let saved_path = save_artifact(paths, "report-unified", report_text.as_bytes()).ok();
+            let mut artifact_entries: Vec<serde_json::Value> = Vec::new();
+            if let Some(ref p) = saved_path {
+                artifact_entries.push(serde_json::json!({
+                    "type": "report_file",
+                    "path": p.to_string_lossy(),
+                    "format": "unified"
+                }));
+            }
+            for a in &tab.artifacts {
+                artifact_entries.push(serde_json::to_value(a).unwrap_or_default());
+            }
+            let mut body_map = serde_json::json!({
+                "content": report_text,
+                "artifacts": artifact_entries,
+            });
+            if let Some(p) = saved_path {
+                body_map["artifact_path"] = serde_json::json!(p.to_string_lossy().as_ref());
+            }
+            http_response(
+                200,
+                "OK",
+                "application/json",
+                body_map.to_string().into_bytes(),
+            )
         }
         _ => {
+            let mut artifact_entries: Vec<serde_json::Value> = Vec::new();
+            for a in &tab.artifacts {
+                artifact_entries.push(serde_json::to_value(a).unwrap_or_default());
+            }
             let body = serde_json::json!({
                 "tab": {
                     "mode": tab.mode,
@@ -3660,11 +3885,49 @@ fn report_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Ve
                     "status": tab.status,
                     "difference_count": tab.difference_count,
                     "summary": tab.summary,
-                }
+                },
+                "artifacts": artifact_entries,
             })
             .to_string();
             http_response(200, "OK", "application/json", body.into_bytes())
         }
+    }
+}
+
+fn artifacts_list_bridge_response(state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
+    let tab = match state.lock() {
+        Ok(s) => s
+            .session
+            .tabs
+            .iter()
+            .find(|t| t.id == s.session.active_tab_id)
+            .cloned(),
+        Err(_) => return bridge_error(500, "Internal Server Error", "state unavailable"),
+    };
+    let Some(tab) = tab else {
+        return bridge_error(404, "Not Found", "no active tab");
+    };
+    let body = serde_json::json!({
+        "artifacts": tab.artifacts,
+    })
+    .to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
+}
+
+fn artifacts_cleanup_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
+    let params = query_params(query);
+    let max_age_seconds: u64 = query_value(&params, "max_age_seconds")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(86400);
+    match cleanup_artifacts(paths, Duration::from_secs(max_age_seconds)) {
+        Ok(removed) => {
+            let body = serde_json::json!({
+                "removed": removed,
+            })
+            .to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
+        }
+        Err(err) => bridge_error(500, "Internal Server Error", &err.to_string()),
     }
 }
 
@@ -4202,7 +4465,16 @@ fn folder_op_plan_bridge_response(
     let Some(op_kind) = parse_folder_op_kind(kind, &params) else {
         return bridge_error(400, "Bad Request", "unsupported op kind");
     };
-    let plan = plan_folder_operation(&compare, op_kind, &entries);
+    let mut plan = plan_folder_operation(&compare, op_kind, &entries);
+    let left_base = Path::new(&tab.left_path);
+    let right_base = Path::new(&tab.right_path);
+    if let Err(err) = linsync_core::assess_operation_risks(&mut plan, left_base, right_base) {
+        return bridge_error(
+            500,
+            "Internal Server Error",
+            &format!("risk assessment failed: {err}"),
+        );
+    }
     let body = folder_plan_to_json(&plan).to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
 }
@@ -4292,6 +4564,7 @@ fn parse_folder_op_kind(kind: &str, params: &[(String, String)]) -> Option<Folde
 }
 
 fn folder_plan_to_json(plan: &linsync_core::FolderOperationPlan) -> serde_json::Value {
+    let risk = plan.risk_summary();
     serde_json::json!({
         "operations": plan
             .operations
@@ -4323,6 +4596,12 @@ fn folder_plan_to_json(plan: &linsync_core::FolderOperationPlan) -> serde_json::
                 "message": w.message,
             }))
             .collect::<Vec<_>>(),
+        "risk_summary": {
+            "total_operations": risk.total_operations,
+            "overwrite_count": risk.overwrite_count,
+            "delete_count": risk.delete_count,
+            "high_risk_count": risk.high_risk_count,
+        },
     })
 }
 
@@ -4359,6 +4638,121 @@ fn folder_outcomes_to_json(
             "total": outcomes.len(),
         },
     })
+}
+
+fn image_regions_bridge_response(state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
+    let regions = match state.lock() {
+        Ok(s) => s.last_image_result.as_ref().map(|r| r.diff_regions.clone()),
+        Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
+    };
+    let Some(regions) = regions else {
+        return bridge_error(404, "Not Found", "no image compare result available");
+    };
+    let total = regions.len();
+    let body = serde_json::json!({
+        "regions": regions,
+        "total": total,
+    });
+    let json = serde_json::to_string(&body)
+        .unwrap_or_else(|_| r#"{"error":"serialization error"}"#.to_owned());
+    http_response(200, "OK", "application/json", json.into_bytes())
+}
+
+fn binary_interpret_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
+    let params = query_params(query);
+    let offset = match query_value(&params, "offset").and_then(|v| v.parse::<usize>().ok()) {
+        Some(o) => o,
+        None => return bridge_error(400, "Bad Request", "missing or invalid offset"),
+    };
+    let kind_str = match query_value(&params, "kind") {
+        Some(k) => k,
+        None => return bridge_error(400, "Bad Request", "missing kind"),
+    };
+    let kind = match parse_typed_value_kind(kind_str) {
+        Some(k) => k,
+        None => return bridge_error(400, "Bad Request", &format!("unknown kind '{kind_str}'")),
+    };
+
+    let tab = match state.lock() {
+        Ok(s) => s
+            .session
+            .tabs
+            .iter()
+            .find(|t| t.id == s.session.active_tab_id)
+            .cloned(),
+        Err(_) => return bridge_error(500, "Internal Server Error", "state unavailable"),
+    };
+    let Some(tab) = tab else {
+        return bridge_error(404, "Not Found", "no active tab");
+    };
+    if tab.mode != "Hex" {
+        return bridge_error(400, "Bad Request", "active tab is not a binary compare");
+    }
+
+    let left_bytes = match fs::read(&tab.left_path) {
+        Ok(b) => b,
+        Err(err) => {
+            return bridge_error(
+                500,
+                "Internal Server Error",
+                &format!("failed to read left file: {err}"),
+            );
+        }
+    };
+    let right_bytes = match fs::read(&tab.right_path) {
+        Ok(b) => b,
+        Err(err) => {
+            return bridge_error(
+                500,
+                "Internal Server Error",
+                &format!("failed to read right file: {err}"),
+            );
+        }
+    };
+
+    let result = compare_binary(
+        &tab.left_path,
+        &left_bytes,
+        &tab.right_path,
+        &right_bytes,
+        &BinaryCompareOptions {
+            compare_content: false,
+            ..BinaryCompareOptions::default()
+        },
+    );
+
+    let interpretation = match result.interpret_at(offset, kind) {
+        Some(i) => i,
+        None => return bridge_error(400, "Bad Request", "offset out of bounds"),
+    };
+
+    let body = serde_json::to_string(&interpretation)
+        .unwrap_or_else(|_| r#"{"error":"serialization error"}"#.to_owned());
+    http_response(200, "OK", "application/json", body.into_bytes())
+}
+
+fn parse_typed_value_kind(s: &str) -> Option<TypedValueKind> {
+    match s {
+        "u8" => Some(TypedValueKind::U8),
+        "i8" => Some(TypedValueKind::I8),
+        "u16_le" => Some(TypedValueKind::U16Le),
+        "u16_be" => Some(TypedValueKind::U16Be),
+        "i16_le" => Some(TypedValueKind::I16Le),
+        "i16_be" => Some(TypedValueKind::I16Be),
+        "u32_le" => Some(TypedValueKind::U32Le),
+        "u32_be" => Some(TypedValueKind::U32Be),
+        "i32_le" => Some(TypedValueKind::I32Le),
+        "i32_be" => Some(TypedValueKind::I32Be),
+        "u64_le" => Some(TypedValueKind::U64Le),
+        "u64_be" => Some(TypedValueKind::U64Be),
+        "i64_le" => Some(TypedValueKind::I64Le),
+        "i64_be" => Some(TypedValueKind::I64Be),
+        "f32_le" => Some(TypedValueKind::F32Le),
+        "f32_be" => Some(TypedValueKind::F32Be),
+        "f64_le" => Some(TypedValueKind::F64Le),
+        "f64_be" => Some(TypedValueKind::F64Be),
+        _ => None,
+    }
 }
 
 fn merge_conflicts_bridge_response(state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
@@ -4539,11 +4933,46 @@ pub(crate) fn save_three_way_merge_output(
         .map_err(|err| format!("failed to save merged output: {err}"))
 }
 
+fn validate_merge_session(session: &ThreeWayMergeState) -> Result<(), usize> {
+    let unresolved = session.unresolved_count();
+    if unresolved == 0 {
+        Ok(())
+    } else {
+        Err(unresolved)
+    }
+}
+
 fn merge3_save_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
     let params = query_params(query);
     let Some(path) = query_value(&params, "path") else {
         return bridge_error(400, "Bad Request", "missing path");
     };
+
+    {
+        let guard = match state.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                return bridge_error(500, "Internal Server Error", "session state unavailable");
+            }
+        };
+        let Some(session) = guard.three_way_session.as_ref() else {
+            return bridge_error(400, "Bad Request", "no active three-way merge session");
+        };
+        if let Err(count) = validate_merge_session(session) {
+            return http_response(
+                409,
+                "Conflict",
+                "application/json",
+                serde_json::json!({
+                    "ok": false,
+                    "error": format!("{count} unresolved conflict(s) remain"),
+                    "unresolved_count": count,
+                })
+                .to_string()
+                .into_bytes(),
+            );
+        }
+    }
 
     match save_three_way_merge_output(path, state) {
         Ok(()) => {
@@ -6579,10 +7008,86 @@ mod tests {
         .expect("utf-8 response");
         // Returns 200 with ok:false (consistent with folder-op error pattern).
         let body = json_response_body(&resp);
-        assert_eq!(
-            body["ok"], false,
-            "save without session should return ok:false"
+        assert!(
+            body.get("error").is_some(),
+            "save without session should return an error"
         );
+    }
+
+    #[test]
+    fn merge_save_rejects_unresolved_conflicts() {
+        let root = test_file_root("merge3-validation");
+        let base = root.join("base.txt");
+        let left = root.join("left.txt");
+        let right = root.join("right.txt");
+        let out = root.join("merged.txt");
+        fs::write(&base, "shared\nbase line\n").unwrap();
+        fs::write(&left, "shared\nleft line\n").unwrap();
+        fs::write(&right, "shared\nright line\n").unwrap();
+
+        let paths = test_app_paths("merge3-validation");
+        let state = test_bridge_state(None);
+
+        let start_query = format!(
+            "base={}&left={}&right={}",
+            url_encode(&base),
+            url_encode(&left),
+            url_encode(&right)
+        );
+        let start_resp = String::from_utf8(bridge_response(
+            &format!("GET /merge3/start?{start_query} HTTP/1.1\r\n"),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        let start_body = json_response_body(&start_resp);
+        assert_eq!(start_body["ok"], true);
+        let conflicts = start_body["conflicts"].as_array().expect("conflicts array");
+        assert!(!conflicts.is_empty());
+
+        let save_query = format!("path={}", url_encode(&out));
+        let save_resp = String::from_utf8(bridge_response(
+            &format!("GET /merge3/save?{save_query} HTTP/1.1\r\n"),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(
+            save_resp.contains("HTTP/1.1 409 Conflict"),
+            "expected 409 for unresolved conflicts; got: {save_resp}"
+        );
+        let save_body = json_response_body(&save_resp);
+        assert_eq!(save_body["ok"], false);
+        assert!(
+            save_body["unresolved_count"].as_u64().unwrap_or(0) > 0,
+            "unresolved_count should be > 0"
+        );
+
+        for conflict in conflicts {
+            let id = conflict["id"].as_u64().expect("conflict id");
+            let resolve_query = format!("id={id}&choice=left");
+            let resolve_resp = String::from_utf8(bridge_response(
+                &format!("GET /merge3/resolve?{resolve_query} HTTP/1.1\r\n"),
+                &paths,
+                &state,
+            ))
+            .expect("utf-8 response");
+            let resolve_body = json_response_body(&resolve_resp);
+            assert_eq!(resolve_body["ok"], true);
+        }
+
+        let save_resp2 = String::from_utf8(bridge_response(
+            &format!("GET /merge3/save?{save_query} HTTP/1.1\r\n"),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(
+            save_resp2.contains("HTTP/1.1 200 OK"),
+            "expected 200 after resolving all conflicts; got: {save_resp2}"
+        );
+        let save_body2 = json_response_body(&save_resp2);
+        assert_eq!(save_body2["ok"], true);
     }
 
     // ── Plugin options bridge tests ───────────────────────────────────────────
@@ -7706,7 +8211,7 @@ mod tests {
             &state,
         ))
         .expect("utf-8 response");
-        assert!(resp.contains("text/plain"));
+        assert!(resp.contains("application/json"));
         assert!(resp.contains("--- "));
         assert!(resp.contains("+++ "));
     }

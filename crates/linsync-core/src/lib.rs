@@ -18,8 +18,9 @@ pub mod webpage;
 
 pub use binary::{
     BinaryCompareOptions, BinaryCompareResult, BinaryFileMetadata, BinaryMetadataCompare,
-    BinaryMetadataDifference, ByteDiff, HexRow, compare_binary, compare_binary_files,
-    is_likely_binary,
+    BinaryMetadataDifference, ByteDiff, HexParseError, HexRow, SearchMatch, SearchSide,
+    TypedInterpretation, TypedValueKind, compare_binary, compare_binary_files, is_likely_binary,
+    parse_hex_pattern,
 };
 #[cfg(feature = "document-compare")]
 pub use document::{
@@ -36,9 +37,9 @@ pub use folder::{
     FolderCompareOptions, FolderCompareResult, FolderCompareStatus, FolderCompareSummary,
     FolderEntryDiff, FolderEntryFilter, FolderEntryState, FolderEntryType, FolderOperation,
     FolderOperationCounts, FolderOperationKind, FolderOperationOutcome, FolderOperationPlan,
-    FolderOperationStatus, FolderOperationWarning, FolderOperationWarningKind, SymlinkPolicy,
-    compare_folders, compare_folders_with_progress, execute_folder_operation_plan,
-    plan_folder_operation,
+    FolderOperationStatus, FolderOperationWarning, FolderOperationWarningKind, HashAlgorithm,
+    SymlinkPolicy, assess_operation_risks, compare_folders, compare_folders_with_progress,
+    execute_folder_operation_plan, plan_folder_operation,
 };
 #[cfg(feature = "image-compare")]
 pub use image::{
@@ -71,19 +72,21 @@ pub use profile::{
     ProfileStoreError, ProfileValidationError,
 };
 pub use storage::{
-    CompareViewMode, FilterStore, NamedFilters, ProjectFile, ProjectFileStore, RecentPathStore,
-    RecentPaths, RecentSessionStore, RecentSessions, SessionFile, SessionFileStore, SessionLayout,
-    Settings, SettingsStore, StoreError, ThemePreference, WindowSize,
+    ArtifactManifest, CompareArtifact, CompareViewMode, FilterStore, NamedFilters, ProjectFile,
+    ProjectFileStore, RecentPathStore, RecentPaths, RecentSessionStore, RecentSessions,
+    SessionFile, SessionFileStore, SessionLayout, Settings, SettingsStore, StoreError,
+    ThemePreference, WindowSize, artifact_dir, cleanup_artifacts, save_artifact,
 };
 pub use table::{
     TableCellDiff, TableCellState, TableCompareOptions, TableCompareResult, TableError,
     TableParseError, TableRowDiff, compare_table_files, compare_tables, parse_delimited,
 };
 pub use text::{
-    CompareOptions, CompareSession, CompareSide, CompareSummary, DiffBlock, DiffBlockKind,
-    DiffLine, DiffLineKind, InlineDiff, LineEnding, MergeAction, MergeConflict, MoveDirection,
-    SavePlan, TextCompareOptions, TextCompareResult, TextDocument, TextEncoding, TextSubstitution,
-    compare_documents, compare_documents_cancellable, compare_text, compare_text_files,
+    CompareOptions, CompareSession, CompareSide, CompareSummary, DiffAlgorithm, DiffBlock,
+    DiffBlockKind, DiffLine, DiffLineKind, EncodingSummary, InlineDiff, InlineGranularity,
+    LineEnding, MergeAction, MergeConflict, MoveDirection, SavePlan, TextCompareOptions,
+    TextCompareResult, TextDocument, TextEncoding, TextSubstitution, compare_documents,
+    compare_documents_cancellable, compare_text, compare_text_files,
     compare_text_files_cancellable, compare_text_files_with_prediffer,
 };
 pub use trash::{

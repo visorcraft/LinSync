@@ -6,13 +6,14 @@ use std::process::{Command, ExitCode};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use linsync_core::{
-    AppPaths, BinaryCompareOptions, CompareMethod, CompareProfile, DiffBlockKind, DiffLineKind,
-    FileFilter, FilterMatchOptions, FilterParseErrorKind, FilterStore, FolderCompareOptions,
-    FolderCompareResult, FolderEntryFilter, FolderEntryState, MergeChoice, MoveDirection,
-    ProfileId, ProfileStore, ProfileStoreError, SymlinkPolicy, TableCellState, TableCompareOptions,
-    TextCompareOptions, TextDocument, TextSubstitution, ThreeWayMergeState, builtin_profiles,
+    AppPaths, BinaryCompareOptions, CompareMethod, CompareProfile, DiffAlgorithm, DiffBlockKind,
+    DiffLineKind, FileFilter, FilterMatchOptions, FilterParseErrorKind, FilterStore,
+    FolderCompareOptions, FolderCompareResult, FolderEntryFilter, FolderEntryState, HashAlgorithm,
+    InlineGranularity, MergeChoice, MoveDirection, ProfileId, ProfileStore, ProfileStoreError,
+    SymlinkPolicy, TableCellState, TableCompareOptions, TextCompareOptions, TextDocument,
+    TextSubstitution, ThreeWayMergeState, assess_operation_risks, builtin_profiles,
     compare_binary_files, compare_folders, compare_table_files, compare_text, compare_text_files,
-    find_builtin, is_likely_binary, merge_three_way, parse_conflict_markers,
+    find_builtin, is_likely_binary, merge_three_way, parse_conflict_markers, plan_folder_operation,
 };
 
 fn main() -> ExitCode {
@@ -102,6 +103,7 @@ const COMPARE_FLAGS: &[&str] = &[
     "--count",
     "--quiet",
     "-q",
+    "--profile",
     "--ignore-case",
     "--ignore-whitespace",
     "--ignore-blank-lines",
@@ -109,6 +111,8 @@ const COMPARE_FLAGS: &[&str] = &[
     "--ignore-line-regex",
     "--substitute-regex",
     "--detect-moves",
+    "--diff-algorithm",
+    "--inline-granularity",
     "--type",
     "--image-mode",
     "--image-tolerance",
@@ -133,6 +137,10 @@ const FOLDER_FLAGS: &[&str] = &[
     "--case-insensitive-filter",
     "--hide-skipped",
     "--state",
+    "--dry-run",
+    "--hash-algorithm",
+    "--compare-permissions",
+    "--compare-ownership",
     "--json",
     "--csv",
     "--count",
@@ -185,6 +193,11 @@ const TABLE_FLAGS: &[&str] = &[
     "--delimiter",
     "-d",
     "--tsv",
+    "--table-quote",
+    "--table-escape",
+    "--table-comment",
+    "--table-skip-blank",
+    "--numeric-tolerance",
     "--json",
     "--count",
     "--quiet",
@@ -195,7 +208,7 @@ fn compare_command(args: &[String]) -> Result<ExitCode, String> {
     let compare_args = split_compare_args(args)?;
     if compare_args.paths.len() != 2 {
         return Err(
-            "usage: linsync-cli compare [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT"
+            "usage: linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT"
                 .to_owned(),
         );
     }
@@ -214,14 +227,19 @@ fn compare_command(args: &[String]) -> Result<ExitCode, String> {
 
     match compare_args.compare_type {
         CompareType::Auto => {
-            let compare_type = detect_compare_type(&left, &right, &compare_args.text_options)?;
+            let compare_type = detect_compare_type(
+                &left,
+                &right,
+                &compare_args.text_options,
+                compare_args.explicit_text_options,
+            )?;
             match compare_type {
                 CompareType::Text => compare_text_command(left, right, compare_args),
                 CompareType::Binary | CompareType::Hex => {
-                    compare_binary_command(&left, &right, compare_args.output)
+                    compare_binary_command(&left, &right, compare_args)
                 }
-                CompareType::Folder => compare_folder_command(&left, &right, compare_args.output),
-                CompareType::Table => compare_table_command(&left, &right, compare_args.output),
+                CompareType::Folder => compare_folder_command(&left, &right, compare_args),
+                CompareType::Table => compare_table_command(&left, &right, compare_args),
                 CompareType::Image => compare_image_command(&left, &right, compare_args),
                 CompareType::Document => compare_document_command(&left, &right, compare_args),
                 CompareType::Auto => unreachable!("auto detection resolves to a concrete type"),
@@ -229,10 +247,10 @@ fn compare_command(args: &[String]) -> Result<ExitCode, String> {
         }
         CompareType::Text => compare_text_command(left, right, compare_args),
         CompareType::Binary | CompareType::Hex => {
-            compare_binary_command(&left, &right, compare_args.output)
+            compare_binary_command(&left, &right, compare_args)
         }
-        CompareType::Folder => compare_folder_command(&left, &right, compare_args.output),
-        CompareType::Table => compare_table_command(&left, &right, compare_args.output),
+        CompareType::Folder => compare_folder_command(&left, &right, compare_args),
+        CompareType::Table => compare_table_command(&left, &right, compare_args),
         CompareType::Image => compare_image_command(&left, &right, compare_args),
         CompareType::Document => compare_document_command(&left, &right, compare_args),
     }
@@ -331,13 +349,14 @@ fn detect_compare_type(
     left: &Path,
     right: &Path,
     text_options: &TextCompareOptions,
+    explicit_text_options: bool,
 ) -> Result<CompareType, String> {
-    if text_options != &TextCompareOptions::default() {
-        return Ok(CompareType::Text);
-    }
-
     if left.is_dir() || right.is_dir() {
         return Ok(CompareType::Folder);
+    }
+
+    if explicit_text_options && text_options != &TextCompareOptions::default() {
+        return Ok(CompareType::Text);
     }
 
     let left_sample = fs::read(left).map_err(|err| err.to_string())?;
@@ -424,12 +443,24 @@ fn compare_text_command(
                     )
                 })
                 .count();
-            println!(
-                "{{\"equal\":{},\"differences\":{},\"moved_blocks\":{}}}",
-                result.is_equal(),
-                result.difference_count(),
-                moved_count,
-            );
+            if let Some(profile_id) = compare_args.effective_profile.as_deref() {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "equal": result.is_equal(),
+                        "differences": result.difference_count(),
+                        "moved_blocks": moved_count,
+                        "profile": profile_id,
+                    })
+                );
+            } else {
+                println!(
+                    "{{\"equal\":{},\"differences\":{},\"moved_blocks\":{}}}",
+                    result.is_equal(),
+                    result.difference_count(),
+                    moved_count,
+                );
+            }
         }
         OutputMode::Count => println!("{}", result.difference_count()),
         OutputMode::Quiet => {}
@@ -445,13 +476,13 @@ fn compare_text_command(
 fn compare_binary_command(
     left: &Path,
     right: &Path,
-    output: OutputMode,
+    compare_args: CompareArgs,
 ) -> Result<ExitCode, String> {
-    let result = compare_binary_files(left, right, &BinaryCompareOptions::default())
+    let result = compare_binary_files(left, right, &compare_args.binary_options)
         .map_err(|err| err.to_string())?;
     let differences = result.differences.len();
 
-    match output {
+    match compare_args.output {
         OutputMode::Text => {
             println!(
                 "{} vs {}: {} differing bytes",
@@ -465,11 +496,22 @@ fn compare_binary_command(
             }
         }
         OutputMode::Json => {
-            println!(
-                "{{\"equal\":{},\"differences\":{}}}",
-                result.is_equal(),
-                differences
-            );
+            if let Some(profile_id) = compare_args.effective_profile.as_deref() {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "equal": result.is_equal(),
+                        "differences": differences,
+                        "profile": profile_id,
+                    })
+                );
+            } else {
+                println!(
+                    "{{\"equal\":{},\"differences\":{}}}",
+                    result.is_equal(),
+                    differences
+                );
+            }
         }
         OutputMode::Count => println!("{differences}"),
         OutputMode::Quiet => {}
@@ -485,14 +527,14 @@ fn compare_binary_command(
 fn compare_folder_command(
     left: &Path,
     right: &Path,
-    output: OutputMode,
+    compare_args: CompareArgs,
 ) -> Result<ExitCode, String> {
-    let result = compare_folders(left, right, &FolderCompareOptions::default())
+    let result = compare_folders(left, right, &compare_args.folder_options)
         .map_err(|err| err.to_string())?;
     let summary = &result.summary;
     let differences = summary.different_count + summary.one_sided_count + summary.errors_count;
 
-    match output {
+    match compare_args.output {
         OutputMode::Text => println!(
             "compared={} skipped={} identical={} different={} one_sided={} left_only={} right_only={} errors={} elapsed_ms={} status=complete",
             summary.compared_count,
@@ -505,9 +547,8 @@ fn compare_folder_command(
             summary.errors_count,
             summary.elapsed.as_millis()
         ),
-        OutputMode::Json => println!(
-            "{}",
-            serde_json::json!({
+        OutputMode::Json => {
+            let mut json = serde_json::json!({
                 "equal": result.is_equal(),
                 "compared": summary.compared_count,
                 "skipped": summary.skipped_count,
@@ -519,8 +560,14 @@ fn compare_folder_command(
                 "errors": summary.errors_count,
                 "elapsed_ms": summary.elapsed.as_millis(),
                 "status": "complete",
-            })
-        ),
+            });
+            if let Some(profile_id) = compare_args.effective_profile.as_deref()
+                && let Some(obj) = json.as_object_mut()
+            {
+                obj.insert("profile".to_owned(), serde_json::json!(profile_id));
+            }
+            println!("{json}");
+        }
         OutputMode::Count => println!("{differences}"),
         OutputMode::Quiet => {}
     }
@@ -535,33 +582,43 @@ fn compare_folder_command(
 fn compare_table_command(
     left: &Path,
     right: &Path,
-    output: OutputMode,
+    compare_args: CompareArgs,
 ) -> Result<ExitCode, String> {
-    let delimiter = if has_tsv_extension(left) || has_tsv_extension(right) {
-        '\t'
-    } else {
-        ','
-    };
-    let result = compare_table_files(
-        left,
-        right,
-        &TableCompareOptions {
-            delimiter,
-            ..TableCompareOptions::default()
-        },
-    )
-    .map_err(|err| err.to_string())?;
+    let mut options = compare_args.table_options.clone();
+    if options == TableCompareOptions::default()
+        && (has_tsv_extension(left) || has_tsv_extension(right))
+    {
+        options.delimiter = '\t';
+    }
+    let result = compare_table_files(left, right, &options).map_err(|err| err.to_string())?;
 
-    match output {
+    match compare_args.output {
         OutputMode::Text => println!(
             "{} vs {}: changed_cells={}",
             result.left_name, result.right_name, result.changed_cells
         ),
-        OutputMode::Json => println!(
-            "{{\"equal\":{},\"differences\":{}}}",
-            result.is_equal(),
-            result.changed_cells
-        ),
+        OutputMode::Json => {
+            if let Some(profile_id) = compare_args.effective_profile.as_deref() {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "equal": result.is_equal(),
+                        "rows": result.rows.len(),
+                        "changed_cells": result.changed_cells,
+                        "profile": profile_id,
+                    })
+                );
+            } else {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "equal": result.is_equal(),
+                        "rows": result.rows.len(),
+                        "changed_cells": result.changed_cells,
+                    })
+                );
+            }
+        }
         OutputMode::Count => println!("{}", result.changed_cells),
         OutputMode::Quiet => {}
     }
@@ -1497,7 +1554,7 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
 
     if folder_args.paths.len() != 2 {
         return Err(
-            "usage: linsync-cli folders [--recursive] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT"
+            "usage: linsync-cli folders [--recursive] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT"
                 .to_owned(),
         );
     }
@@ -1515,6 +1572,9 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
             symlink_policy: folder_args.symlink_policy,
             large_file_threshold: folder_args.large_file_threshold,
             large_file_fallback_method: folder_args.large_file_fallback_method,
+            hash_algorithm: folder_args.hash_algorithm,
+            compare_permissions: folder_args.compare_permissions,
+            compare_ownership: folder_args.compare_ownership,
         },
     )
     .map_err(|err| err.to_string())?;
@@ -1547,6 +1607,45 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
                 summary.elapsed.as_millis(),
                 folder_status(summary.status)
             );
+            if folder_args.dry_run {
+                let selected: Vec<PathBuf> = result
+                    .entries
+                    .iter()
+                    .filter(|e| {
+                        matches!(
+                            e.state,
+                            FolderEntryState::Different
+                                | FolderEntryState::LeftOnly
+                                | FolderEntryState::RightOnly
+                        )
+                    })
+                    .map(|e| e.relative_path.clone())
+                    .collect();
+                let mut plan = plan_folder_operation(
+                    &result,
+                    linsync_core::FolderOperationKind::CopyLeftToRight,
+                    &selected,
+                );
+                let left_path = Path::new(&folder_args.paths[0]);
+                let right_path = Path::new(&folder_args.paths[1]);
+                let _ = assess_operation_risks(&mut plan, left_path, right_path);
+                let risk = plan.risk_summary();
+                println!(
+                    "dry_run: {} operations ({} overwrites, {} deletes, {} high-risk warnings)",
+                    risk.total_operations,
+                    risk.overwrite_count,
+                    risk.delete_count,
+                    risk.high_risk_count,
+                );
+                for warning in &risk.warnings {
+                    println!(
+                        "  warning: {:?}: {} ({})",
+                        warning.kind,
+                        warning.message,
+                        warning.relative_path.display()
+                    );
+                }
+            }
         }
         FolderOutput::Structured(OutputMode::Json) => {
             let entries = filtered_entries
@@ -1568,26 +1667,64 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
                     })
                 })
                 .collect::<Vec<_>>();
-            println!(
-                "{}",
-                serde_json::json!({
-                    "equal": result.is_equal(),
-                    "compared": summary.compared_count,
-                    "skipped": summary.skipped_count,
-                    "identical": summary.identical_count,
-                    "different": summary.different_count,
-                    "one_sided": summary.one_sided_count,
-                    "left_only": summary.left_only_count,
-                    "right_only": summary.right_only_count,
-                    "errors": summary.errors_count,
-                    "aborted": summary.aborted_count,
-                    "method_downgrades": summary.method_downgrade_count,
-                    "filtered": filtered_entries.len(),
-                    "elapsed_ms": summary.elapsed.as_millis(),
-                    "status": folder_status(summary.status),
-                    "entries": entries,
-                })
-            );
+            let risk_metadata = if folder_args.dry_run {
+                let selected: Vec<PathBuf> = result
+                    .entries
+                    .iter()
+                    .filter(|e| {
+                        matches!(
+                            e.state,
+                            FolderEntryState::Different
+                                | FolderEntryState::LeftOnly
+                                | FolderEntryState::RightOnly
+                        )
+                    })
+                    .map(|e| e.relative_path.clone())
+                    .collect();
+                let mut plan = plan_folder_operation(
+                    &result,
+                    linsync_core::FolderOperationKind::CopyLeftToRight,
+                    &selected,
+                );
+                let left_path = Path::new(&folder_args.paths[0]);
+                let right_path = Path::new(&folder_args.paths[1]);
+                let _ = assess_operation_risks(&mut plan, left_path, right_path);
+                let risk = plan.risk_summary();
+                Some(serde_json::json!({
+                    "total_operations": risk.total_operations,
+                    "overwrite_count": risk.overwrite_count,
+                    "delete_count": risk.delete_count,
+                    "high_risk_count": risk.high_risk_count,
+                    "warnings": risk.warnings.iter().map(|w| serde_json::json!({
+                        "relative_path": w.relative_path.display().to_string(),
+                        "kind": format!("{:?}", w.kind),
+                        "message": w.message,
+                    })).collect::<Vec<_>>(),
+                }))
+            } else {
+                None
+            };
+            let mut output = serde_json::json!({
+                "equal": result.is_equal(),
+                "compared": summary.compared_count,
+                "skipped": summary.skipped_count,
+                "identical": summary.identical_count,
+                "different": summary.different_count,
+                "one_sided": summary.one_sided_count,
+                "left_only": summary.left_only_count,
+                "right_only": summary.right_only_count,
+                "errors": summary.errors_count,
+                "aborted": summary.aborted_count,
+                "method_downgrades": summary.method_downgrade_count,
+                "filtered": filtered_entries.len(),
+                "elapsed_ms": summary.elapsed.as_millis(),
+                "status": folder_status(summary.status),
+                "entries": entries,
+            });
+            if let Some(risk) = risk_metadata {
+                output["risk"] = risk;
+            }
+            println!("{output}");
         }
         FolderOutput::Structured(OutputMode::Count) => println!("{count}"),
         FolderOutput::Structured(OutputMode::Quiet) => {}
@@ -2390,6 +2527,7 @@ fn table_command(args: &[String]) -> Result<ExitCode, String> {
     let mut output = OutputMode::Text;
     let mut paths = Vec::new();
     let mut index = 0;
+    let mut table_opts = TableCompareOptions::default();
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2420,6 +2558,49 @@ fn table_command(args: &[String]) -> Result<ExitCode, String> {
                 has_header = true;
                 index += 1;
             }
+            "--table-quote" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--table-quote requires a character".to_owned());
+                };
+                table_opts.quote_char = Some(parse_single_char(value, "--table-quote")?);
+                index += 2;
+            }
+            "--table-escape" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--table-escape requires a character".to_owned());
+                };
+                table_opts.escape_char = Some(parse_single_char(value, "--table-escape")?);
+                index += 2;
+            }
+            "--table-comment" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--table-comment requires a prefix string".to_owned());
+                };
+                table_opts.comment_prefix = Some(value.clone());
+                index += 2;
+            }
+            "--table-skip-blank" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--table-skip-blank requires true/false".to_owned());
+                };
+                table_opts.skip_blank_rows = parse_cli_bool(value, "--table-skip-blank")?;
+                index += 2;
+            }
+            "--numeric-tolerance" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--numeric-tolerance requires a number".to_owned());
+                };
+                let tolerance = value
+                    .parse::<f64>()
+                    .map_err(|_| format!("--numeric-tolerance requires a number, got '{value}'"))?;
+                if !tolerance.is_finite() || tolerance < 0.0 {
+                    return Err(
+                        "--numeric-tolerance requires a finite non-negative number".to_owned()
+                    );
+                }
+                table_opts.numeric_tolerance = Some(tolerance);
+                index += 2;
+            }
             value => {
                 paths.push(value.to_owned());
                 index += 1;
@@ -2429,20 +2610,17 @@ fn table_command(args: &[String]) -> Result<ExitCode, String> {
 
     if paths.len() != 2 {
         return Err(
-            "usage: linsync-cli table [--header] [--delimiter CHAR|--tsv] LEFT RIGHT".to_owned(),
+            "usage: linsync-cli table [--header] [--delimiter CHAR|--tsv] [--table-quote CHAR] [--table-escape CHAR] [--table-comment PREFIX] [--table-skip-blank BOOL] [--numeric-tolerance FLOAT] LEFT RIGHT".to_owned(),
         );
     }
+
+    table_opts.delimiter = delimiter;
+    table_opts.has_header = has_header;
 
     let result = compare_table_files(
         PathBuf::from(&paths[0]).as_path(),
         PathBuf::from(&paths[1]).as_path(),
-        &TableCompareOptions {
-            delimiter,
-            has_header,
-            key_columns: Vec::new(),
-            ignore_columns: Vec::new(),
-            ignore_row_order: false,
-        },
+        &table_opts,
     )
     .map_err(|err| err.to_string())?;
 
@@ -3006,6 +3184,9 @@ struct CompareArgs {
     output: OutputMode,
     compare_type: CompareType,
     text_options: TextCompareOptions,
+    folder_options: FolderCompareOptions,
+    table_options: TableCompareOptions,
+    binary_options: BinaryCompareOptions,
     image_options: ImageCompareArgsOptions,
     document_options: DocumentCompareArgsOptions,
     paths: Vec<String>,
@@ -3013,6 +3194,7 @@ struct CompareArgs {
     /// for echoing the active profile in JSON output; the per-mode
     /// option fields above already incorporate the profile's values.
     effective_profile: Option<String>,
+    explicit_text_options: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3032,10 +3214,14 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
     let mut output = OutputMode::Text;
     let mut compare_type = CompareType::Auto;
     let mut text_options = TextCompareOptions::default();
+    let mut folder_options = FolderCompareOptions::default();
+    let mut table_options = TableCompareOptions::default();
+    let mut binary_options = BinaryCompareOptions::default();
     let mut image_options = ImageCompareArgsOptions::default();
     let mut document_options = DocumentCompareArgsOptions::default();
     let mut paths = Vec::new();
     let mut effective_profile: Option<String> = None;
+    let mut explicit_text_options = false;
 
     // First pass: resolve --profile so the per-mode options are seeded
     // from the profile *before* the rest of the flag parsing overrides
@@ -3054,6 +3240,9 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
             };
             let profile = resolve_profile_arg(value)?;
             text_options = profile.text.clone();
+            folder_options = profile.folder.clone();
+            table_options = profile.table.clone();
+            binary_options = profile.binary.clone();
             // image_options / document_options use CLI-side helper
             // structs; copy the relevant fields out of the profile.
             // linsync-cli always pulls in image-compare and
@@ -3091,11 +3280,56 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
             "--json" => set_output_mode(&mut output, OutputMode::Json, "--json")?,
             "--count" => set_output_mode(&mut output, OutputMode::Count, "--count")?,
             "--quiet" | "-q" => set_output_mode(&mut output, OutputMode::Quiet, "--quiet")?,
-            "--ignore-case" => text_options.ignore_case = true,
-            "--ignore-whitespace" => text_options.ignore_whitespace = true,
-            "--ignore-blank-lines" => text_options.ignore_blank_lines = true,
-            "--ignore-eol" => text_options.ignore_eol = true,
-            "--detect-moves" => text_options.detect_moves = true,
+            "--ignore-case" => {
+                text_options.ignore_case = true;
+                explicit_text_options = true;
+            }
+            "--ignore-whitespace" => {
+                text_options.ignore_whitespace = true;
+                explicit_text_options = true;
+            }
+            "--ignore-blank-lines" => {
+                text_options.ignore_blank_lines = true;
+                explicit_text_options = true;
+            }
+            "--ignore-eol" => {
+                text_options.ignore_eol = true;
+                explicit_text_options = true;
+            }
+            "--detect-moves" => {
+                text_options.detect_moves = true;
+                explicit_text_options = true;
+            }
+            "--diff-algorithm" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(
+                        "--diff-algorithm requires a value: lcs | patience | myers".to_owned()
+                    );
+                };
+                explicit_text_options = true;
+                text_options.diff_algorithm = match value.as_str() {
+                    "lcs" => DiffAlgorithm::Lcs,
+                    "patience" => DiffAlgorithm::Patience,
+                    "myers" => DiffAlgorithm::Myers,
+                    _ => return Err(format!("unknown --diff-algorithm '{value}'")),
+                };
+                index += 1;
+            }
+            "--inline-granularity" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(
+                        "--inline-granularity requires a value: char | word | grapheme".to_owned(),
+                    );
+                };
+                explicit_text_options = true;
+                text_options.inline_granularity = match value.as_str() {
+                    "char" => InlineGranularity::Char,
+                    "word" => InlineGranularity::Word,
+                    "grapheme" => InlineGranularity::Grapheme,
+                    _ => return Err(format!("unknown --inline-granularity '{value}'")),
+                };
+                index += 1;
+            }
             "--type" => {
                 let Some(value) = args.get(index + 1) else {
                     return Err("--type requires a value".to_owned());
@@ -3108,6 +3342,7 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
                     return Err("--ignore-line-regex requires a value".to_owned());
                 };
                 text_options.ignore_line_patterns.push(value.clone());
+                explicit_text_options = true;
                 index += 1;
             }
             "--substitute-regex" => {
@@ -3121,6 +3356,7 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
                     pattern: pattern.clone(),
                     replacement: replacement.clone(),
                 });
+                explicit_text_options = true;
                 index += 2;
             }
             "--image-mode" => {
@@ -3177,9 +3413,7 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
     text_options
         .validate_regex_options()
         .map_err(|err| format!("invalid compare regex option: {err}"))?;
-    if !matches!(compare_type, CompareType::Auto | CompareType::Text)
-        && text_options != TextCompareOptions::default()
-    {
+    if explicit_text_options && !matches!(compare_type, CompareType::Auto | CompareType::Text) {
         return Err("text ignore and substitution options require --type text".to_owned());
     }
 
@@ -3187,10 +3421,14 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
         output,
         compare_type,
         text_options,
+        folder_options,
+        table_options,
+        binary_options,
         image_options,
         document_options,
         paths,
         effective_profile,
+        explicit_text_options,
     })
 }
 
@@ -3234,7 +3472,11 @@ struct FolderArgs {
     filter_match_options: FilterMatchOptions,
     hide_skipped: bool,
     state_filter: Option<FolderEntryFilter>,
+    hash_algorithm: HashAlgorithm,
+    compare_permissions: bool,
+    compare_ownership: bool,
     output: FolderOutput,
+    dry_run: bool,
     paths: Vec<String>,
 }
 
@@ -3255,8 +3497,12 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
     let mut filter_match_options = FilterMatchOptions::default();
     let mut hide_skipped = false;
     let mut state_filter = None;
+    let mut hash_algorithm = HashAlgorithm::default();
+    let mut compare_permissions = false;
+    let mut compare_ownership = false;
     let mut output_mode = OutputMode::Text;
     let mut csv = false;
+    let mut dry_run = false;
     let mut paths = Vec::new();
     let mut index = 0;
 
@@ -3382,6 +3628,32 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
                 state_filter = Some(parse_folder_entry_filter(value)?);
                 index += 2;
             }
+            "--dry-run" => {
+                dry_run = true;
+                index += 1;
+            }
+            "--hash-algorithm" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(
+                        "--hash-algorithm requires a value: blake3 | sha256 | crc32".to_owned()
+                    );
+                };
+                hash_algorithm = match value.as_str() {
+                    "blake3" => HashAlgorithm::Blake3,
+                    "sha256" => HashAlgorithm::Sha256,
+                    "crc32" => HashAlgorithm::Crc32,
+                    _ => return Err(format!("unknown --hash-algorithm '{value}'")),
+                };
+                index += 2;
+            }
+            "--compare-permissions" => {
+                compare_permissions = true;
+                index += 1;
+            }
+            "--compare-ownership" => {
+                compare_ownership = true;
+                index += 1;
+            }
             value => {
                 paths.push(value.to_owned());
                 index += 1;
@@ -3406,7 +3678,11 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
         filter_match_options,
         hide_skipped,
         state_filter,
+        hash_algorithm,
+        compare_permissions,
+        compare_ownership,
         output,
+        dry_run,
         paths,
     })
 }
@@ -3544,6 +3820,25 @@ fn parse_folder_entry_filter(value: &str) -> Result<FolderEntryFilter, String> {
         "aborted" => Ok(FolderEntryFilter::Aborted),
         other => Err(format!("unknown folder state filter '{other}'")),
     }
+}
+
+fn parse_cli_bool(value: &str, flag: &str) -> Result<bool, String> {
+    match value {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(format!("{flag} requires true or false")),
+    }
+}
+
+fn parse_single_char(value: &str, flag: &str) -> Result<char, String> {
+    let mut chars = value.chars();
+    let Some(ch) = chars.next() else {
+        return Err(format!("{flag} requires a character"));
+    };
+    if chars.next().is_some() {
+        return Err(format!("{flag} requires exactly one character"));
+    }
+    Ok(ch)
 }
 
 fn split_output_flag(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>), String> {
@@ -3722,7 +4017,27 @@ _linsync_cli() {{
     fi
 
     if [[ "$prev" == "--type" ]]; then
-        COMPREPLY=( $(compgen -W "auto text binary hex folder table" -- "$cur") )
+        COMPREPLY=( $(compgen -W "auto text binary hex folder table image document" -- "$cur") )
+        return 0
+    fi
+
+    if [[ "$prev" == "--diff-algorithm" ]]; then
+        COMPREPLY=( $(compgen -W "lcs patience myers" -- "$cur") )
+        return 0
+    fi
+
+    if [[ "$prev" == "--inline-granularity" ]]; then
+        COMPREPLY=( $(compgen -W "char word grapheme" -- "$cur") )
+        return 0
+    fi
+
+    if [[ "$prev" == "--image-mode" ]]; then
+        COMPREPLY=( $(compgen -W "exact tolerance perceptual" -- "$cur") )
+        return 0
+    fi
+
+    if [[ "$prev" == "--document-mode" ]]; then
+        COMPREPLY=( $(compgen -W "text ocr_text" -- "$cur") )
         return 0
     fi
 
@@ -3743,6 +4058,16 @@ _linsync_cli() {{
 
     if [[ "$prev" == "--large-file-method" ]]; then
         COMPREPLY=( $(compgen -W "quick binary" -- "$cur") )
+        return 0
+    fi
+
+    if [[ "$prev" == "--hash-algorithm" ]]; then
+        COMPREPLY=( $(compgen -W "blake3 sha256 crc32" -- "$cur") )
+        return 0
+    fi
+
+    if [[ "$prev" == "--table-skip-blank" ]]; then
+        COMPREPLY=( $(compgen -W "true false" -- "$cur") )
         return 0
     fi
 
@@ -4023,7 +4348,7 @@ Compare two archive files by extracting them (via tar / unzip subprocesses) and 
 .B cache clear [--scope webcompare]
 Clear LinSync cache directories. Currently the only supported scope is webcompare (the webpage compare HTTP fetch cache under $XDG_CACHE_HOME/linsync/webcompare).
 .TP
-.B compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--substitute-regex REGEX REPLACEMENT] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT
+.B compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT
 Compare two files and exit with 0 for equal files or 1 for differences. The --type auto default routes Folder/Binary/Table/Text; --type image and --type document must be selected explicitly because auto-detection does not route to those engines. --profile seeds every per-mode option from a built-in id (default, strict-bytes, ignore-formatting, code-review, prose-review, folder-sync-preview, webpage-source-safe), a saved user profile id, or a path to a profile JSON file; CLI flags after --profile override the profile values.
 .TP
 .B compare3 [--markers|--json] LEFT BASE RIGHT
@@ -4035,7 +4360,7 @@ Inspect a Git-style conflict-marker file and report conflict sections.
 .B filter <validate RULE | validate-file PATH | list | migrate INPUT [--out OUTPUT | --in-place]>
 Manage named filters and validate filter expressions. `validate` checks a single filter rule grammar; `validate-file` checks a filter file; `list` reports stored named filters; `migrate` converts a legacy .flt file to the LinSync filter grammar, writing to --out, in-place with --in-place, or stdout by default.
 .TP
-.B folders [--recursive] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT
+.B folders [--recursive] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT
 Compare two folders and summarize identical, different, left-only, and right-only entries.
 .TP
 .B hex [--width BYTES] [--metadata-only] [--json|--count|--quiet] LEFT RIGHT
@@ -4062,7 +4387,7 @@ Reveal files or folders through org.freedesktop.FileManager1.ShowItems, falling 
 .B self-compare [--json] FILE
 Compare a file against a temporary cached copy.
 .TP
-.B table [--header] [--delimiter CHAR|--tsv] [--json|--count|--quiet] LEFT RIGHT
+.B table [--header] [--delimiter CHAR|--tsv] [--table-quote CHAR] [--table-escape CHAR] [--table-comment PREFIX] [--table-skip-blank BOOL] [--numeric-tolerance FLOAT] [--json|--count|--quiet] LEFT RIGHT
 Compare delimited table files.
 .TP
 .B webpage --sub-mode html|text|tree|rendered|screenshot --accept-network-fetch [--depth N] [--timeout SECS] [--max-requests N] LEFT_URL RIGHT_URL
@@ -4103,12 +4428,12 @@ linsync-cli {}
 USAGE:
     linsync-cli archive [--keep-temp] [--json] LEFT RIGHT
     linsync-cli cache clear [--scope webcompare]
-    linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT
+    linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT
     linsync-cli compare3 [--markers|--json] LEFT BASE RIGHT
     linsync-cli conflict [--json] FILE
     linsync-cli completions SHELL
     linsync-cli filter <validate RULE | validate-file PATH | list | migrate INPUT [--out OUTPUT | --in-place]>
-    linsync-cli folders [--recursive] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT
+    linsync-cli folders [--recursive] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT
     linsync-cli hex [--width BYTES] [--metadata-only] [--json|--count|--quiet] LEFT RIGHT
     linsync-cli launch [--wait] [--] [ARGS...]
     linsync-cli man [--output FILE]
@@ -4119,7 +4444,7 @@ USAGE:
     linsync-cli reveal [--wait] PATH...
     linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]
     linsync-cli self-compare [--json] FILE
-    linsync-cli table [--header] [--delimiter CHAR|--tsv] [--json|--count|--quiet] LEFT RIGHT
+    linsync-cli table [--header] [--delimiter CHAR|--tsv] [--table-quote CHAR] [--table-escape CHAR] [--table-comment PREFIX] [--table-skip-blank BOOL] [--numeric-tolerance FLOAT] [--json|--count|--quiet] LEFT RIGHT
     linsync-cli webpage --sub-mode html|text|tree|rendered|screenshot --accept-network-fetch [--depth N] [--timeout SECS] [--max-requests N] LEFT_URL RIGHT_URL
 
 mergetool:

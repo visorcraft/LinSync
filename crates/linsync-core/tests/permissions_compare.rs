@@ -6,13 +6,9 @@
 //
 // API audit finding
 // -----------------
-// As of Phase 10.5, `linsync-core::folder::entries_match` does NOT compare
-// Unix file-mode bits. `EntryMeta` stores size, mtime, kind, and link_target —
-// but not `st_mode`. Consequently, two files with identical content but
-// different modes (e.g. 0644 vs 0755) are reported as **Identical** under any
-// content-based `CompareMethod`. The tests below document and assert this
-// current behaviour so that a future mode-aware feature can be tracked against
-// a clear baseline.
+// By default, Unix file-mode bits are metadata only and do not affect folder
+// equality. When `FolderCompareOptions::compare_permissions` is enabled, file
+// permission differences are part of the comparison result.
 
 mod common;
 
@@ -127,14 +123,11 @@ fn permissions_fixture_has_expected_modes() {
 }
 
 // ---------------------------------------------------------------------------
-// Current API behaviour (no mode comparison)
+// Permission comparison behaviour
 // ---------------------------------------------------------------------------
 
 /// Files with identical content but different modes appear IDENTICAL in a
-/// default compare because the engine does not inspect mode bits.
-///
-/// This test asserts the *current* behaviour as a baseline. If a mode-aware
-/// compare feature is added in a later phase, update this test accordingly.
+/// default compare because permission comparison is opt-in.
 #[test]
 fn permissions_different_modes_same_content_appear_identical_in_default_compare() {
     let tmp = TempDir::new();
@@ -164,9 +157,39 @@ fn permissions_different_modes_same_content_appear_identical_in_default_compare(
     assert_eq!(
         entry.state,
         FolderEntryState::Identical,
-        "current API: identical content with different modes must report Identical \
-         (no mode comparison implemented yet)"
+        "default compare should ignore permission-only differences"
     );
+}
+
+#[test]
+fn compare_permissions_marks_mode_only_file_difference() {
+    let tmp = TempDir::new();
+    let left = tmp.path.join("left");
+    let right = tmp.path.join("right");
+    fs::create_dir_all(&left).unwrap();
+    fs::create_dir_all(&right).unwrap();
+
+    fs::write(left.join("file.sh"), b"#!/bin/sh\necho hi\n").unwrap();
+    fs::write(right.join("file.sh"), b"#!/bin/sh\necho hi\n").unwrap();
+    fs::set_permissions(left.join("file.sh"), fs::Permissions::from_mode(0o644)).unwrap();
+    fs::set_permissions(right.join("file.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    let opts = FolderCompareOptions {
+        compare_permissions: true,
+        ..FolderCompareOptions::default()
+    };
+    let result = compare_folders(&left, &right, &opts).unwrap();
+
+    let entry = result
+        .entries
+        .iter()
+        .find(|e| e.name == "file.sh")
+        .expect("file.sh must appear in result");
+
+    assert_eq!(entry.state, FolderEntryState::Different);
+    assert_eq!(entry.left_permissions, Some(0o644));
+    assert_eq!(entry.right_permissions, Some(0o755));
+    assert!(!result.is_equal());
 }
 
 /// The 000-mode file is unreadable. Under BinaryContents (default), attempting

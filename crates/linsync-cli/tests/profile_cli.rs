@@ -222,6 +222,86 @@ fn profile_flag_seeds_compare_options_and_cli_overrides() {
 }
 
 #[test]
+fn profile_text_options_do_not_force_auto_folder_compare_to_text() {
+    let home = temp_home("auto-folder-profile");
+    let left = home.join("left-dir");
+    let right = home.join("right-dir");
+    fs::create_dir_all(&left).unwrap();
+    fs::create_dir_all(&right).unwrap();
+    fs::write(left.join("same.txt"), "same\n").unwrap();
+    fs::write(right.join("same.txt"), "same\n").unwrap();
+
+    let out = run_isolated(
+        &home,
+        &[
+            "compare",
+            "--profile",
+            "ignore-formatting",
+            "--json",
+            left.to_str().unwrap(),
+            right.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "profile text options must not route directory compares through text; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["equal"], true);
+    assert_eq!(json["profile"], "ignore-formatting");
+    assert_eq!(json["compared"], 1);
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn profile_flag_seeds_table_options_for_compare_type_table() {
+    let home = temp_home("table-profile");
+    let left = home.join("left.tbl");
+    let right = home.join("right.tbl");
+    let profile = home.join("semi.json");
+    fs::write(&left, "id;value\n1;alpha\n").unwrap();
+    fs::write(&right, "id;value\n1;beta\n").unwrap();
+    fs::write(
+        &profile,
+        br#"{
+            "schema_version": 1,
+            "id": "semi",
+            "name": "Semicolon Tables",
+            "table": {
+                "delimiter": ";",
+                "has_header": true,
+                "ignore_columns": [1]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let out = run_isolated(
+        &home,
+        &[
+            "compare",
+            "--profile",
+            profile.to_str().unwrap(),
+            "--type",
+            "table",
+            "--json",
+            left.to_str().unwrap(),
+            right.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "table options from --profile should make ignored-column differences equal; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["equal"], true);
+    assert_eq!(json["profile"], "semi");
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
 fn profile_validate_reports_invalid_input() {
     let home = temp_home("validate-bad");
     let path = home.join("bad.json");

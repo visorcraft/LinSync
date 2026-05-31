@@ -84,6 +84,7 @@ mod image_compare_tests {
             diff_bbox: None,
             overlay: Vec::new(),
             padded: false,
+            diff_regions: Vec::new(),
         };
         assert!(result.equal);
         assert_eq!(result.differing_pixels, 0);
@@ -155,7 +156,10 @@ mod image_compare_tests {
         let right = save_png(&dir, "right.png", &large);
         let opts = ImageCompareOptions::default();
         let result = compare_images(&left, &right, &opts).unwrap();
-        assert!(!result.equal, "padded images with different dims should not be equal");
+        assert!(
+            !result.equal,
+            "padded images with different dims should not be equal"
+        );
         assert!(result.padded);
         assert_eq!(result.left_dims, (8, 8));
         assert_eq!(result.right_dims, (16, 16));

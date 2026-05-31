@@ -1,13 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, BufReader, Read};
 #[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::binary::is_likely_binary;
+use crc32fast::Hasher as Crc32Hasher;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::filter::{
     FileFilter, FilterDecision, FilterEntryContext, FilterFileKind, FilterMatchOptions,
@@ -25,6 +27,9 @@ pub struct FolderCompareOptions {
     pub symlink_policy: SymlinkPolicy,
     pub large_file_threshold: Option<u64>,
     pub large_file_fallback_method: CompareMethod,
+    pub hash_algorithm: HashAlgorithm,
+    pub compare_permissions: bool,
+    pub compare_ownership: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +54,15 @@ pub enum SymlinkPolicy {
     SpecialFile,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HashAlgorithm {
+    #[default]
+    Blake3,
+    Sha256,
+    Crc32,
+}
+
 impl Default for FolderCompareOptions {
     fn default() -> Self {
         Self {
@@ -61,6 +75,9 @@ impl Default for FolderCompareOptions {
             symlink_policy: SymlinkPolicy::CompareTarget,
             large_file_threshold: None,
             large_file_fallback_method: CompareMethod::BinaryContents,
+            hash_algorithm: HashAlgorithm::default(),
+            compare_permissions: false,
+            compare_ownership: false,
         }
     }
 }
@@ -152,7 +169,7 @@ pub enum FolderCompareStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FolderEntryDiff {
     pub relative_path: PathBuf,
     pub name: String,
@@ -167,9 +184,25 @@ pub struct FolderEntryDiff {
     pub method_note: Option<String>,
     pub is_dir: bool,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_permissions: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_permissions: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_hash: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FolderEntryType {
     File,
     Directory,
@@ -188,7 +221,7 @@ impl FolderEntryType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FolderEntryState {
     Identical,
     Different,
@@ -284,19 +317,28 @@ pub struct FolderOperation {
     pub overwrites_existing: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct FolderOperationWarning {
     pub relative_path: PathBuf,
     pub kind: FolderOperationWarningKind,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum FolderOperationWarningKind {
     Overwrite,
     Permission,
     Conflict,
     InvalidSelection,
+    OverwriteExisting,
+    DeleteReadOnly,
+    CrossDeviceCopy,
+    SymlinkTraversal,
+    PermissionDenied,
+    TargetNewer,
+    SourceLarger,
 }
 
 impl FolderEntryFilter {
@@ -638,10 +680,18 @@ fn summarize_operation_plan(
 
     for warning in warnings {
         match warning.kind {
-            FolderOperationWarningKind::Overwrite => counts.overwrite_warning_count += 1,
-            FolderOperationWarningKind::Permission => counts.permission_warning_count += 1,
-            FolderOperationWarningKind::Conflict => counts.conflict_warning_count += 1,
-            FolderOperationWarningKind::InvalidSelection => {}
+            FolderOperationWarningKind::Overwrite
+            | FolderOperationWarningKind::OverwriteExisting => counts.overwrite_warning_count += 1,
+            FolderOperationWarningKind::Permission
+            | FolderOperationWarningKind::PermissionDenied
+            | FolderOperationWarningKind::DeleteReadOnly => counts.permission_warning_count += 1,
+            FolderOperationWarningKind::Conflict | FolderOperationWarningKind::TargetNewer => {
+                counts.conflict_warning_count += 1
+            }
+            FolderOperationWarningKind::InvalidSelection
+            | FolderOperationWarningKind::CrossDeviceCopy
+            | FolderOperationWarningKind::SymlinkTraversal
+            | FolderOperationWarningKind::SourceLarger => {}
         }
     }
 
@@ -720,6 +770,176 @@ fn guard_operation_within_root(
         "operation path resolves outside the comparison root (symlink escape)",
     ));
     false
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct FolderOperationRiskSummary {
+    pub total_operations: usize,
+    pub overwrite_count: usize,
+    pub delete_count: usize,
+    pub high_risk_count: usize,
+    pub warnings: Vec<FolderOperationWarning>,
+}
+
+impl FolderOperationPlan {
+    pub fn risk_summary(&self) -> FolderOperationRiskSummary {
+        let overwrite_count = self
+            .operations
+            .iter()
+            .filter(|op| op.overwrites_existing)
+            .count();
+        let delete_count = self
+            .operations
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.kind,
+                    FolderOperationKind::DeleteLeft | FolderOperationKind::DeleteRight
+                )
+            })
+            .count();
+        let high_risk_kinds = [
+            FolderOperationWarningKind::OverwriteExisting,
+            FolderOperationWarningKind::DeleteReadOnly,
+            FolderOperationWarningKind::TargetNewer,
+            FolderOperationWarningKind::SourceLarger,
+            FolderOperationWarningKind::CrossDeviceCopy,
+            FolderOperationWarningKind::SymlinkTraversal,
+            FolderOperationWarningKind::PermissionDenied,
+        ];
+        let high_risk_count = self
+            .warnings
+            .iter()
+            .filter(|w| high_risk_kinds.contains(&w.kind))
+            .count();
+        FolderOperationRiskSummary {
+            total_operations: self.operations.len(),
+            overwrite_count,
+            delete_count,
+            high_risk_count,
+            warnings: self.warnings.clone(),
+        }
+    }
+}
+
+pub fn assess_operation_risks(
+    plan: &mut FolderOperationPlan,
+    _left_base: &Path,
+    _right_base: &Path,
+) -> io::Result<()> {
+    let mut new_warnings = Vec::new();
+    for operation in &plan.operations {
+        match &operation.kind {
+            FolderOperationKind::CopyLeftToRight | FolderOperationKind::CopyRightToLeft => {
+                let Some(source) = &operation.source else {
+                    continue;
+                };
+                let Some(target) = &operation.target else {
+                    continue;
+                };
+                let source_meta = fs::metadata(source);
+                let target_meta = fs::metadata(target);
+
+                if target_meta.is_ok() {
+                    new_warnings.push(FolderOperationWarning {
+                        relative_path: operation.relative_path.clone(),
+                        kind: FolderOperationWarningKind::OverwriteExisting,
+                        message: format!(
+                            "target file exists and will be overwritten: {}",
+                            target.display()
+                        ),
+                    });
+
+                    if let (Ok(sm), Ok(tm)) = (&source_meta, &target_meta) {
+                        if let (Ok(src_mtime), Ok(tgt_mtime)) = (sm.modified(), tm.modified())
+                            && tgt_mtime > src_mtime
+                        {
+                            new_warnings.push(FolderOperationWarning {
+                                relative_path: operation.relative_path.clone(),
+                                kind: FolderOperationWarningKind::TargetNewer,
+                                message: format!(
+                                    "target is newer than source: {}",
+                                    operation.relative_path.display()
+                                ),
+                            });
+                        }
+
+                        let source_size = sm.len();
+                        let target_size = tm.len();
+                        if target_size > 0 && (source_size as f64 / target_size as f64) > 2.0 {
+                            new_warnings.push(FolderOperationWarning {
+                                relative_path: operation.relative_path.clone(),
+                                kind: FolderOperationWarningKind::SourceLarger,
+                                message: format!(
+                                    "source is significantly larger than target: {}",
+                                    operation.relative_path.display()
+                                ),
+                            });
+                        }
+
+                        #[cfg(unix)]
+                        if let (Ok(sm), Ok(tm)) = (&source_meta, &target_meta)
+                            && sm.dev() != tm.dev()
+                        {
+                            new_warnings.push(FolderOperationWarning {
+                                relative_path: operation.relative_path.clone(),
+                                kind: FolderOperationWarningKind::CrossDeviceCopy,
+                                message: format!(
+                                    "source and target are on different filesystems: {}",
+                                    operation.relative_path.display()
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+            FolderOperationKind::DeleteLeft | FolderOperationKind::DeleteRight => {
+                if let Some(target) = &operation.source
+                    && readonly_path(target)
+                {
+                    new_warnings.push(FolderOperationWarning {
+                        relative_path: operation.relative_path.clone(),
+                        kind: FolderOperationWarningKind::DeleteReadOnly,
+                        message: format!("deleting a read-only file: {}", target.display()),
+                    });
+                }
+            }
+            _ => {}
+        }
+
+        if let Some(source) = &operation.source
+            && path_contains_symlink_components(source)
+        {
+            new_warnings.push(FolderOperationWarning {
+                relative_path: operation.relative_path.clone(),
+                kind: FolderOperationWarningKind::SymlinkTraversal,
+                message: format!(
+                    "operation involves symlink traversal: {}",
+                    operation.relative_path.display()
+                ),
+            });
+        }
+    }
+    plan.warnings.extend(new_warnings);
+    plan.counts = summarize_operation_plan(&plan.operations, &plan.warnings);
+    Ok(())
+}
+
+fn path_contains_symlink_components(path: &Path) -> bool {
+    let mut current = path;
+    loop {
+        if fs::symlink_metadata(current)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        match current.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => current = parent,
+            _ => return false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1080,6 +1300,73 @@ fn build_folder_entry(
     };
     let (effective_method, method_note) = entry_effective_method(left_meta, right_meta, options);
 
+    let is_file = left_meta
+        .or(right_meta)
+        .is_some_and(|meta| meta.kind == EntryKind::File);
+
+    let (left_permissions, right_permissions) = if options.compare_permissions && is_file {
+        let lp = left_meta.and_then(|_| {
+            fs::symlink_metadata(left.join(&relative_path))
+                .ok()
+                .map(|m| extract_permissions(&m))
+        });
+        let rp = right_meta.and_then(|_| {
+            fs::symlink_metadata(right.join(&relative_path))
+                .ok()
+                .map(|m| extract_permissions(&m))
+        });
+        (lp, rp)
+    } else {
+        (None, None)
+    };
+
+    let (left_owner, right_owner, left_group, right_group) = if options.compare_ownership && is_file
+    {
+        let lo = left_meta.and_then(|_| {
+            fs::symlink_metadata(left.join(&relative_path))
+                .ok()
+                .and_then(|m| extract_owner(&m))
+        });
+        let ro = right_meta.and_then(|_| {
+            fs::symlink_metadata(right.join(&relative_path))
+                .ok()
+                .and_then(|m| extract_owner(&m))
+        });
+        let lg = left_meta.and_then(|_| {
+            fs::symlink_metadata(left.join(&relative_path))
+                .ok()
+                .and_then(|m| extract_group(&m))
+        });
+        let rg = right_meta.and_then(|_| {
+            fs::symlink_metadata(right.join(&relative_path))
+                .ok()
+                .and_then(|m| extract_group(&m))
+        });
+        (lo, ro, lg, rg)
+    } else {
+        (None, None, None, None)
+    };
+
+    let (left_hash, right_hash) = if is_file
+        && left_meta.is_some()
+        && right_meta.is_some()
+        && matches!(
+            state,
+            FolderEntryState::Identical | FolderEntryState::Different
+        ) {
+        let needs_hash = options.compare_method == CompareMethod::HashBlake3
+            || options.hash_algorithm != HashAlgorithm::Blake3;
+        if needs_hash {
+            let lh = compute_file_hash(&left.join(&relative_path), options.hash_algorithm).ok();
+            let rh = compute_file_hash(&right.join(&relative_path), options.hash_algorithm).ok();
+            (lh, rh)
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
     FolderEntryDiff {
         name: folder_entry_name(&relative_path),
         extension: folder_entry_extension(&relative_path),
@@ -1094,6 +1381,14 @@ fn build_folder_entry(
         method_note,
         is_dir: left_meta.or(right_meta).is_some_and(|meta| meta.is_dir),
         error,
+        left_permissions,
+        right_permissions,
+        left_owner,
+        right_owner,
+        left_group,
+        right_group,
+        left_hash,
+        right_hash,
     }
 }
 
@@ -1121,6 +1416,14 @@ fn aborted_entries(
                 method_note: None,
                 is_dir: left_meta.or(right_meta).is_some_and(|meta| meta.is_dir),
                 error: Some("folder comparison cancelled before visiting this item".to_owned()),
+                left_permissions: None,
+                right_permissions: None,
+                left_owner: None,
+                right_owner: None,
+                left_group: None,
+                right_group: None,
+                left_hash: None,
+                right_hash: None,
             }
         })
         .collect()
@@ -1197,7 +1500,7 @@ fn entries_match(
 
     let (effective_method, _) = effective_compare_method(left, right, options);
 
-    Ok(match effective_method {
+    let contents_match = match effective_method {
         CompareMethod::Existence => true,
         CompareMethod::Size => same_size,
         CompareMethod::ModifiedDate => same_date,
@@ -1216,18 +1519,155 @@ fn entries_match(
         }
         CompareMethod::HashBlake3 => {
             same_size
-                && blake3_file_hash(&left_root.join(relative_path))?
-                    == blake3_file_hash(&right_root.join(relative_path))?
+                && compute_file_hash(&left_root.join(relative_path), options.hash_algorithm)?
+                    == compute_file_hash(&right_root.join(relative_path), options.hash_algorithm)?
         }
         CompareMethod::NormalizedText => {
             normalized_text_content(&left_root.join(relative_path))?
                 == normalized_text_content(&right_root.join(relative_path))?
         }
-    })
+    };
+
+    if !contents_match {
+        return Ok(false);
+    }
+
+    if options.compare_permissions
+        && !file_permissions_match(
+            &left_root.join(relative_path),
+            &right_root.join(relative_path),
+        )?
+    {
+        return Ok(false);
+    }
+
+    if options.compare_ownership
+        && !file_ownership_match(
+            &left_root.join(relative_path),
+            &right_root.join(relative_path),
+        )?
+    {
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
-fn blake3_file_hash(path: &Path) -> io::Result<blake3::Hash> {
-    Ok(blake3::hash(&fs::read(path)?))
+fn compute_file_hash(path: &Path, algorithm: HashAlgorithm) -> io::Result<String> {
+    let file = fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+    match algorithm {
+        HashAlgorithm::Blake3 => {
+            let mut hasher = blake3::Hasher::new();
+            io::copy(&mut reader, &mut hasher)?;
+            Ok(hasher.finalize().to_hex().to_string())
+        }
+        HashAlgorithm::Sha256 => {
+            let mut hasher = Sha256::new();
+            io::copy(&mut reader, &mut hasher)?;
+            Ok(format!("{:x}", hasher.finalize()))
+        }
+        HashAlgorithm::Crc32 => {
+            let mut hasher = Crc32Hasher::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = reader.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+            }
+            Ok(format!("{:08x}", hasher.finalize()))
+        }
+    }
+}
+
+fn file_permissions_match(left: &Path, right: &Path) -> io::Result<bool> {
+    let left_meta = fs::symlink_metadata(left)?;
+    let right_meta = fs::symlink_metadata(right)?;
+    Ok(extract_permissions(&left_meta) == extract_permissions(&right_meta))
+}
+
+#[cfg(unix)]
+fn file_ownership_match(left: &Path, right: &Path) -> io::Result<bool> {
+    let left_meta = fs::symlink_metadata(left)?;
+    let right_meta = fs::symlink_metadata(right)?;
+    Ok(left_meta.uid() == right_meta.uid() && left_meta.gid() == right_meta.gid())
+}
+
+#[cfg(not(unix))]
+fn file_ownership_match(_left: &Path, _right: &Path) -> io::Result<bool> {
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn extract_permissions(meta: &std::fs::Metadata) -> u32 {
+    meta.permissions().mode() & 0o7777
+}
+
+#[cfg(not(unix))]
+fn extract_permissions(_meta: &std::fs::Metadata) -> u32 {
+    0
+}
+
+#[cfg(unix)]
+fn extract_owner(meta: &std::fs::Metadata) -> Option<String> {
+    let uid = meta.uid();
+    match nix_get_username(uid) {
+        Some(name) => Some(name),
+        None => Some(uid.to_string()),
+    }
+}
+
+#[cfg(not(unix))]
+fn extract_owner(_meta: &std::fs::Metadata) -> Option<String> {
+    None
+}
+
+#[cfg(unix)]
+fn extract_group(meta: &std::fs::Metadata) -> Option<String> {
+    let gid = meta.gid();
+    match nix_get_groupname(gid) {
+        Some(name) => Some(name),
+        None => Some(gid.to_string()),
+    }
+}
+
+#[cfg(not(unix))]
+fn extract_group(_meta: &std::fs::Metadata) -> Option<String> {
+    None
+}
+
+#[cfg(unix)]
+fn nix_get_username(uid: u32) -> Option<String> {
+    use std::process::Command;
+    let output = Command::new("getent")
+        .arg("passwd")
+        .arg(uid.to_string())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&output.stdout);
+    let mut parts = line.split(':');
+    parts.next().map(|name| name.to_owned())
+}
+
+#[cfg(unix)]
+fn nix_get_groupname(gid: u32) -> Option<String> {
+    use std::process::Command;
+    let output = Command::new("getent")
+        .arg("group")
+        .arg(gid.to_string())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&output.stdout);
+    let mut parts = line.split(':');
+    parts.next().map(|name| name.to_owned())
 }
 
 fn binary_files_equal_until_first_difference(left: &Path, right: &Path) -> io::Result<bool> {
@@ -2719,5 +3159,201 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn hash_algorithm_default_is_blake3() {
+        assert_eq!(HashAlgorithm::default(), HashAlgorithm::Blake3);
+    }
+
+    #[test]
+    fn compute_file_hash_blake3() {
+        let dir = std::env::temp_dir().join("linsync-hash-test-blake3");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        fs::write(&path, b"hello world").unwrap();
+        let hash = compute_file_hash(&path, HashAlgorithm::Blake3).unwrap();
+        assert!(!hash.is_empty());
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compute_file_hash_sha256() {
+        let dir = std::env::temp_dir().join("linsync-hash-test-sha256");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        fs::write(&path, b"hello world").unwrap();
+        let hash = compute_file_hash(&path, HashAlgorithm::Sha256).unwrap();
+        assert!(!hash.is_empty());
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compute_file_hash_crc32() {
+        let dir = std::env::temp_dir().join("linsync-hash-test-crc32");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        fs::write(&path, b"hello world").unwrap();
+        let hash = compute_file_hash(&path, HashAlgorithm::Crc32).unwrap();
+        assert!(!hash.is_empty());
+        assert_eq!(hash.len(), 8);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_entry_diff_serializes_with_metadata() {
+        let entry = FolderEntryDiff {
+            relative_path: PathBuf::from("test.txt"),
+            name: "test.txt".to_owned(),
+            extension: Some("txt".to_owned()),
+            state: FolderEntryState::Different,
+            left_size: Some(100),
+            right_size: Some(200),
+            left_modified: None,
+            right_modified: None,
+            entry_type: FolderEntryType::File,
+            effective_method: Some(CompareMethod::HashBlake3),
+            method_note: None,
+            is_dir: false,
+            error: None,
+            left_permissions: Some(0o644),
+            right_permissions: Some(0o755),
+            left_owner: Some("alice".to_owned()),
+            right_owner: Some("bob".to_owned()),
+            left_group: Some("users".to_owned()),
+            right_group: Some("admin".to_owned()),
+            left_hash: Some("abc123".to_owned()),
+            right_hash: Some("def456".to_owned()),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: FolderEntryDiff = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.relative_path, entry.relative_path);
+        assert_eq!(deserialized.left_permissions, entry.left_permissions);
+        assert_eq!(deserialized.right_permissions, entry.right_permissions);
+        assert_eq!(deserialized.left_owner, entry.left_owner);
+        assert_eq!(deserialized.right_owner, entry.right_owner);
+        assert_eq!(deserialized.left_group, entry.left_group);
+        assert_eq!(deserialized.right_group, entry.right_group);
+        assert_eq!(deserialized.left_hash, entry.left_hash);
+        assert_eq!(deserialized.right_hash, entry.right_hash);
+    }
+
+    #[test]
+    fn risk_summary_empty_plan() {
+        let plan = FolderOperationPlan {
+            operations: Vec::new(),
+            counts: FolderOperationCounts::default(),
+            warnings: Vec::new(),
+        };
+        let summary = plan.risk_summary();
+        assert_eq!(summary.total_operations, 0);
+        assert_eq!(summary.overwrite_count, 0);
+        assert_eq!(summary.delete_count, 0);
+        assert_eq!(summary.high_risk_count, 0);
+        assert!(summary.warnings.is_empty());
+    }
+
+    #[test]
+    fn risk_summary_counts_overwrites() {
+        let plan = FolderOperationPlan {
+            operations: vec![
+                FolderOperation {
+                    kind: FolderOperationKind::CopyLeftToRight,
+                    relative_path: PathBuf::from("a.txt"),
+                    source: Some(PathBuf::from("/left/a.txt")),
+                    target: Some(PathBuf::from("/right/a.txt")),
+                    overwrites_existing: true,
+                },
+                FolderOperation {
+                    kind: FolderOperationKind::CopyLeftToRight,
+                    relative_path: PathBuf::from("b.txt"),
+                    source: Some(PathBuf::from("/left/b.txt")),
+                    target: Some(PathBuf::from("/right/b.txt")),
+                    overwrites_existing: false,
+                },
+            ],
+            counts: FolderOperationCounts::default(),
+            warnings: vec![FolderOperationWarning {
+                relative_path: PathBuf::from("a.txt"),
+                kind: FolderOperationWarningKind::OverwriteExisting,
+                message: "target exists".to_owned(),
+            }],
+        };
+        let summary = plan.risk_summary();
+        assert_eq!(summary.total_operations, 2);
+        assert_eq!(summary.overwrite_count, 1);
+        assert_eq!(summary.delete_count, 0);
+        assert_eq!(summary.high_risk_count, 1);
+        assert_eq!(summary.warnings.len(), 1);
+    }
+
+    #[test]
+    fn risk_summary_counts_deletes() {
+        let plan = FolderOperationPlan {
+            operations: vec![
+                FolderOperation {
+                    kind: FolderOperationKind::DeleteLeft,
+                    relative_path: PathBuf::from("a.txt"),
+                    source: Some(PathBuf::from("/left/a.txt")),
+                    target: None,
+                    overwrites_existing: false,
+                },
+                FolderOperation {
+                    kind: FolderOperationKind::DeleteRight,
+                    relative_path: PathBuf::from("b.txt"),
+                    source: Some(PathBuf::from("/right/b.txt")),
+                    target: None,
+                    overwrites_existing: false,
+                },
+                FolderOperation {
+                    kind: FolderOperationKind::CopyLeftToRight,
+                    relative_path: PathBuf::from("c.txt"),
+                    source: Some(PathBuf::from("/left/c.txt")),
+                    target: Some(PathBuf::from("/right/c.txt")),
+                    overwrites_existing: false,
+                },
+            ],
+            counts: FolderOperationCounts::default(),
+            warnings: Vec::new(),
+        };
+        let summary = plan.risk_summary();
+        assert_eq!(summary.total_operations, 3);
+        assert_eq!(summary.overwrite_count, 0);
+        assert_eq!(summary.delete_count, 2);
+        assert_eq!(summary.high_risk_count, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn assess_operation_risks_detects_readonly() {
+        let fixture = TempFixture::new();
+        let left = fixture.path.join("left");
+        let right = fixture.path.join("right");
+        fs::create_dir_all(&left).unwrap();
+        fs::create_dir_all(&right).unwrap();
+        fs::write(left.join("file.txt"), "left").unwrap();
+        fs::write(right.join("file.txt"), "right").unwrap();
+        let mut perms = fs::metadata(right.join("file.txt")).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(right.join("file.txt"), perms).unwrap();
+
+        let result = compare_folders(&left, &right, &FolderCompareOptions::default()).unwrap();
+        let mut plan = plan_folder_operation(
+            &result,
+            FolderOperationKind::DeleteRight,
+            &[PathBuf::from("file.txt")],
+        );
+        assess_operation_risks(&mut plan, &left, &right).unwrap();
+
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|w| w.kind == FolderOperationWarningKind::DeleteReadOnly),
+            "expected DeleteReadOnly warning, got: {:?}",
+            plan.warnings
+        );
     }
 }

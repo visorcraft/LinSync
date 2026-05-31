@@ -1407,6 +1407,17 @@ Kirigami.ApplicationWindow {
         root.bridgeGet("/cancel?id=" + encodeURIComponent(root.activeRequestId), function (ok) {})
     }
 
+    function swapSides() {
+        var tmp = root.leftPath
+        root.leftPath = root.rightPath
+        root.rightPath = tmp
+        root.requestCompare(false)
+    }
+
+    function reloadCompare() {
+        root.requestCompare(false)
+    }
+
     function applyFolderFilter() {
         if (root.compareMode !== "Folder" || root.folderFilter === "") {
             root.leftRows = root.unfilteredLeftRows
@@ -3099,6 +3110,24 @@ Kirigami.ApplicationWindow {
                         Controls.ToolTip.visible: hovered
                         Accessible.name: qsTr("Export report")
                         onClicked: root.exportReport()
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "view-refresh"
+                        icon.color: root.activeText
+                        Controls.ToolTip.text: qsTr("Reload compare")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Reload compare")
+                        onClicked: root.reloadCompare()
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "object-flip-horizontal"
+                        icon.color: root.activeText
+                        Controls.ToolTip.text: qsTr("Swap sides")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Swap sides")
+                        onClicked: root.swapSides()
                     }
 
                     Controls.ToolButton {

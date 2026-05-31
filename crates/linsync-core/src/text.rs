@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use regex::{Regex, RegexSet, RegexSetBuilder};
 use serde::{Deserialize, Serialize};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -13,6 +14,24 @@ pub enum CompareSide {
     Base,
     Right,
     Result,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffAlgorithm {
+    #[default]
+    Lcs,
+    Patience,
+    Myers,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InlineGranularity {
+    #[default]
+    Char,
+    Word,
+    Grapheme,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +63,10 @@ pub struct TextCompareOptions {
     pub detect_moves: bool,
     #[serde(default = "default_min_move_lines")]
     pub min_move_lines: usize,
+    #[serde(default)]
+    pub diff_algorithm: DiffAlgorithm,
+    #[serde(default)]
+    pub inline_granularity: InlineGranularity,
 }
 
 fn default_min_move_lines() -> usize {
@@ -61,6 +84,8 @@ impl Default for TextCompareOptions {
             substitutions: Vec::new(),
             detect_moves: false,
             min_move_lines: default_min_move_lines(),
+            diff_algorithm: DiffAlgorithm::default(),
+            inline_granularity: InlineGranularity::default(),
         }
     }
 }
@@ -89,20 +114,23 @@ impl TextCompareOptions {
         self.validate_regex_options()
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextDocument {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
     pub encoding: TextEncoding,
     pub line_ending: LineEnding,
     pub has_bom: bool,
+    #[serde(default)]
     pub had_replacement_characters: bool,
     pub read_only: bool,
     pub byte_len: usize,
     pub lines: Vec<TextLine>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TextEncoding {
     Utf8,
     Utf8Bom,
@@ -111,7 +139,8 @@ pub enum TextEncoding {
     LossyUtf8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LineEnding {
     None,
     Lf,
@@ -120,10 +149,12 @@ pub enum LineEnding {
     Mixed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextLine {
     pub number: usize,
+    #[serde(skip)]
     pub byte_start: usize,
+    #[serde(skip)]
     pub byte_end: usize,
     pub text: String,
     pub newline: Option<LineEnding>,
@@ -168,6 +199,33 @@ impl TextCompareResult {
     pub fn to_html_report_with_context(&self, context: Option<usize>) -> String {
         html_report(self, context)
     }
+
+    pub fn encoding_summary(&self) -> EncodingSummary {
+        EncodingSummary {
+            left_encoding: self.left_document.encoding,
+            right_encoding: self.right_document.encoding,
+            left_line_ending: self.left_document.line_ending,
+            right_line_ending: self.right_document.line_ending,
+            left_has_bom: self.left_document.has_bom,
+            right_has_bom: self.right_document.has_bom,
+            encoding_differs: self.left_document.encoding != self.right_document.encoding,
+            line_ending_differs: self.left_document.line_ending != self.right_document.line_ending,
+            bom_differs: self.left_document.has_bom != self.right_document.has_bom,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncodingSummary {
+    pub left_encoding: TextEncoding,
+    pub right_encoding: TextEncoding,
+    pub left_line_ending: LineEnding,
+    pub right_line_ending: LineEnding,
+    pub left_has_bom: bool,
+    pub right_has_bom: bool,
+    pub encoding_differs: bool,
+    pub line_ending_differs: bool,
+    pub bom_differs: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -386,25 +444,43 @@ pub fn compare_documents_cancellable(
     let right_lines = comparable_lines(&right_document, options);
     let n = left_lines.len();
     let m = right_lines.len();
-    let raw_lines = if n > LCS_FULL_TABLE_THRESHOLD || m > LCS_FULL_TABLE_THRESHOLD {
-        hirschberg_diff(
+    let raw_lines = match options.diff_algorithm {
+        DiffAlgorithm::Lcs => {
+            if n > LCS_FULL_TABLE_THRESHOLD || m > LCS_FULL_TABLE_THRESHOLD {
+                hirschberg_diff(
+                    &left_document,
+                    &right_document,
+                    &left_lines,
+                    &right_lines,
+                    should_cancel,
+                )?
+            } else {
+                let lcs = lcs_table_cancellable(&left_lines, &right_lines, should_cancel)?;
+                raw_diff_lines(
+                    &left_document,
+                    &right_document,
+                    &left_lines,
+                    &right_lines,
+                    &lcs,
+                )
+            }
+        }
+        DiffAlgorithm::Patience => patience_diff(
             &left_document,
             &right_document,
             &left_lines,
             &right_lines,
             should_cancel,
-        )?
-    } else {
-        let lcs = lcs_table_cancellable(&left_lines, &right_lines, should_cancel)?;
-        raw_diff_lines(
+        )?,
+        DiffAlgorithm::Myers => myers_diff(
             &left_document,
             &right_document,
             &left_lines,
             &right_lines,
-            &lcs,
-        )
+            should_cancel,
+        )?,
     };
-    let lines = pair_changed_lines(raw_lines);
+    let lines = pair_changed_lines(raw_lines, options.inline_granularity);
     let mut blocks = diff_blocks(&lines);
     if options.detect_moves {
         detect_moved_blocks(&lines, &mut blocks, options);
@@ -793,7 +869,7 @@ fn right_only_line(document: &TextDocument, line_number: usize) -> DiffLine {
     }
 }
 
-fn pair_changed_lines(raw_lines: Vec<DiffLine>) -> Vec<DiffLine> {
+fn pair_changed_lines(raw_lines: Vec<DiffLine>, granularity: InlineGranularity) -> Vec<DiffLine> {
     let mut lines = Vec::new();
     let mut index = 0;
 
@@ -812,11 +888,16 @@ fn pair_changed_lines(raw_lines: Vec<DiffLine>) -> Vec<DiffLine> {
         if let Some(next) = next {
             let left = current.left.clone().unwrap_or_default();
             let right = next.right.clone().unwrap_or_default();
+            let inline = match granularity {
+                InlineGranularity::Char => inline_diff(&left, &right),
+                InlineGranularity::Word => inline_diff_word(&left, &right),
+                InlineGranularity::Grapheme => inline_diff_grapheme(&left, &right),
+            };
             lines.push(DiffLine {
                 kind: DiffLineKind::Changed,
                 left_line: current.left_line,
                 right_line: next.right_line,
-                inline: inline_diff(&left, &right),
+                inline,
                 left: Some(left),
                 right: Some(right),
             });
@@ -859,6 +940,275 @@ fn inline_diff(left: &str, right: &str) -> Vec<InlineDiff> {
         right_start: prefix,
         right_end: right_chars.len().saturating_sub(suffix),
     }]
+}
+
+struct Token {
+    char_start: usize,
+    char_end: usize,
+    text: String,
+}
+
+fn tokenize_words(s: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let start = i;
+        if chars[i].is_alphanumeric() {
+            while i < chars.len() && chars[i].is_alphanumeric() {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+        tokens.push(Token {
+            char_start: start,
+            char_end: i,
+            text: chars[start..i].iter().collect(),
+        });
+    }
+    tokens
+}
+
+fn token_lcs<'a>(left: &'a [Token], right: &'a [Token]) -> Vec<(usize, usize)> {
+    let n = left.len();
+    let m = right.len();
+    let mut table = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            table[i][j] = if left[i].text == right[j].text {
+                table[i + 1][j + 1] + 1
+            } else {
+                table[i + 1][j].max(table[i][j + 1])
+            };
+        }
+    }
+    let mut matches = Vec::new();
+    let mut i = 0;
+    let mut j = 0;
+    while i < n && j < m {
+        if left[i].text == right[j].text {
+            matches.push((i, j));
+            i += 1;
+            j += 1;
+        } else if table[i + 1][j] >= table[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    matches
+}
+
+fn inline_diff_word(left: &str, right: &str) -> Vec<InlineDiff> {
+    if left == right {
+        return Vec::new();
+    }
+    let left_tokens = tokenize_words(left);
+    let right_tokens = tokenize_words(right);
+    let left_char_len = left.chars().count();
+    let right_char_len = right.chars().count();
+    if left_tokens.is_empty() && right_tokens.is_empty() {
+        return vec![InlineDiff {
+            left_start: 0,
+            left_end: left_char_len,
+            right_start: 0,
+            right_end: right_char_len,
+        }];
+    }
+    let matches = token_lcs(&left_tokens, &right_tokens);
+    let mut spans = Vec::new();
+    let mut li = 0;
+    let mut ri = 0;
+    for (mi, mj) in &matches {
+        let left_changed =
+            (li..*mi).any(|k| left_tokens[k].text.chars().any(|c| c.is_alphanumeric()));
+        let right_changed =
+            (ri..*mj).any(|k| right_tokens[k].text.chars().any(|c| c.is_alphanumeric()));
+        if left_changed || right_changed {
+            let ls = if li < left_tokens.len() {
+                left_tokens[li].char_start
+            } else {
+                left_char_len
+            };
+            let le = if *mi < left_tokens.len() {
+                left_tokens[*mi].char_start
+            } else if *mi > 0 {
+                left_tokens[*mi - 1].char_end
+            } else {
+                0
+            };
+            let rs = if ri < right_tokens.len() {
+                right_tokens[ri].char_start
+            } else {
+                right_char_len
+            };
+            let re = if *mj < right_tokens.len() {
+                right_tokens[*mj].char_start
+            } else if *mj > 0 {
+                right_tokens[*mj - 1].char_end
+            } else {
+                0
+            };
+            if le > ls || re > rs {
+                spans.push(InlineDiff {
+                    left_start: ls,
+                    left_end: le,
+                    right_start: rs,
+                    right_end: re,
+                });
+            }
+        }
+        li = *mi + 1;
+        ri = *mj + 1;
+    }
+    let trailing_left_changed =
+        (li..left_tokens.len()).any(|k| left_tokens[k].text.chars().any(|c| c.is_alphanumeric()));
+    let trailing_right_changed =
+        (ri..right_tokens.len()).any(|k| right_tokens[k].text.chars().any(|c| c.is_alphanumeric()));
+    if trailing_left_changed || trailing_right_changed {
+        let ls = if li < left_tokens.len() {
+            left_tokens[li].char_start
+        } else {
+            left_char_len
+        };
+        let rs = if ri < right_tokens.len() {
+            right_tokens[ri].char_start
+        } else {
+            right_char_len
+        };
+        if left_char_len > ls || right_char_len > rs {
+            spans.push(InlineDiff {
+                left_start: ls,
+                left_end: left_char_len,
+                right_start: rs,
+                right_end: right_char_len,
+            });
+        }
+    }
+    if spans.is_empty() {
+        spans.push(InlineDiff {
+            left_start: 0,
+            left_end: left_char_len,
+            right_start: 0,
+            right_end: right_char_len,
+        });
+    }
+    spans
+}
+
+fn grapheme_lcs<'a>(left: &'a [&str], right: &'a [&str]) -> Vec<(usize, usize)> {
+    let n = left.len();
+    let m = right.len();
+    let mut table = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            table[i][j] = if left[i] == right[j] {
+                table[i + 1][j + 1] + 1
+            } else {
+                table[i + 1][j].max(table[i][j + 1])
+            };
+        }
+    }
+    let mut matches = Vec::new();
+    let mut i = 0;
+    let mut j = 0;
+    while i < n && j < m {
+        if left[i] == right[j] {
+            matches.push((i, j));
+            i += 1;
+            j += 1;
+        } else if table[i + 1][j] >= table[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    matches
+}
+
+fn inline_diff_grapheme(left: &str, right: &str) -> Vec<InlineDiff> {
+    if left == right {
+        return Vec::new();
+    }
+    let left_graphemes: Vec<&str> = UnicodeSegmentation::graphemes(left, true).collect();
+    let right_graphemes: Vec<&str> = UnicodeSegmentation::graphemes(right, true).collect();
+    let left_char_offsets: Vec<usize> = {
+        let mut offsets = Vec::with_capacity(left_graphemes.len());
+        let mut offset = 0;
+        for g in &left_graphemes {
+            offsets.push(offset);
+            offset += g.chars().count();
+        }
+        offsets
+    };
+    let right_char_offsets: Vec<usize> = {
+        let mut offsets = Vec::with_capacity(right_graphemes.len());
+        let mut offset = 0;
+        for g in &right_graphemes {
+            offsets.push(offset);
+            offset += g.chars().count();
+        }
+        offsets
+    };
+    let left_char_len = left.chars().count();
+    let right_char_len = right.chars().count();
+    if left_graphemes.is_empty() && right_graphemes.is_empty() {
+        return vec![InlineDiff {
+            left_start: 0,
+            left_end: 0,
+            right_start: 0,
+            right_end: 0,
+        }];
+    }
+    let matches = grapheme_lcs(&left_graphemes, &right_graphemes);
+    let mut spans = Vec::new();
+    let mut li = 0;
+    let mut ri = 0;
+    for (mi, mj) in &matches {
+        if *mi > li || *mj > ri {
+            let ls = left_char_offsets[li];
+            let le = left_char_offsets[*mi];
+            let rs = right_char_offsets[ri];
+            let re = right_char_offsets[*mj];
+            spans.push(InlineDiff {
+                left_start: ls,
+                left_end: le,
+                right_start: rs,
+                right_end: re,
+            });
+        }
+        li = *mi + 1;
+        ri = *mj + 1;
+    }
+    if li < left_graphemes.len() || ri < right_graphemes.len() {
+        let ls = if li < left_graphemes.len() {
+            left_char_offsets[li]
+        } else {
+            left_char_len
+        };
+        let rs = if ri < right_graphemes.len() {
+            right_char_offsets[ri]
+        } else {
+            right_char_len
+        };
+        spans.push(InlineDiff {
+            left_start: ls,
+            left_end: left_char_len,
+            right_start: rs,
+            right_end: right_char_len,
+        });
+    }
+    if spans.is_empty() {
+        vec![InlineDiff {
+            left_start: 0,
+            left_end: left_char_len,
+            right_start: 0,
+            right_end: right_char_len,
+        }]
+    } else {
+        spans
+    }
 }
 
 const LCS_FULL_TABLE_THRESHOLD: usize = 4000;
@@ -1078,6 +1428,358 @@ fn matches_to_diff_lines(
         lines.push(right_only_line(right_document, right[ri].number));
         ri += 1;
     }
+    lines
+}
+
+fn patience_diff(
+    left_document: &TextDocument,
+    right_document: &TextDocument,
+    left: &[ComparableLine],
+    right: &[ComparableLine],
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<Vec<DiffLine>> {
+    if should_cancel() {
+        return None;
+    }
+    let mut left_counts: HashMap<String, usize> = HashMap::new();
+    for l in left {
+        *left_counts.entry(l.text.clone()).or_insert(0) += 1;
+    }
+    let mut right_counts: HashMap<String, usize> = HashMap::new();
+    for r in right {
+        *right_counts.entry(r.text.clone()).or_insert(0) += 1;
+    }
+
+    let mut unique_pairs: Vec<(usize, usize)> = Vec::new();
+    for (li, l) in left.iter().enumerate() {
+        if left_counts[&l.text] == 1
+            && right_counts.get(&l.text) == Some(&1)
+            && let Some(ri) = right.iter().position(|r| r.text == l.text)
+        {
+            unique_pairs.push((li, ri));
+        }
+    }
+
+    unique_pairs.sort_by_key(|(_, ri)| *ri);
+    let lis = longest_increasing_subsequence(&unique_pairs);
+    let mut anchors: Vec<(usize, usize)> = lis.iter().map(|&(li, ri)| (li, ri)).collect();
+    anchors.sort_by_key(|(li, _)| *li);
+
+    let mut lines = Vec::new();
+    let mut prev_li = 0;
+    let mut prev_ri = 0;
+
+    for (li, ri) in &anchors {
+        if should_cancel() {
+            return None;
+        }
+        let gap_left = &left[prev_li..*li];
+        let gap_right = &right[prev_ri..*ri];
+        if !gap_left.is_empty() || !gap_right.is_empty() {
+            let gap_diff = lcs_gap_diff(
+                left_document,
+                right_document,
+                gap_left,
+                gap_right,
+                prev_li,
+                prev_ri,
+                should_cancel,
+            )?;
+            lines.extend(gap_diff);
+        }
+        lines.push(equal_line(
+            left_document,
+            right_document,
+            left[*li].number,
+            right[*ri].number,
+        ));
+        prev_li = *li + 1;
+        prev_ri = *ri + 1;
+    }
+
+    let gap_left = &left[prev_li..];
+    let gap_right = &right[prev_ri..];
+    if !gap_left.is_empty() || !gap_right.is_empty() {
+        let gap_diff = lcs_gap_diff(
+            left_document,
+            right_document,
+            gap_left,
+            gap_right,
+            prev_li,
+            prev_ri,
+            should_cancel,
+        )?;
+        lines.extend(gap_diff);
+    }
+
+    Some(lines)
+}
+
+fn longest_increasing_subsequence(pairs: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+    let mut tails: Vec<usize> = Vec::new();
+    let mut prev: Vec<Option<usize>> = vec![None; pairs.len()];
+    let mut head: Vec<usize> = Vec::new();
+
+    for (i, &(_li, ri)) in pairs.iter().enumerate() {
+        let pos = tails
+            .binary_search_by(|&idx| pairs[idx].1.cmp(&ri))
+            .unwrap_or_else(|x| x);
+        if pos == tails.len() {
+            tails.push(i);
+        } else {
+            tails[pos] = i;
+        }
+        prev[i] = if pos > 0 { Some(tails[pos - 1]) } else { None };
+        if head.len() <= pos {
+            head.push(i);
+        } else {
+            head[pos] = i;
+        }
+    }
+
+    let mut result = Vec::new();
+    let mut current = tails.last().copied();
+    while let Some(idx) = current {
+        result.push(pairs[idx]);
+        current = prev[idx];
+    }
+    result.reverse();
+    result
+}
+
+fn lcs_gap_diff(
+    left_document: &TextDocument,
+    right_document: &TextDocument,
+    gap_left: &[ComparableLine],
+    gap_right: &[ComparableLine],
+    _left_offset: usize,
+    _right_offset: usize,
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<Vec<DiffLine>> {
+    if gap_left.is_empty() {
+        return Some(
+            gap_right
+                .iter()
+                .map(|r| right_only_line(right_document, r.number))
+                .collect(),
+        );
+    }
+    if gap_right.is_empty() {
+        return Some(
+            gap_left
+                .iter()
+                .map(|l| left_only_line(left_document, l.number))
+                .collect(),
+        );
+    }
+    let n = gap_left.len();
+    let m = gap_right.len();
+    if n > LCS_FULL_TABLE_THRESHOLD || m > LCS_FULL_TABLE_THRESHOLD {
+        return hirschberg_diff(
+            left_document,
+            right_document,
+            gap_left,
+            gap_right,
+            should_cancel,
+        );
+    }
+    let lcs = lcs_table_cancellable(gap_left, gap_right, should_cancel)?;
+    Some(raw_diff_lines(
+        left_document,
+        right_document,
+        gap_left,
+        gap_right,
+        &lcs,
+    ))
+}
+
+fn myers_diff(
+    left_document: &TextDocument,
+    right_document: &TextDocument,
+    left: &[ComparableLine],
+    right: &[ComparableLine],
+    should_cancel: &dyn Fn() -> bool,
+) -> Option<Vec<DiffLine>> {
+    if should_cancel() {
+        return None;
+    }
+    let n = left.len();
+    let m = right.len();
+    if n == 0 && m == 0 {
+        return Some(Vec::new());
+    }
+    if n == 0 {
+        return Some(
+            right
+                .iter()
+                .map(|r| right_only_line(right_document, r.number))
+                .collect(),
+        );
+    }
+    if m == 0 {
+        return Some(
+            left.iter()
+                .map(|l| left_only_line(left_document, l.number))
+                .collect(),
+        );
+    }
+
+    let max = n + m;
+    let mut v = vec![0i64; 2 * max + 1];
+    let mut trace: Vec<Vec<i64>> = Vec::new();
+
+    for d in 0..=max {
+        if should_cancel() {
+            return None;
+        }
+        let mut snapshot = vec![0i64; 2 * max + 1];
+        snapshot.copy_from_slice(&v);
+        for k in (-(d as i64)..=d as i64).step_by(2) {
+            let idx = (k + max as i64) as usize;
+            let mut x = if k == -(d as i64) || (k != d as i64 && v[idx - 1] < v[idx + 1]) {
+                v[idx + 1]
+            } else {
+                v[idx - 1] + 1
+            };
+            let mut y = x - k;
+            while x < n as i64 && y < m as i64 && left[x as usize].text == right[y as usize].text {
+                x += 1;
+                y += 1;
+            }
+            v[idx] = x;
+            if x >= n as i64 && y >= m as i64 {
+                trace.push(snapshot);
+                let edits = myers_backtrack(&trace, left, right, max, n, m);
+                return Some(myers_edits_to_diff_lines(
+                    left_document,
+                    right_document,
+                    left,
+                    right,
+                    &edits,
+                ));
+            }
+        }
+        trace.push(snapshot);
+    }
+    Some(Vec::new())
+}
+
+fn myers_backtrack(
+    trace: &[Vec<i64>],
+    _left: &[ComparableLine],
+    _right: &[ComparableLine],
+    max: usize,
+    n: usize,
+    m: usize,
+) -> Vec<MyersEdit> {
+    let mut edits = Vec::new();
+    let mut x = n as i64;
+    let mut y = m as i64;
+
+    for (d_idx, snapshot) in trace.iter().enumerate().rev() {
+        let d = d_idx as i64;
+        let k = x - y;
+        let prev_k = if k == -(d)
+            || (k != d
+                && snapshot[(k - 1 + max as i64) as usize]
+                    < snapshot[(k + 1 + max as i64) as usize])
+        {
+            k + 1
+        } else {
+            k - 1
+        };
+        let prev_x = snapshot[(prev_k + max as i64) as usize];
+        let prev_y = prev_x - prev_k;
+
+        while x > prev_x && y > prev_y {
+            edits.push(MyersEdit::Keep);
+            x -= 1;
+            y -= 1;
+        }
+
+        if d > 0 {
+            if x == prev_x {
+                edits.push(MyersEdit::Insert);
+                y -= 1;
+            } else {
+                edits.push(MyersEdit::Delete);
+                x -= 1;
+            }
+        }
+    }
+
+    edits.reverse();
+    edits
+}
+
+#[derive(Clone, Copy)]
+enum MyersEdit {
+    Keep,
+    Delete,
+    Insert,
+}
+
+fn myers_edits_to_diff_lines(
+    left_document: &TextDocument,
+    right_document: &TextDocument,
+    left: &[ComparableLine],
+    right: &[ComparableLine],
+    edits: &[MyersEdit],
+) -> Vec<DiffLine> {
+    let mut lines = Vec::new();
+    let mut li: usize = 0;
+    let mut ri: usize = 0;
+    let mut pending_deletes: Vec<usize> = Vec::new();
+    let mut pending_inserts: Vec<usize> = Vec::new();
+
+    let flush_deletes = |deletes: &[usize], lines: &mut Vec<DiffLine>, li_base: usize| {
+        for &di in deletes {
+            lines.push(left_only_line(left_document, left[li_base + di].number));
+        }
+    };
+    let flush_inserts = |inserts: &[usize], lines: &mut Vec<DiffLine>, ri_base: usize| {
+        for &ii in inserts {
+            lines.push(right_only_line(right_document, right[ri_base + ii].number));
+        }
+    };
+
+    let mut del_offset: usize = 0;
+    let mut ins_offset: usize = 0;
+
+    for &edit in edits {
+        match edit {
+            MyersEdit::Keep => {
+                flush_deletes(&pending_deletes, &mut lines, del_offset);
+                flush_inserts(&pending_inserts, &mut lines, ins_offset);
+                pending_deletes.clear();
+                pending_inserts.clear();
+                lines.push(equal_line(
+                    left_document,
+                    right_document,
+                    left[li].number,
+                    right[ri].number,
+                ));
+                li += 1;
+                ri += 1;
+                del_offset = li;
+                ins_offset = ri;
+            }
+            MyersEdit::Delete => {
+                pending_deletes.push(li - del_offset);
+                li += 1;
+            }
+            MyersEdit::Insert => {
+                pending_inserts.push(ri - ins_offset);
+                ri += 1;
+            }
+        }
+    }
+    flush_deletes(&pending_deletes, &mut lines, del_offset);
+    flush_inserts(&pending_inserts, &mut lines, ins_offset);
+
     lines
 }
 
@@ -1971,5 +2673,229 @@ mod tests {
                 .iter()
                 .all(|b| !matches!(b.kind, DiffBlockKind::Moved { .. }))
         );
+    }
+    #[test]
+    fn encoding_summary_detects_differences() {
+        let left_bytes = b"alpha\r\nbeta";
+        let right_bytes = b"alpha\nbeta";
+        let left_document = TextDocument::from_bytes("left".to_owned(), None, left_bytes, false);
+        let right_document = TextDocument::from_bytes("right".to_owned(), None, right_bytes, false);
+        let result = compare_documents(
+            left_document,
+            right_document,
+            &TextCompareOptions::default(),
+        );
+        let summary = result.encoding_summary();
+        assert_eq!(summary.left_encoding, TextEncoding::Utf8);
+        assert_eq!(summary.right_encoding, TextEncoding::Utf8);
+        assert!(!summary.encoding_differs);
+        assert_eq!(summary.left_line_ending, LineEnding::Crlf);
+        assert_eq!(summary.right_line_ending, LineEnding::Lf);
+        assert!(summary.line_ending_differs);
+        assert!(!summary.bom_differs);
+    }
+
+    #[test]
+    fn encoding_summary_detects_bom_difference() {
+        let left_bytes = &[0xEF, 0xBB, 0xBF, b'a', b'\n'];
+        let right_bytes = b"a\n";
+        let left_document = TextDocument::from_bytes("left".to_owned(), None, left_bytes, false);
+        let right_document = TextDocument::from_bytes("right".to_owned(), None, right_bytes, false);
+        let result = compare_documents(
+            left_document,
+            right_document,
+            &TextCompareOptions::default(),
+        );
+        let summary = result.encoding_summary();
+        assert!(summary.encoding_differs);
+        assert!(summary.bom_differs);
+        assert!(summary.left_has_bom);
+        assert!(!summary.right_has_bom);
+        assert!(!summary.line_ending_differs);
+    }
+
+    #[test]
+    fn text_document_serialization_roundtrip() {
+        let doc = TextDocument::from_bytes("test".to_owned(), None, b"hello\r\nworld", false);
+        let json = serde_json::to_string(&doc).unwrap();
+        let back: TextDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "test");
+        assert_eq!(back.encoding, TextEncoding::Utf8);
+        assert_eq!(back.line_ending, LineEnding::Crlf);
+        assert!(!back.has_bom);
+        assert!(!back.read_only);
+        assert_eq!(back.byte_len, 12);
+        assert_eq!(back.lines.len(), 2);
+        assert_eq!(back.lines[0].text, "hello");
+        assert_eq!(back.lines[0].newline, Some(LineEnding::Crlf));
+        assert_eq!(back.lines[1].text, "world");
+        assert_eq!(back.lines[1].newline, None);
+        assert_eq!(back.path, None);
+    }
+
+    #[test]
+    fn text_line_skips_byte_fields_in_json() {
+        let doc = TextDocument::from_text("x", "abc\ndef");
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(!json.contains("byte_start"));
+        assert!(!json.contains("byte_end"));
+        let back: TextDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.lines[0].byte_start, 0);
+        assert_eq!(back.lines[0].byte_end, 0);
+    }
+
+    #[test]
+    fn line_ending_serialization() {
+        assert_eq!(serde_json::to_string(&LineEnding::Lf).unwrap(), "\"lf\"");
+        assert_eq!(
+            serde_json::to_string(&LineEnding::Crlf).unwrap(),
+            "\"crlf\""
+        );
+        assert_eq!(serde_json::to_string(&LineEnding::Cr).unwrap(), "\"cr\"");
+        assert_eq!(
+            serde_json::to_string(&LineEnding::None).unwrap(),
+            "\"none\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LineEnding::Mixed).unwrap(),
+            "\"mixed\""
+        );
+        let le: LineEnding = serde_json::from_str("\"crlf\"").unwrap();
+        assert_eq!(le, LineEnding::Crlf);
+    }
+
+    #[test]
+    fn text_encoding_serialization() {
+        assert_eq!(
+            serde_json::to_string(&TextEncoding::Utf8).unwrap(),
+            "\"utf8\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TextEncoding::Utf8Bom).unwrap(),
+            "\"utf8_bom\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TextEncoding::Utf16Le).unwrap(),
+            "\"utf16_le\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TextEncoding::Utf16Be).unwrap(),
+            "\"utf16_be\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TextEncoding::LossyUtf8).unwrap(),
+            "\"lossy_utf8\""
+        );
+        let enc: TextEncoding = serde_json::from_str("\"utf16_le\"").unwrap();
+        assert_eq!(enc, TextEncoding::Utf16Le);
+    }
+
+    #[test]
+    fn inline_diff_word_detects_word_changes() {
+        let spans = inline_diff_word("hello world", "hello earth");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].left_start, 6);
+        assert_eq!(spans[0].left_end, 11);
+        assert_eq!(spans[0].right_start, 6);
+        assert_eq!(spans[0].right_end, 11);
+        assert_eq!(
+            &"hello world"[spans[0].left_start..spans[0].left_end],
+            "world"
+        );
+        assert_eq!(
+            &"hello earth"[spans[0].right_start..spans[0].right_end],
+            "earth"
+        );
+    }
+
+    #[test]
+    fn inline_diff_word_multiple_changes() {
+        let spans = inline_diff_word("a b c", "a x c");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].left_start, 2);
+        assert_eq!(spans[0].left_end, 3);
+        assert_eq!(spans[0].right_start, 2);
+        assert_eq!(spans[0].right_end, 3);
+    }
+
+    #[test]
+    fn inline_diff_grapheme_handles_unicode() {
+        let left = "cafe\u{0301}";
+        let right = "caf\u{00E9}";
+        let spans = inline_diff_grapheme(left, right);
+        assert!(!spans.is_empty());
+    }
+
+    #[test]
+    fn inline_granularity_default_is_char() {
+        assert_eq!(InlineGranularity::default(), InlineGranularity::Char);
+    }
+
+    #[test]
+    fn inline_diff_char_still_works() {
+        let opts = TextCompareOptions {
+            inline_granularity: InlineGranularity::Char,
+            ..TextCompareOptions::default()
+        };
+        let result = compare_text("left", "alpha\nbeta\n", "right", "alpha\nbetamax\n", &opts);
+        assert_eq!(result.difference_count(), 1);
+        assert_eq!(result.lines[1].kind, DiffLineKind::Changed);
+        assert_eq!(
+            result.lines[1].inline,
+            vec![InlineDiff {
+                left_start: 4,
+                left_end: 4,
+                right_start: 4,
+                right_end: 7,
+            }]
+        );
+    }
+
+    #[test]
+    fn selectable_diff_algorithms_preserve_basic_results() {
+        let left = "alpha\nbeta\ngamma\ndelta\n";
+        let right = "alpha\nbeta changed\ngamma\nepsilon\n";
+        for algorithm in [
+            DiffAlgorithm::Lcs,
+            DiffAlgorithm::Patience,
+            DiffAlgorithm::Myers,
+        ] {
+            let opts = TextCompareOptions {
+                diff_algorithm: algorithm,
+                ..TextCompareOptions::default()
+            };
+            let result = compare_text("left", left, "right", right, &opts);
+            assert_eq!(
+                result.difference_count(),
+                2,
+                "algorithm {algorithm:?} should report two changed lines"
+            );
+            assert_eq!(result.lines.first().unwrap().kind, DiffLineKind::Equal);
+            assert!(
+                result
+                    .lines
+                    .iter()
+                    .any(|line| line.kind == DiffLineKind::Changed),
+                "algorithm {algorithm:?} should pair changed lines"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_granularity_serialization() {
+        assert_eq!(
+            serde_json::to_string(&InlineGranularity::Char).unwrap(),
+            "\"char\""
+        );
+        assert_eq!(
+            serde_json::to_string(&InlineGranularity::Word).unwrap(),
+            "\"word\""
+        );
+        assert_eq!(
+            serde_json::to_string(&InlineGranularity::Grapheme).unwrap(),
+            "\"grapheme\""
+        );
+        let g: InlineGranularity = serde_json::from_str("\"word\"").unwrap();
+        assert_eq!(g, InlineGranularity::Word);
     }
 }

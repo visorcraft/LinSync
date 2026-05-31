@@ -1,13 +1,15 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::de::{DeserializeOwned, Error as DeError, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_repr::Serialize_repr;
 
 use crate::filter::FileFilter;
+use crate::paths::AppPaths;
 use crate::text::{CompareSession, CompareSide};
 use crate::trash::DeletePreference;
 
@@ -695,6 +697,115 @@ impl RecentSessionStore {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CompareArtifact {
+    ImageOverlay {
+        path: PathBuf,
+        width: u32,
+        height: u32,
+    },
+    ExtractedText {
+        path: PathBuf,
+        side: String,
+        format: String,
+    },
+    HexDump {
+        path: PathBuf,
+        side: String,
+    },
+    ReportFile {
+        path: PathBuf,
+        format: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArtifactManifest {
+    pub session_id: Option<String>,
+    pub created_at: Option<String>,
+    pub artifacts: Vec<CompareArtifact>,
+}
+
+static ARTIFACT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub fn artifact_dir(paths: &AppPaths) -> PathBuf {
+    let dir = paths.cache_dir.join("artifacts");
+    let _ = fs::create_dir_all(&dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
+    dir
+}
+
+pub fn save_artifact(paths: &AppPaths, name: &str, data: &[u8]) -> io::Result<PathBuf> {
+    let dir = artifact_dir(paths);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let counter = ARTIFACT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = format!("{}-{ts}-{counter}", sanitize_artifact_name(name));
+    let file_path = dir.join(&file_name);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&file_path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(data)?;
+    file.sync_all()?;
+    Ok(file_path)
+}
+
+fn sanitize_artifact_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len().max(1));
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches('.').trim_matches('_').trim_matches('-');
+    if trimmed.is_empty() {
+        "artifact".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+pub fn cleanup_artifacts(paths: &AppPaths, max_age: Duration) -> io::Result<u64> {
+    let dir = artifact_dir(paths);
+    let cutoff = SystemTime::now() - max_age;
+    let mut removed: u64 = 0;
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(0),
+    };
+    for entry in entries.flatten() {
+        if let Ok(metadata) = entry.metadata()
+            && metadata.is_file()
+            && let Ok(modified) = metadata.modified()
+            && modified < cutoff
+            && fs::remove_file(entry.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 fn ensure_supported_schema(
     artifact: &'static str,
     version: u32,
@@ -1153,6 +1264,119 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn save_artifact_creates_file() {
+        let fixture = TempFixture::new();
+        let paths = crate::paths::AppPaths::from_base_dirs(
+            fixture.path.join("config"),
+            fixture.path.join("data"),
+            fixture.path.join("cache"),
+            fixture.path.join("state"),
+        );
+        let data = b"overlay-png-bytes";
+        let saved = save_artifact(&paths, "overlay", data).unwrap();
+        assert!(saved.exists());
+        assert!(saved.starts_with(paths.cache_dir.join("artifacts")));
+        assert_eq!(fs::read(&saved).unwrap(), data);
+        assert!(
+            saved
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("overlay-")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir_mode = fs::metadata(paths.cache_dir.join("artifacts"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            let file_mode = fs::metadata(&saved).unwrap().permissions().mode() & 0o777;
+            assert_eq!(dir_mode, 0o700);
+            assert_eq!(file_mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn save_artifact_sanitizes_names_inside_artifact_dir() {
+        let fixture = TempFixture::new();
+        let paths = crate::paths::AppPaths::from_base_dirs(
+            fixture.path.join("config"),
+            fixture.path.join("data"),
+            fixture.path.join("cache"),
+            fixture.path.join("state"),
+        );
+        let saved = save_artifact(&paths, "../escape/report", b"private").unwrap();
+        assert!(saved.starts_with(paths.cache_dir.join("artifacts")));
+        assert!(!saved.file_name().unwrap().to_string_lossy().contains('/'));
+        assert!(!paths.cache_dir.join("escape").exists());
+    }
+
+    #[test]
+    fn cleanup_artifacts_removes_old() {
+        let fixture = TempFixture::new();
+        let paths = crate::paths::AppPaths::from_base_dirs(
+            fixture.path.join("config"),
+            fixture.path.join("data"),
+            fixture.path.join("cache"),
+            fixture.path.join("state"),
+        );
+        let dir = artifact_dir(&paths);
+        let old_path = dir.join("stale-file");
+        fs::write(&old_path, b"old").unwrap();
+        {
+            let f = fs::File::open(&old_path).unwrap();
+            let two_hours_ago = SystemTime::now() - Duration::from_secs(7200);
+            let _ = f.set_modified(two_hours_ago);
+        }
+
+        let new_path = dir.join("fresh-file");
+        fs::write(&new_path, b"new").unwrap();
+
+        let removed = cleanup_artifacts(&paths, Duration::from_secs(3600)).unwrap();
+        assert_eq!(removed, 1);
+        assert!(!old_path.exists());
+        assert!(new_path.exists());
+    }
+
+    #[test]
+    fn artifact_manifest_serialization() {
+        let manifest = ArtifactManifest {
+            session_id: Some("sess-123".to_owned()),
+            created_at: Some("2026-01-01T00:00:00Z".to_owned()),
+            artifacts: vec![
+                CompareArtifact::ImageOverlay {
+                    path: PathBuf::from("/tmp/overlay.png"),
+                    width: 800,
+                    height: 600,
+                },
+                CompareArtifact::ExtractedText {
+                    path: PathBuf::from("/tmp/left.txt"),
+                    side: "left".to_owned(),
+                    format: "plain".to_owned(),
+                },
+                CompareArtifact::HexDump {
+                    path: PathBuf::from("/tmp/hex-left.bin"),
+                    side: "left".to_owned(),
+                },
+                CompareArtifact::ReportFile {
+                    path: PathBuf::from("/tmp/report.json"),
+                    format: "json".to_owned(),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&manifest).unwrap();
+        let roundtrip: ArtifactManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtrip, manifest);
+
+        let empty: ArtifactManifest = serde_json::from_str("{}").unwrap();
+        assert!(empty.session_id.is_none());
+        assert!(empty.artifacts.is_empty());
     }
 
     struct TempFixture {

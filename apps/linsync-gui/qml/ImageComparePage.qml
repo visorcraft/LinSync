@@ -7,24 +7,11 @@ import QtQuick.Layouts
 import QtQuick.Dialogs
 import org.kde.kirigami as Kirigami
 
-// ImageComparePage — three-pane image compare: left | right | diff overlay.
-// The diff overlay is a red-tinted mask (rgba(255,40,40,200) for each differing
-// pixel) composited over the right image at adjustable opacity.
-//
-// Root is a Controls.Pane (not a plain Item) so QQC2 Controls (ComboBox /
-// SpinBox / Button / Slider) inside inherit the ApplicationWindow root's
-// QPalette through the standard QQC2 palette-inheritance chain. With a
-// plain Item root that chain was broken — leaving the Fusion-style widgets
-// rendering with whatever Qt thought the system theme was (typically dark
-// on KDE) regardless of the LinSync palette set on the window root.
 Controls.Pane {
     id: root
     padding: 0
     background: Rectangle { color: root.activeBg }
 
-    // Reusable left/right image pane component. Renders a heading bar with
-    // an accent stripe, the loaded image, and a centered icon + text empty
-    // state when no path is set.
     component ImagePane: Rectangle {
         id: pane
 
@@ -34,6 +21,7 @@ Controls.Pane {
         property string emptyIconName: "image-x-generic"
         property string emptyPrimary: ""
         property string emptySecondary: ""
+        property size sourceImageSize: Qt.size(0, 0)
 
         color: root.activeBgAlt
         clip: true
@@ -71,21 +59,37 @@ Controls.Pane {
             }
         }
 
-        Image {
-            id: paneImage
+        Flickable {
+            id: paneFlickable
             anchors.top: paneHeader.bottom
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.margins: 4
-            source: pane.imageSource
-            fillMode: Image.PreserveAspectFit
-            smooth: true
-            asynchronous: true
-            visible: pane.imageSource !== "" && status !== Image.Error
+            clip: true
+            contentWidth: Math.max(width, paneImage.zoomedWidth)
+            contentHeight: Math.max(height, paneImage.zoomedHeight)
+
+            Image {
+                id: paneImage
+                property real zoomedWidth: status === Image.Ready && sourceSize.width > 0 ? sourceSize.width * root.imageZoom : paneFlickable.width
+                property real zoomedHeight: status === Image.Ready && sourceSize.height > 0 ? sourceSize.height * root.imageZoom : paneFlickable.height
+                width: zoomedWidth
+                height: zoomedHeight
+                x: Math.max(0, (paneFlickable.width - zoomedWidth) / 2)
+                y: Math.max(0, (paneFlickable.height - zoomedHeight) / 2)
+                source: pane.imageSource
+                fillMode: Image.Stretch
+                smooth: true
+                asynchronous: true
+                visible: pane.imageSource !== "" && status !== Image.Error
+                onStatusChanged: {
+                    if (status === Image.Ready)
+                        pane.sourceImageSize = Qt.size(sourceSize.width, sourceSize.height)
+                }
+            }
         }
 
-        // Empty state — only visible when no image is set or loading failed.
         ColumnLayout {
             anchors.centerIn: parent
             visible: pane.imageSource === "" || paneImage.status === Image.Error
@@ -125,9 +129,6 @@ Controls.Pane {
         }
     }
 
-    // Source-file picker bar: a label, a read-only path field, and a Browse
-    // button. Emits browseClicked(); the parent owns the FileDialog and
-    // writes the chosen path back into `path`.
     component FilePickerBar: Rectangle {
         id: fp
 
@@ -169,9 +170,6 @@ Controls.Pane {
         }
     }
 
-    // Convert a file:// URL (as returned by FileDialog) to a bare local path,
-    // which is what the bridge /compare/image endpoint and the Image source
-    // ("file://" + path) expect.
     function urlToLocalPath(u) {
         return u.toString().replace(/^file:\/\//, "");
     }
@@ -190,7 +188,6 @@ Controls.Pane {
         onAccepted: root.rightPath = root.urlToLocalPath(selectedFile)
     }
 
-    // ── External interface ────────────────────────────────────────────────────
     required property string bridgeUrl
     required property color activeBg
     required property color activeBgAlt
@@ -202,13 +199,13 @@ Controls.Pane {
     property string leftPath: ""
     property string rightPath: ""
 
-    // ── Internal state ────────────────────────────────────────────────────────
     property string statusText: "Select left and right image paths, then run compare."
     property string overlayUri: ""
     property bool running: false
     property var lastResult: null
+    property real imageZoom: 1.0
+    property bool splitViewActive: false
 
-    // ── Bridge helper ─────────────────────────────────────────────────────────
     function bridgeGet(path, onLoad) {
         if (root.bridgeUrl === "") {
             if (onLoad)
@@ -263,17 +260,22 @@ Controls.Pane {
         });
     }
 
-    // ── Layout ────────────────────────────────────────────────────────────────
+    function computeFitZoom() {
+        var srcPane = root.splitViewActive ? splitLeftPane : leftImagePane
+        var w = srcPane.sourceImageSize.width
+        var h = srcPane.sourceImageSize.height
+        if (w <= 0 || h <= 0) return 1.0
+        var availW = srcPane.width - 8
+        var availH = srcPane.height - 28 - 8
+        if (availW <= 0 || availH <= 0) return 1.0
+        return Math.min(availW / w, availH / h)
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 8
         spacing: 8
 
-        // ── Toolbar ──────────────────────────────────────────────────────────
-        // Three rows so nothing has to elide on narrower windows.
-        //   Row 0: [ Left image picker ............ ][ Right image picker .... ]
-        //   Row 1: [ Comparison settings ] [ Run Compare ]
-        //   Row 2: [ Overlay opacity slider .................... Save PNG ]
         RowLayout {
             Layout.fillWidth: true
             spacing: 12
@@ -294,7 +296,6 @@ Controls.Pane {
             Layout.fillWidth: true
             spacing: 12
 
-            // Comparison-settings group
             Rectangle {
                 Layout.preferredHeight: 40
                 color: root.activeBgAlt
@@ -344,8 +345,6 @@ Controls.Pane {
                         value: 0
                         enabled: modeCombo.currentIndex === 1
                         Layout.preferredWidth: 120
-                        // Stable page colours so the field stays themed (not
-                        // black) when disabled — Kirigami.Theme mutes on disable.
                         frameColor: root.activeBg
                         frameBorderColor: root.separatorColor
                         contentColor: root.activeText
@@ -371,11 +370,8 @@ Controls.Pane {
                         from: 0
                         to: 100
                         value: 23
-                        // Represents 2.3 default stored as integer 23 to avoid float SpinBox.
                         enabled: modeCombo.currentIndex === 2
                         Layout.preferredWidth: 120
-                        // Stable page colours so the field stays themed (not
-                        // black) when disabled — Kirigami.Theme mutes on disable.
                         frameColor: root.activeBg
                         frameBorderColor: root.separatorColor
                         contentColor: root.activeText
@@ -385,7 +381,6 @@ Controls.Pane {
                 }
             }
 
-            // Primary action: Run Compare
             AppButton {
                 Layout.preferredHeight: 40
                 Layout.preferredWidth: 150
@@ -402,13 +397,9 @@ Controls.Pane {
                 Layout.preferredHeight: 28
             }
 
-            // Flex spacer keeps the settings card + Run button left-aligned.
             Item { Layout.fillWidth: true }
         }
 
-        // Row 2: overlay controls. The slider fills the row so it can shrink
-        // freely; the Save PNG button on the right has a fixed slot so it
-        // never gets clipped no matter how narrow the window is.
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 40
@@ -463,153 +454,276 @@ Controls.Pane {
             }
         }
 
-        // ── Three image panes ─────────────────────────────────────────────────
-        // Each pane is a `imagePane` reused via `component` declaration so
-        // header, empty-state, and image rendering stay consistent.
-        RowLayout {
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 40
+            color: root.activeBgAlt
+            border.color: root.separatorColor
+            border.width: 1
+            radius: 6
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 10
+                anchors.rightMargin: 10
+                spacing: 6
+
+                Controls.ToolButton {
+                    icon.name: "zoom-in"
+                    icon.color: Kirigami.Theme.textColor
+                    onClicked: root.imageZoom = Math.min(root.imageZoom * 1.25, 10.0)
+                    Controls.ToolTip.text: qsTr("Zoom in")
+                    Controls.ToolTip.visible: hovered
+                    Accessible.name: qsTr("Zoom in")
+                }
+                Controls.ToolButton {
+                    icon.name: "zoom-out"
+                    icon.color: Kirigami.Theme.textColor
+                    onClicked: root.imageZoom = Math.max(root.imageZoom / 1.25, 0.1)
+                    Controls.ToolTip.text: qsTr("Zoom out")
+                    Controls.ToolTip.visible: hovered
+                    Accessible.name: qsTr("Zoom out")
+                }
+                Controls.ToolButton {
+                    icon.name: "zoom-fit-best"
+                    icon.color: Kirigami.Theme.textColor
+                    onClicked: root.imageZoom = root.computeFitZoom()
+                    Controls.ToolTip.text: qsTr("Fit to pane")
+                    Controls.ToolTip.visible: hovered
+                    Accessible.name: qsTr("Fit to pane")
+                }
+                Controls.ToolButton {
+                    icon.name: "zoom-original"
+                    icon.color: Kirigami.Theme.textColor
+                    onClicked: root.imageZoom = 1.0
+                    Controls.ToolTip.text: qsTr("1:1 (native size)")
+                    Controls.ToolTip.visible: hovered
+                    Accessible.name: qsTr("1:1")
+                }
+                Controls.Label {
+                    text: Math.round(root.imageZoom * 100) + "%"
+                    color: root.activeText
+                    font.pixelSize: 11
+                    Layout.preferredWidth: 48
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.fillHeight: true
+                    Layout.topMargin: 8
+                    Layout.bottomMargin: 8
+                    color: root.separatorColor
+                }
+
+                Controls.ToolButton {
+                    icon.name: "view-split-left-right"
+                    icon.color: root.splitViewActive ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor
+                    checkable: true
+                    checked: root.splitViewActive
+                    onToggled: root.splitViewActive = checked
+                    Controls.ToolTip.text: qsTr("Split view")
+                    Controls.ToolTip.visible: hovered
+                    Accessible.name: qsTr("Toggle split view")
+                }
+
+                Item { Layout.fillWidth: true }
+            }
+        }
+
+        Item {
+            id: paneArea
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: 2
 
-            // Left image pane
-            ImagePane {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                heading: qsTr("Left")
-                accent: Kirigami.Theme.neutralTextColor
-                imageSource: root.leftPath !== "" ? "file://" + root.leftPath : ""
-                emptyIconName: "document-open"
-                emptyPrimary: qsTr("No left image loaded")
-                emptySecondary: qsTr("Pick a file in the toolbar above to compare.")
-            }
+            RowLayout {
+                id: threePaneLayout
+                anchors.fill: parent
+                spacing: 2
+                visible: !root.splitViewActive
 
-            Rectangle {
-                Layout.preferredWidth: 1
-                Layout.fillHeight: true
-                color: root.separatorColor
-            }
+                ImagePane {
+                    id: leftImagePane
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    heading: qsTr("Left")
+                    accent: Kirigami.Theme.neutralTextColor
+                    imageSource: root.leftPath !== "" ? "file://" + root.leftPath : ""
+                    emptyIconName: "document-open"
+                    emptyPrimary: qsTr("No left image loaded")
+                    emptySecondary: qsTr("Pick a file in the toolbar above to compare.")
+                }
 
-            // Right image pane
-            ImagePane {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                heading: qsTr("Right")
-                accent: Kirigami.Theme.positiveTextColor
-                imageSource: root.rightPath !== "" ? "file://" + root.rightPath : ""
-                emptyIconName: "document-open"
-                emptyPrimary: qsTr("No right image loaded")
-                emptySecondary: qsTr("Pick a file in the toolbar above to compare.")
-            }
-
-            Rectangle {
-                Layout.preferredWidth: 1
-                Layout.fillHeight: true
-                color: root.separatorColor
-            }
-
-            // Diff overlay pane: right image + red mask composited at slider opacity
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                color: root.activeBgAlt
-                clip: true
-
-                // Header bar with accent stripe + label
                 Rectangle {
-                    id: overlayHeader
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    height: 28
-                    color: root.activeBg
-                    border.color: root.separatorColor
-                    border.width: 1
+                    Layout.preferredWidth: 1
+                    Layout.fillHeight: true
+                    color: root.separatorColor
+                }
 
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 8
-                        anchors.rightMargin: 8
-                        spacing: 8
+                ImagePane {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    heading: qsTr("Right")
+                    accent: Kirigami.Theme.positiveTextColor
+                    imageSource: root.rightPath !== "" ? "file://" + root.rightPath : ""
+                    emptyIconName: "document-open"
+                    emptyPrimary: qsTr("No right image loaded")
+                    emptySecondary: qsTr("Pick a file in the toolbar above to compare.")
+                }
 
-                        Rectangle {
-                            Layout.preferredWidth: 3
-                            Layout.preferredHeight: 14
-                            color: root.activeNegativeText !== undefined ? root.activeNegativeText : root.activeHighlight
-                            radius: 2
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.fillHeight: true
+                    color: root.separatorColor
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    color: root.activeBgAlt
+                    clip: true
+
+                    Rectangle {
+                        id: overlayHeader
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        height: 28
+                        color: root.activeBg
+                        border.color: root.separatorColor
+                        border.width: 1
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 8
+                            anchors.rightMargin: 8
+                            spacing: 8
+
+                            Rectangle {
+                                Layout.preferredWidth: 3
+                                Layout.preferredHeight: 14
+                                color: root.activeNegativeText !== undefined ? root.activeNegativeText : root.activeHighlight
+                                radius: 2
+                            }
+                            Controls.Label {
+                                Layout.fillWidth: true
+                                text: qsTr("Diff Overlay")
+                                color: root.activeText
+                                font.bold: true
+                                font.pixelSize: 12
+                            }
+                        }
+                    }
+
+                    Flickable {
+                        id: overlayFlickable
+                        anchors.top: overlayHeader.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 4
+                        clip: true
+                        contentWidth: Math.max(width, overlayContentItem.zoomedWidth)
+                        contentHeight: Math.max(height, overlayContentItem.zoomedHeight)
+
+                        Item {
+                            id: overlayContentItem
+                            property real zoomedWidth: overlayBaseImg.status === Image.Ready && overlayBaseImg.sourceSize.width > 0 ? overlayBaseImg.sourceSize.width * root.imageZoom : overlayFlickable.width
+                            property real zoomedHeight: overlayBaseImg.status === Image.Ready && overlayBaseImg.sourceSize.height > 0 ? overlayBaseImg.sourceSize.height * root.imageZoom : overlayFlickable.height
+                            width: zoomedWidth
+                            height: zoomedHeight
+                            x: Math.max(0, (overlayFlickable.width - zoomedWidth) / 2)
+                            y: Math.max(0, (overlayFlickable.height - zoomedHeight) / 2)
+
+                            Image {
+                                id: overlayBaseImg
+                                anchors.fill: parent
+                                source: root.rightPath !== "" ? "file://" + root.rightPath : ""
+                                fillMode: Image.Stretch
+                                smooth: true
+                                asynchronous: true
+                                visible: root.overlayUri !== "" || root.rightPath !== ""
+                            }
+
+                            Image {
+                                anchors.fill: parent
+                                source: root.overlayUri
+                                fillMode: Image.Stretch
+                                smooth: false
+                                asynchronous: true
+                                opacity: overlayOpacity.value
+                                visible: root.overlayUri !== ""
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        visible: root.overlayUri === "" && !root.running
+                        spacing: 12
+
+                        Kirigami.Icon {
+                            source: "view-visible"
+                            Layout.preferredWidth: 56
+                            Layout.preferredHeight: 56
+                            Layout.alignment: Qt.AlignHCenter
+                            color: root.activeDisabledText
+                            isMask: true
+                            opacity: 0.6
                         }
                         Controls.Label {
-                            Layout.fillWidth: true
-                            text: qsTr("Diff Overlay")
+                            Layout.alignment: Qt.AlignHCenter
+                            horizontalAlignment: Text.AlignHCenter
+                            text: root.lastResult ? qsTr("No differences to overlay") : qsTr("No diff overlay yet")
                             color: root.activeText
+                            font.pixelSize: 14
                             font.bold: true
+                        }
+                        Controls.Label {
+                            Layout.alignment: Qt.AlignHCenter
+                            horizontalAlignment: Text.AlignHCenter
+                            text: root.leftPath === "" || root.rightPath === ""
+                                ? qsTr("Load both images first.")
+                                : qsTr("Click \"Run Compare\" to generate.")
+                            color: root.activeDisabledText
                             font.pixelSize: 12
                         }
                     }
                 }
+            }
 
-                // Base: right image (background of the overlay pane)
-                Image {
-                    id: overlayBase
-                    anchors.top: overlayHeader.bottom
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.margins: 4
-                    source: root.rightPath !== "" ? "file://" + root.rightPath : ""
-                    fillMode: Image.PreserveAspectFit
-                    smooth: true
-                    asynchronous: true
-                    visible: root.overlayUri !== "" || root.rightPath !== ""
+            Controls.SplitView {
+                id: splitPaneLayout
+                anchors.fill: parent
+                visible: root.splitViewActive
+                orientation: Qt.Horizontal
+
+                ImagePane {
+                    id: splitLeftPane
+                    Controls.SplitView.fillWidth: true
+                    Controls.SplitView.minimumWidth: 120
+                    heading: qsTr("Left")
+                    accent: Kirigami.Theme.neutralTextColor
+                    imageSource: root.leftPath !== "" ? "file://" + root.leftPath : ""
+                    emptyIconName: "document-open"
+                    emptyPrimary: qsTr("No left image loaded")
+                    emptySecondary: qsTr("Pick a file in the toolbar above to compare.")
                 }
 
-                // Red diff mask on top
-                Image {
-                    anchors.fill: overlayBase
-                    source: root.overlayUri
-                    fillMode: Image.PreserveAspectFit
-                    smooth: false
-                    asynchronous: true
-                    opacity: overlayOpacity.value
-                    visible: root.overlayUri !== ""
-                }
-
-                // Placeholder when no overlay has been generated yet
-                ColumnLayout {
-                    anchors.centerIn: parent
-                    visible: root.overlayUri === "" && !root.running
-                    spacing: 12
-
-                    Kirigami.Icon {
-                        source: "view-visible"
-                        Layout.preferredWidth: 56
-                        Layout.preferredHeight: 56
-                        Layout.alignment: Qt.AlignHCenter
-                        color: root.activeDisabledText
-                        isMask: true
-                        opacity: 0.6
-                    }
-                    Controls.Label {
-                        Layout.alignment: Qt.AlignHCenter
-                        horizontalAlignment: Text.AlignHCenter
-                        text: root.lastResult ? qsTr("No differences to overlay") : qsTr("No diff overlay yet")
-                        color: root.activeText
-                        font.pixelSize: 14
-                        font.bold: true
-                    }
-                    Controls.Label {
-                        Layout.alignment: Qt.AlignHCenter
-                        horizontalAlignment: Text.AlignHCenter
-                        text: root.leftPath === "" || root.rightPath === ""
-                            ? qsTr("Load both images first.")
-                            : qsTr("Click “Run Compare” to generate.")
-                        color: root.activeDisabledText
-                        font.pixelSize: 12
-                    }
+                ImagePane {
+                    id: splitRightPane
+                    Controls.SplitView.fillWidth: true
+                    Controls.SplitView.minimumWidth: 120
+                    heading: qsTr("Right")
+                    accent: Kirigami.Theme.positiveTextColor
+                    imageSource: root.rightPath !== "" ? "file://" + root.rightPath : ""
+                    emptyIconName: "document-open"
+                    emptyPrimary: qsTr("No right image loaded")
+                    emptySecondary: qsTr("Pick a file in the toolbar above to compare.")
                 }
             }
         }
 
-        // ── Status bar ────────────────────────────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 24

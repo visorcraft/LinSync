@@ -49,6 +49,7 @@ fn shared_fixtures_exercise_file_engines_and_patch_output() -> Result<(), Box<dy
         &TableCompareOptions {
             delimiter: ',',
             has_header: true,
+            ..TableCompareOptions::default()
         },
     )?;
     assert_eq!(table.changed_cells, 1);
@@ -244,9 +245,6 @@ fn moved_block_detection_smoke() {
         ..TextCompareOptions::default()
     };
     let result = compare_documents(
-        TextDocument::from_text("left", left),
-        TextDocument::from_text("right", right),
-        &optsnts(
         TextDocument::from_text("left", left),
         TextDocument::from_text("right", right),
         &opts,

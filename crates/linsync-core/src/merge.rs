@@ -289,7 +289,13 @@ impl ThreeWayMergeState {
         &self.output
     }
 
-    /// Write the current merged output to `path` as UTF-8.
+    pub fn unresolved_count(&self) -> usize {
+        self.conflict_ids
+            .iter()
+            .filter(|id| !self.resolutions.contains_key(id))
+            .count()
+    }
+
     pub fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
         std::fs::write(path, self.output.text())
     }
