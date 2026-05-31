@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, ExitCode};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -14,25 +14,27 @@ use std::time::Duration;
 use linsync::{apply_gui_setting, parse_bool_setting};
 use linsync_core::plugin::{PluginClass, PluginExecutionOptions};
 use linsync_core::{
-    AppPaths, BinaryCompareOptions, CompareOptions, CompareProfile, CompareSession,
+    AppPaths, BinaryCompareOptions, CompareOptions, CompareProfile, CompareSession, CompareSide,
     CompareViewMode, ConflictId, DeletePreference, DiffBlockKind, DiffLine, DiffLineKind,
     DiscoveredPlugin, EncodingSummary, FileFilter, FilterStore, FolderCompareControl,
     FolderCompareEvent, FolderCompareOptions, FolderEntryDiff, FolderEntryState,
     FolderOperationKind, FolderOperationOutcome, FolderOperationStatus, ImageCompareOptions,
     ImageCompareResult, MergeAction, MergeChoice, NamedFilters, ProfileId, ProfileStore,
     RecentPathStore, RecentSessionStore, RecentSessions, SessionFile, Settings, SettingsStore,
-    TableCompareOptions, TextCompareOptions, TextCompareResult, TextDocument, TextFindOptions,
-    TextInputEncoding, TextRenderMode, TextSyntaxMode, ThemePreference, ThreeWayMergeState,
-    TwoWayMergeState, TypedValueKind, builtin_profiles, cleanup_artifacts, compare_binary,
-    compare_binary_files, compare_documents, compare_folders, compare_folders_with_progress,
-    compare_images, compare_table_files, compare_text, compare_text_files_cancellable,
-    compare_text_files_with_prediffer, create_save_plan, discover_installed_plugins,
+    TableCompareOptions, TextBookmark, TextCompareOptions, TextCompareResult, TextDocument,
+    TextFindOptions, TextInputEncoding, TextRenderMode, TextSyntaxMode, ThemePreference,
+    ThreeWayMergeState, TwoWayMergeState, TypedValueKind, builtin_profiles, cleanup_artifacts,
+    compare_binary, compare_binary_files, compare_documents, compare_documents_cancellable,
+    compare_folders, compare_folders_with_progress, compare_images, compare_table_files,
+    compare_text, compare_text_files_with_prediffer, create_save_plan, discover_installed_plugins,
     execute_folder_operation_plan, find_builtin, is_likely_binary, plan_folder_operation,
     save_artifact, write_encoded_text_with_plan,
 };
 use serde::{Deserialize, Serialize};
 
 const BRIDGE_VERSION: u32 = 1;
+const RESPONSE_SCHEMA_VERSION: u32 = 1;
+const GUI_TAB_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
 #[cfg(feature = "cxxqt-app")]
 mod cxxqt_session;
@@ -89,13 +91,7 @@ fn run(paths: &AppPaths, args: Vec<OsString>) -> Result<ExitCode, String> {
         if let Ok(recent) = recent_store.load_or_default()
             && let Some(session) = recent.sessions.first()
         {
-            let mode_label = compare_view_mode_label(session.selected_view);
-            let tab = build_tab_for_paths_with_mode(
-                &session.session.left,
-                &session.session.right,
-                Some(mode_label),
-                &GuiCompareOptions::default(),
-            );
+            let tab = build_tab_for_session_file(session, &GuiCompareOptions::default());
             launch_context = Some(GuiLaunchContext::single_tab(tab));
         }
     }
@@ -230,6 +226,12 @@ struct GuiCompareTab {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct GuiTabSnapshot {
+    schema_version: u32,
+    tab: GuiCompareTab,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct GuiOpenValidation {
     compatible: bool,
     path_kind: String,
@@ -352,6 +354,55 @@ struct CompareProgress {
     current: usize,
     total: usize,
     message: String,
+}
+
+fn set_progress(
+    progress: &Option<Arc<Mutex<CompareProgress>>>,
+    phase: &str,
+    current: usize,
+    total: usize,
+    message: String,
+) {
+    if let Some(progress) = progress
+        && let Ok(mut progress) = progress.lock()
+    {
+        progress.phase = phase.to_owned();
+        progress.current = current;
+        progress.total = total;
+        progress.message = message;
+    }
+}
+
+fn register_progress_request(
+    params: &[(String, String)],
+    state: &Arc<Mutex<GuiBridgeState>>,
+    phase: &str,
+    total: usize,
+    message: &str,
+) -> (Option<String>, Option<Arc<Mutex<CompareProgress>>>) {
+    let Some(request_id) = query_value(params, "request_id").map(str::to_owned) else {
+        return (None, None);
+    };
+    let progress = Arc::new(Mutex::new(CompareProgress {
+        phase: phase.to_owned(),
+        current: 0,
+        total,
+        message: message.to_owned(),
+    }));
+    if let Ok(mut state) = state.lock() {
+        state
+            .compare_progress
+            .insert(request_id.clone(), Arc::clone(&progress));
+    }
+    (Some(request_id), Some(progress))
+}
+
+fn remove_progress_request(request_id: Option<&str>, state: &Arc<Mutex<GuiBridgeState>>) {
+    if let Some(id) = request_id
+        && let Ok(mut state) = state.lock()
+    {
+        state.compare_progress.remove(id);
+    }
 }
 
 const GUI_HISTORY_LIMIT: usize = 32;
@@ -491,6 +542,26 @@ impl GuiBridgeState {
         } else {
             Err(format!("unknown tab id: {tab_id}"))
         }
+    }
+
+    fn set_bookmark(&mut self, row: usize, bookmarked: bool) -> Result<GuiLaunchContext, String> {
+        let active_tab_id = self.session.active_tab_id;
+        let tab = self
+            .session
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == active_tab_id)
+            .ok_or_else(|| "no active compare tab".to_owned())?;
+        if row >= tab.left_rows.len() && row >= tab.right_rows.len() {
+            return Err(format!("row index {row} out of range"));
+        }
+        if let Some(left) = tab.left_rows.get_mut(row) {
+            left.bookmarked = bookmarked;
+        }
+        if let Some(right) = tab.right_rows.get_mut(row) {
+            right.bookmarked = bookmarked;
+        }
+        Ok(self.context())
     }
 
     fn copy_row(&mut self, row: usize, direction: &str) -> Result<GuiLaunchContext, String> {
@@ -1162,6 +1233,40 @@ fn context_to_json(context: &GuiLaunchContext) -> Result<String, String> {
     serde_json::to_string(context).map_err(|err| format!("failed to serialize GUI context: {err}"))
 }
 
+fn attach_session_to_response_body(
+    body: String,
+    tab: Option<GuiCompareTab>,
+    new_tab: bool,
+    paths: &AppPaths,
+    state: &Arc<Mutex<GuiBridgeState>>,
+) -> String {
+    let Some(tab) = tab else {
+        return body;
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return body;
+    };
+    if object.get("error").is_some() {
+        return body;
+    }
+    let context = match state.lock() {
+        Ok(mut state) => state.apply_compare(tab, new_tab),
+        Err(_) => return body,
+    };
+    record_recent_context(paths, &context);
+    if let Ok(context_value) = serde_json::to_value(&context)
+        && let Some(context_object) = context_value.as_object()
+    {
+        for (key, value) in context_object {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    serde_json::to_string(&value).unwrap_or(body)
+}
+
 fn recent_limit(paths: &AppPaths) -> usize {
     SettingsStore::new(paths.settings_file())
         .load_or_default()
@@ -1253,6 +1358,7 @@ fn record_recent_session(paths: &AppPaths, context: &GuiLaunchContext) {
         options: CompareOptions::default(),
     });
     session.selected_view = compare_view_mode(&tab.mode);
+    persist_tab_snapshot(&mut session, tab);
 
     if let Err(err) =
         RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths)).add(session)
@@ -1265,12 +1371,54 @@ fn tab_has_persistable_paths(tab: &GuiCompareTab) -> bool {
     tab.validation.compatible && !tab.left_path.is_empty() && !tab.right_path.is_empty()
 }
 
+fn persist_tab_snapshot(session: &mut SessionFile, tab: &GuiCompareTab) {
+    if !matches!(tab.mode.as_str(), "Image" | "Document" | "Webpage") {
+        return;
+    }
+    let snapshot = GuiTabSnapshot {
+        schema_version: GUI_TAB_SNAPSHOT_SCHEMA_VERSION,
+        tab: tab.clone(),
+    };
+    match serde_json::to_string(&snapshot) {
+        Ok(raw) => session.layout.selected_view_state = Some(raw),
+        Err(err) => {
+            tracing::warn!(mode = tab.mode, error = %err, "failed to serialize GUI tab snapshot");
+        }
+    }
+}
+
+fn restore_tab_snapshot(session: &SessionFile) -> Option<GuiCompareTab> {
+    let raw = session.layout.selected_view_state.as_ref()?;
+    let snapshot: GuiTabSnapshot = serde_json::from_str(raw).ok()?;
+    if snapshot.schema_version != GUI_TAB_SNAPSHOT_SCHEMA_VERSION {
+        return None;
+    }
+    let tab = snapshot.tab;
+    if compare_view_mode(&tab.mode) != session.selected_view {
+        return None;
+    }
+    if session.session.left.as_os_str() != std::ffi::OsStr::new(&tab.left_path)
+        || session.session.right.as_os_str() != std::ffi::OsStr::new(&tab.right_path)
+    {
+        return None;
+    }
+    tab_has_persistable_paths(&tab).then_some(tab)
+}
+
+fn build_tab_for_session_file(session: &SessionFile, options: &GuiCompareOptions) -> GuiCompareTab {
+    restore_tab_snapshot(session).unwrap_or_else(|| {
+        let mode = Some(compare_view_mode_label(session.selected_view));
+        build_tab_for_paths_with_mode(&session.session.left, &session.session.right, mode, options)
+    })
+}
+
 fn compare_view_mode(mode: &str) -> CompareViewMode {
     match mode {
         "Folder" => CompareViewMode::Folder,
         "Hex" => CompareViewMode::Binary,
         "Table" => CompareViewMode::Table,
         "Image" => CompareViewMode::Image,
+        "Document" => CompareViewMode::Document,
         "Webpage" => CompareViewMode::Webpage,
         _ => CompareViewMode::Text,
     }
@@ -1282,6 +1430,7 @@ fn compare_view_mode_label(mode: CompareViewMode) -> &'static str {
         CompareViewMode::Binary => "Hex",
         CompareViewMode::Table => "Table",
         CompareViewMode::Image => "Image",
+        CompareViewMode::Document => "Document",
         CompareViewMode::Archive => "Archive",
         CompareViewMode::Webpage => "Webpage",
         CompareViewMode::Text => "Text",
@@ -1361,9 +1510,15 @@ fn build_tab_for_paths_with_mode_cancellable(
             should_cancel,
             progress,
         ),
-        Ok(ContextPathKind::Files) => {
-            file_tab_cancellable(left, right, left_path, right_path, options, should_cancel)
-        }
+        Ok(ContextPathKind::Files) => file_tab_cancellable(
+            left,
+            right,
+            left_path,
+            right_path,
+            options,
+            should_cancel,
+            progress,
+        ),
         Err(status) => Some(invalid_compare_tab("Text", left_path, right_path, status)),
     }
 }
@@ -1435,6 +1590,7 @@ fn explicit_tab_for_paths_cancellable(
                 right_path,
                 &options.text,
                 should_cancel,
+                progress,
             ),
             GuiCompareMode::Table => Some(table_tab(
                 left,
@@ -1774,6 +1930,7 @@ fn file_tab_cancellable(
     right_path: String,
     options: &GuiCompareOptions,
     should_cancel: &dyn Fn() -> bool,
+    progress: Option<Arc<Mutex<CompareProgress>>>,
 ) -> Option<GuiCompareTab> {
     if is_table_path(left) && is_table_path(right) {
         let mut table_opts = options.table.clone();
@@ -1802,6 +1959,7 @@ fn file_tab_cancellable(
         right_path,
         &options.text,
         should_cancel,
+        progress,
     )
 }
 
@@ -1812,16 +1970,69 @@ fn text_tab_cancellable(
     right_path: String,
     text_options: &TextCompareOptions,
     should_cancel: &dyn Fn() -> bool,
+    progress: Option<Arc<Mutex<CompareProgress>>>,
 ) -> Option<GuiCompareTab> {
+    set_progress(&progress, "reading", 0, 0, "Reading text files".to_owned());
     let result = try_prediffer_compare(left, right, text_options).or_else(|| {
-        compare_text_files_cancellable(left, right, text_options, should_cancel)
-            .ok()
-            .flatten()
+        let left_document = match TextDocument::from_path_with_encoding(left, text_options.encoding)
+        {
+            Ok(document) => document,
+            Err(_) => return None,
+        };
+        let right_document =
+            match TextDocument::from_path_with_encoding(right, text_options.encoding) {
+                Ok(document) => document,
+                Err(_) => return None,
+            };
+        let total = left_document
+            .lines
+            .len()
+            .max(right_document.lines.len())
+            .max(1);
+        set_progress(
+            &progress,
+            "comparing",
+            0,
+            total,
+            "Comparing text rows".to_owned(),
+        );
+        let ticks = AtomicUsize::new(0);
+        let progress_for_compare = progress.clone();
+        compare_documents_cancellable(left_document, right_document, text_options, &|| {
+            let current = ticks
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1)
+                .min(total);
+            if current == 1 || current % 32 == 0 || current == total {
+                set_progress(
+                    &progress_for_compare,
+                    "comparing",
+                    current,
+                    total,
+                    format!("Compared {current}/{total} text rows"),
+                );
+            }
+            should_cancel()
+        })
     });
     match result {
         Some(result) => {
+            set_progress(
+                &progress,
+                "rendering",
+                result.lines.len(),
+                result.lines.len().max(1),
+                "Building text view".to_owned(),
+            );
             let encoding = Some(result.encoding_summary());
             let (left_rows, right_rows) = text_rows_for_gui_with_options(&result, text_options);
+            set_progress(
+                &progress,
+                "done",
+                result.lines.len(),
+                result.lines.len().max(1),
+                String::new(),
+            );
             Some(compare_tab(
                 "Text",
                 (left_path, right_path),
@@ -2418,6 +2629,234 @@ fn document_tab(left: &Path, right: &Path, left_path: String, right_path: String
     }
 }
 
+fn image_tab_from_result(
+    left_path: String,
+    right_path: String,
+    result: &ImageCompareResult,
+    response: &serde_json::Value,
+) -> GuiCompareTab {
+    let diff_count = if result.equal { 0 } else { 1 };
+    let mut artifacts = Vec::new();
+    if let Some(uri) = response.get("overlay_path").and_then(|v| v.as_str())
+        && let Some(path) = uri.strip_prefix("file://")
+    {
+        artifacts.push(linsync_core::CompareArtifact::ImageOverlay {
+            path: PathBuf::from(path),
+            width: result.left_dims.0.max(result.right_dims.0),
+            height: result.left_dims.1.max(result.right_dims.1),
+        });
+    }
+    compare_tab(
+        "Image",
+        (left_path, right_path),
+        if result.equal {
+            "Images are identical".to_owned()
+        } else {
+            format!(
+                "Images differ: {}/{} pixels ({:.3}%)",
+                result.differing_pixels,
+                result.total_pixels,
+                result.diff_ratio * 100.0
+            )
+        },
+        diff_count,
+        GuiOpenValidation {
+            compatible: true,
+            path_kind: "Files".to_owned(),
+            message: "Validated two image files".to_owned(),
+        },
+        vec![
+            summary_item_string(
+                "Left dimensions",
+                format!("{}x{}", result.left_dims.0, result.left_dims.1),
+            ),
+            summary_item_string(
+                "Right dimensions",
+                format!("{}x{}", result.right_dims.0, result.right_dims.1),
+            ),
+            summary_item("Total pixels", result.total_pixels as usize),
+            summary_item("Differing pixels", result.differing_pixels as usize),
+            summary_item_string("Diff ratio", format!("{:.4}", result.diff_ratio)),
+        ],
+        (Vec::new(), Vec::new()),
+        vec![],
+        None,
+        None,
+        artifacts,
+    )
+}
+
+fn document_tab_from_response(
+    left_path: String,
+    right_path: String,
+    response: &serde_json::Value,
+) -> Option<GuiCompareTab> {
+    if response.get("error").is_some() {
+        return None;
+    }
+    let left_text = response
+        .get("left_text")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let right_text = response
+        .get("right_text")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let text_result = compare_text(
+        &left_path,
+        left_text,
+        &right_path,
+        right_text,
+        &TextCompareOptions::default(),
+    );
+    let diff_count = response
+        .get("differing_lines")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or_else(|| text_result.difference_count());
+    let (left_rows, right_rows) = text_rows_for_gui(&text_result.lines, &text_result.blocks);
+    let extractor = response
+        .get("left_extractor")
+        .and_then(|v| v.as_str())
+        .unwrap_or("document plugin")
+        .to_owned();
+    Some(compare_tab(
+        "Document",
+        (left_path, right_path),
+        if diff_count == 0 {
+            format!("Documents are equal (extracted via {extractor})")
+        } else {
+            format!("{diff_count} differing document lines (extracted via {extractor})")
+        },
+        diff_count,
+        GuiOpenValidation {
+            compatible: true,
+            path_kind: "Files".to_owned(),
+            message: "Validated two document files".to_owned(),
+        },
+        vec![
+            summary_item("Differing lines", diff_count),
+            summary_item_string("Extractor", extractor),
+        ],
+        (left_rows, right_rows),
+        vec![],
+        Some(text_result.encoding_summary()),
+        None,
+        Vec::new(),
+    ))
+}
+
+fn webpage_tab_from_response(
+    left_url: String,
+    right_url: String,
+    mode: &str,
+    response: &serde_json::Value,
+) -> Option<GuiCompareTab> {
+    if response.get("error").is_some() {
+        return None;
+    }
+    let rows = response
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut left_rows = Vec::with_capacity(rows.len());
+    let mut right_rows = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        let state = row.get("s").and_then(|v| v.as_str()).unwrap_or("equal");
+        let block_kind = if state == "equal" {
+            "equal"
+        } else {
+            "difference"
+        };
+        let row_id = format!("webpage:{index}");
+        left_rows.push(GuiLineRow {
+            row_id: row_id.clone(),
+            number: row.get("ln").and_then(|v| v.as_u64()).map(|n| n as usize),
+            text: row
+                .get("l")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            state: if state == "right_only" {
+                "equal".to_owned()
+            } else {
+                state.to_owned()
+            },
+            block_kind: block_kind.to_owned(),
+            folded_count: None,
+            syntax_spans: Vec::new(),
+            has_find_match: false,
+            bookmarked: false,
+        });
+        right_rows.push(GuiLineRow {
+            row_id,
+            number: row.get("rn").and_then(|v| v.as_u64()).map(|n| n as usize),
+            text: row
+                .get("r")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            state: if state == "left_only" {
+                "equal".to_owned()
+            } else {
+                state.to_owned()
+            },
+            block_kind: block_kind.to_owned(),
+            folded_count: None,
+            syntax_spans: Vec::new(),
+            has_find_match: false,
+            bookmarked: false,
+        });
+    }
+    let equal = response
+        .get("equal")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(rows.is_empty());
+    let diff_count = rows
+        .iter()
+        .filter(|row| {
+            row.get("s")
+                .and_then(|v| v.as_str())
+                .is_some_and(|state| state != "equal")
+        })
+        .count()
+        .max((!equal) as usize);
+    let summary = response
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Compare complete")
+        .to_owned();
+    Some(compare_tab(
+        "Webpage",
+        (left_url, right_url),
+        summary.clone(),
+        diff_count,
+        GuiOpenValidation {
+            compatible: true,
+            path_kind: "URLs".to_owned(),
+            message: "Validated two webpage URLs".to_owned(),
+        },
+        vec![
+            summary_item_string("Mode", mode.to_owned()),
+            summary_item("Rows", rows.len()),
+            summary_item_string(
+                "Truncated",
+                response
+                    .get("truncated")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                    .to_string(),
+            ),
+        ],
+        (left_rows, right_rows),
+        vec![],
+        None,
+        None,
+        Vec::new(),
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compare_tab(
     mode: &str,
@@ -2683,6 +3122,7 @@ fn bridge_response_with_token(
         "/save" => save_bridge_response(query, state),
         "/tab/activate" => activate_tab_bridge_response(query, state),
         "/tab/close" => close_tab_bridge_response(query, state),
+        "/bookmark/set" => bookmark_set_bridge_response(query, state),
         "/folder/open" => folder_open_bridge_response(query, paths),
         "/sessions/recent" => sessions_recent_bridge_response(paths),
         "/sessions/reopen" => sessions_reopen_bridge_response(query, paths, state),
@@ -2725,8 +3165,40 @@ fn bridge_response_with_token(
                 Ok(p) => p,
                 Err(err) => return bridge_error(400, "Bad Request", &err),
             };
-            let body =
+            let (request_id, progress) =
+                register_progress_request(&params, state, "extracting", 3, "Extracting text");
+            set_progress(
+                &progress,
+                "extracting",
+                1,
+                3,
+                "Running document extractor".to_owned(),
+            );
+            let mut body =
                 linsync::document_compare_bridge_response_with_profile(query, &profile.document);
+            set_progress(
+                &progress,
+                "finalizing",
+                2,
+                3,
+                "Building document tab".to_owned(),
+            );
+            if let (Some(left), Some(right), Ok(value)) = (
+                query_value(&params, "left"),
+                query_value(&params, "right"),
+                serde_json::from_str::<serde_json::Value>(&body),
+            ) {
+                let tab = document_tab_from_response(left.to_owned(), right.to_owned(), &value);
+                body = attach_session_to_response_body(
+                    body,
+                    tab,
+                    query_bool(&params, "new_tab"),
+                    paths,
+                    state,
+                );
+            }
+            set_progress(&progress, "done", 3, 3, String::new());
+            remove_progress_request(request_id.as_deref(), state);
             http_response(200, "OK", "application/json", body.into_bytes())
         }
         "/profiles/list" => profiles_list_bridge_response(paths),
@@ -2739,10 +3211,26 @@ fn bridge_response_with_token(
                 Ok(p) => p,
                 Err(err) => return bridge_error(400, "Bad Request", &err),
             };
-            let (body, result) =
+            let (mut body, result) =
                 linsync::image_compare_bridge_response_with_profile(query, &profile.image);
+            let result_for_tab = result.clone();
             if let Ok(mut s) = state.lock() {
                 s.last_image_result = result;
+            }
+            if let (Some(result), Some(left), Some(right), Ok(value)) = (
+                result_for_tab,
+                query_value(&params, "left"),
+                query_value(&params, "right"),
+                serde_json::from_str::<serde_json::Value>(&body),
+            ) {
+                let tab = image_tab_from_result(left.to_owned(), right.to_owned(), &result, &value);
+                body = attach_session_to_response_body(
+                    body,
+                    Some(tab),
+                    query_bool(&params, "new_tab"),
+                    paths,
+                    state,
+                );
             }
             http_response(200, "OK", "application/json", body.into_bytes())
         }
@@ -2753,11 +3241,45 @@ fn bridge_response_with_token(
                 Ok(p) => p,
                 Err(err) => return bridge_error(400, "Bad Request", &err),
             };
-            let body = linsync::webpage_compare_bridge_response_with_profile(
+            let (request_id, progress) =
+                register_progress_request(&params, state, "fetching", 3, "Fetching webpages");
+            set_progress(
+                &progress,
+                "fetching",
+                1,
+                3,
+                "Fetching webpage content".to_owned(),
+            );
+            let mut body = linsync::webpage_compare_bridge_response_with_profile(
                 query,
                 paths,
                 &profile.webpage,
             );
+            set_progress(
+                &progress,
+                "finalizing",
+                2,
+                3,
+                "Building webpage tab".to_owned(),
+            );
+            if let (Some(left), Some(right), Ok(value)) = (
+                query_value(&params, "left"),
+                query_value(&params, "right"),
+                serde_json::from_str::<serde_json::Value>(&body),
+            ) {
+                let mode = query_value(&params, "mode").unwrap_or("html");
+                let tab =
+                    webpage_tab_from_response(left.to_owned(), right.to_owned(), mode, &value);
+                body = attach_session_to_response_body(
+                    body,
+                    tab,
+                    query_bool(&params, "new_tab"),
+                    paths,
+                    state,
+                );
+            }
+            set_progress(&progress, "done", 3, 3, String::new());
+            remove_progress_request(request_id.as_deref(), state);
             http_response(200, "OK", "application/json", body.into_bytes())
         }
         "/compare/webpage/clear-cache" => {
@@ -3108,6 +3630,13 @@ fn apply_text_query_overrides(
             case_sensitive: query_bool(params, "find_case_sensitive"),
         });
     }
+    for value in params
+        .iter()
+        .filter(|(key, _)| key == "bookmark")
+        .map(|(_, value)| value)
+    {
+        opts.bookmarks.push(parse_text_bookmark_query(value)?);
+    }
     opts.validate_rule_sets()
         .map_err(|err| format!("invalid text options: {err}"))?;
     opts.validate_regex_options()
@@ -3159,6 +3688,30 @@ fn parse_text_encoding_query(value: &str) -> Result<TextInputEncoding, String> {
         "lossy-utf8" | "lossy-utf-8" => Ok(TextInputEncoding::LossyUtf8),
         _ => Err(format!("unknown encoding '{value}'")),
     }
+}
+
+fn parse_text_bookmark_query(value: &str) -> Result<TextBookmark, String> {
+    let mut parts = value.splitn(3, ':');
+    let side = match parts.next().unwrap_or_default() {
+        "left" | "l" => CompareSide::Left,
+        "right" | "r" => CompareSide::Right,
+        other => {
+            return Err(format!(
+                "bookmark side '{other}' must be left or right; expected SIDE:LINE[:LABEL]"
+            ));
+        }
+    };
+    let Some(line_raw) = parts.next() else {
+        return Err("bookmark requires SIDE:LINE[:LABEL]".to_owned());
+    };
+    let line = line_raw
+        .parse::<usize>()
+        .map_err(|_| "bookmark line must be a positive integer".to_owned())?;
+    if line == 0 {
+        return Err("bookmark line must be a positive integer".to_owned());
+    }
+    let label = parts.next().unwrap_or_default().to_owned();
+    Ok(TextBookmark { side, line, label })
 }
 
 /// Resolve `FolderCompareOptions` for a single bridge request: start
@@ -3313,21 +3866,8 @@ fn compare_bridge_response(
     // cancel flag so a concurrent `/cancel?id=X` can abort this compare. The
     // flag is registered/removed under the state lock, but the long compare
     // below runs WITHOUT holding the lock, so `/cancel` is never blocked by it.
-    let request_id = query_value(&params, "request_id").map(str::to_owned);
-    let progress: Option<Arc<Mutex<CompareProgress>>> = if let Some(id) = &request_id {
-        let p = Arc::new(Mutex::new(CompareProgress {
-            phase: "starting".to_owned(),
-            current: 0,
-            total: 0,
-            message: String::new(),
-        }));
-        if let Ok(mut state) = state.lock() {
-            state.compare_progress.insert(id.clone(), Arc::clone(&p));
-        }
-        Some(p)
-    } else {
-        None
-    };
+    let (request_id, progress) =
+        register_progress_request(&params, state, "starting", 0, "Starting compare");
     let should_cancel: Box<dyn Fn() -> bool> = if let Some(id) = &request_id {
         let flag = Arc::new(AtomicBool::new(false));
         if let Ok(mut state) = state.lock() {
@@ -3351,8 +3891,8 @@ fn compare_bridge_response(
         && let Ok(mut state) = state.lock()
     {
         state.compare_cancels.remove(id);
-        state.compare_progress.remove(id);
     }
+    remove_progress_request(request_id.as_deref(), state);
 
     let Some(tab) = maybe_tab else {
         // The compare was cancelled — leave the session state untouched.
@@ -3644,6 +4184,29 @@ fn close_tab_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) ->
     }
 }
 
+fn bookmark_set_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(row) = query_value(&params, "row").and_then(|value| value.parse::<usize>().ok())
+    else {
+        return bridge_error(400, "Bad Request", "missing bookmark row");
+    };
+    let bookmarked = query_value(&params, "bookmarked")
+        .and_then(parse_bool_query_param)
+        .unwrap_or(true);
+
+    let context = match state.lock() {
+        Ok(mut state) => match state.set_bookmark(row, bookmarked) {
+            Ok(context) => context,
+            Err(err) => return bridge_error(400, "Bad Request", &err),
+        },
+        Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
+    };
+    match context_to_json(&context) {
+        Ok(body) => http_response(200, "OK", "application/json", body.into_bytes()),
+        Err(err) => bridge_error(500, "Internal Server Error", &err.to_string()),
+    }
+}
+
 fn folder_open_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
     let params = query_params(query);
     let key = query_value(&params, "key").unwrap_or("config");
@@ -3869,18 +4432,12 @@ fn sessions_reopen_bridge_response(
         return bridge_error(404, "Not Found", "recent session index out of range");
     };
 
-    let mode = Some(compare_view_mode_label(session_file.selected_view));
     // The recent-sessions reopen flow has no per-request profile
     // selection. Resolve from the active profile and tolerate a
     // missing/invalid pointer by falling back to defaults.
     let options = resolve_compare_options_for_request(paths, &[])
         .unwrap_or_else(|_| GuiCompareOptions::default());
-    let tab = build_tab_for_paths_with_mode(
-        &session_file.session.left,
-        &session_file.session.right,
-        mode,
-        &options,
-    );
+    let tab = build_tab_for_session_file(session_file, &options);
     let context = match state.lock() {
         Ok(mut state) => state.apply_compare(tab, true),
         Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
@@ -4186,6 +4743,7 @@ fn sessions_save_bridge_response(
         options: CompareOptions::default(),
     });
     session_file.selected_view = compare_view_mode(&tab.mode);
+    persist_tab_snapshot(&mut session_file, &tab);
     let store = RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths));
     let mut recent: RecentSessions = match store.load_or_default() {
         Ok(value) => value,
@@ -5306,6 +5864,7 @@ fn bridge_error(status: u16, reason: &str, message: &str) -> Vec<u8> {
 }
 
 fn http_response(status: u16, reason: &str, content_type: &str, body: Vec<u8>) -> Vec<u8> {
+    let body = version_json_response_body(content_type, body);
     // No `Access-Control-Allow-Origin` header: the bridge is intended for the local
     // QML host. Allowing a wildcard origin would let any web page on the user's
     // machine read files via /compare and overwrite them via /copy-all + /save.
@@ -5316,6 +5875,26 @@ fn http_response(status: u16, reason: &str, content_type: &str, body: Vec<u8>) -
     .into_bytes();
     response.extend_from_slice(&body);
     response
+}
+
+fn version_json_response_body(content_type: &str, body: Vec<u8>) -> Vec<u8> {
+    if !content_type
+        .split(';')
+        .next()
+        .is_some_and(|ty| ty.trim().eq_ignore_ascii_case("application/json"))
+    {
+        return body;
+    }
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return body;
+    };
+    object
+        .entry("schema_version".to_owned())
+        .or_insert_with(|| serde_json::json!(RESPONSE_SCHEMA_VERSION));
+    serde_json::to_vec(&value).unwrap_or(body)
 }
 
 #[cfg(feature = "cxxqt-app")]
@@ -5754,6 +6333,25 @@ mod tests {
     }
 
     #[test]
+    fn source_tree_qml_wires_text_compare_controls() {
+        let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
+        let qml = fs::read_to_string(&source_file).expect("Main.qml should be readable");
+        for needle in [
+            "syntaxRichTextForRow",
+            "Text.RichText",
+            "regex_rule_set",
+            "textEncoding",
+            "appendBookmarkParams",
+            "\"html\"",
+        ] {
+            assert!(
+                qml.contains(needle),
+                "Main.qml should include text compare control/rendering hook {needle}"
+            );
+        }
+    }
+
+    #[test]
     fn source_tree_window_icon_file_exists() {
         let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
         let icon_file = resolve_window_icon_file(&source_file).expect("missing window icon file");
@@ -6000,6 +6598,33 @@ mod tests {
         assert_eq!(
             body["session"]["tabs"][0]["validation"]["path_kind"],
             "Files"
+        );
+    }
+
+    #[test]
+    fn bridge_bookmark_set_updates_active_tab_rows() {
+        let root = test_file_root("bridge-bookmark-set");
+        let left = root.join("left.txt");
+        let right = root.join("right.txt");
+        fs::write(&left, "same\nleft\n").unwrap();
+        fs::write(&right, "same\nright\n").unwrap();
+        let paths = test_app_paths("bridge-bookmark-set");
+        let state = test_bridge_state(Some(build_context_for_paths(&left, &right)));
+
+        let response = String::from_utf8(bridge_response(
+            "GET /bookmark/set?row=1&bookmarked=1 HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        let body = json_response_body(&response);
+        assert_eq!(
+            body["session"]["tabs"][0]["left_rows"][1]["bookmarked"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            body["session"]["tabs"][0]["right_rows"][1]["bookmarked"],
+            serde_json::json!(true)
         );
     }
 
@@ -6528,6 +7153,7 @@ mod tests {
         assert!(response.contains("HTTP/1.1 200 OK"));
         assert!(response.contains(r#""ok":true"#));
         assert!(response.contains(&format!(r#""bridge_version":{BRIDGE_VERSION}"#)));
+        assert!(response.contains(&format!(r#""schema_version":{RESPONSE_SCHEMA_VERSION}"#)));
     }
 
     #[test]
@@ -7591,7 +8217,7 @@ mod tests {
         let paths = test_app_paths("text-view-options-paths");
         let state = test_bridge_state(None);
         let query = format!(
-            "left={}&right={}&mode=Text&context_lines=0&syntax=rust&find=value",
+            "left={}&right={}&mode=Text&context_lines=0&syntax=rust&find=value&regex_rule_set=volatile&encoding=utf8&bookmark=left:2:mark",
             urlencoding::encode(left_path.to_str().unwrap()),
             urlencoding::encode(right_path.to_str().unwrap()),
         );
@@ -7622,6 +8248,10 @@ mod tests {
                 .is_some_and(|spans| !spans.is_empty())),
             "syntax=rust should attach syntax spans; body={body}"
         );
+        assert!(
+            rows.iter().any(|row| row["bookmarked"] == true),
+            "bookmark query should mark matching rows; body={body}"
+        );
     }
 
     #[test]
@@ -7637,6 +8267,10 @@ mod tests {
             &paths,
         );
         let v: serde_json::Value = serde_json::from_str(&body).expect("body is JSON");
+        assert_eq!(
+            v["schema_version"],
+            serde_json::json!(RESPONSE_SCHEMA_VERSION)
+        );
         assert!(
             v.get("error").is_some(),
             "unsupported webpage mode must surface as {{\"error\":...}} — got: {body}"
@@ -8425,6 +9059,211 @@ mod tests {
         let tab = &body["session"]["tabs"][0];
         assert_eq!(tab["mode"].as_str().unwrap(), "Image");
         assert!(tab["summary"].is_array());
+    }
+
+    #[test]
+    fn image_compare_endpoint_updates_session_tab() {
+        let root = test_file_root("image-endpoint-session-tab");
+        let left = root.join("left.png");
+        let right = root.join("right.png");
+        let left_img: image::RgbaImage =
+            image::ImageBuffer::from_fn(4, 4, |_, _| image::Rgba([255, 0, 0, 255]));
+        let right_img: image::RgbaImage =
+            image::ImageBuffer::from_fn(4, 4, |_, _| image::Rgba([0, 0, 255, 255]));
+        left_img.save(&left).unwrap();
+        right_img.save(&right).unwrap();
+        let paths = test_app_paths("image-endpoint-session-tab");
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            &format!(
+                "GET /compare/image?left={}&right={}&mode=exact HTTP/1.1\r\n",
+                left.display(),
+                right.display()
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.contains("HTTP/1.1 200"));
+        let body = json_response_body(&resp);
+        assert_eq!(
+            body["schema_version"],
+            serde_json::json!(RESPONSE_SCHEMA_VERSION)
+        );
+        assert_eq!(body["session"]["tabs"][0]["mode"], "Image");
+        assert_eq!(body["session"]["tabs"][0]["difference_count"], 1);
+    }
+
+    #[test]
+    fn document_response_builds_session_tab_shape() {
+        let response = serde_json::json!({
+            "equal": false,
+            "left_extractor": "fixture",
+            "right_extractor": "fixture",
+            "differing_lines": 1,
+            "left_text": "alpha\nsame\n",
+            "right_text": "beta\nsame\n"
+        });
+        let tab = document_tab_from_response(
+            "/tmp/left.pdf".to_owned(),
+            "/tmp/right.pdf".to_owned(),
+            &response,
+        )
+        .expect("document response should produce a tab");
+        assert_eq!(tab.mode, "Document");
+        assert_eq!(tab.difference_count, 1);
+        assert_eq!(tab.left_rows.len(), tab.right_rows.len());
+    }
+
+    #[test]
+    fn webpage_response_builds_session_tab_shape() {
+        let response = serde_json::json!({
+            "summary": "different (1 diff blocks)",
+            "equal": false,
+            "truncated": false,
+            "rows": [
+                {"s":"equal","ln":1,"rn":1,"l":"same","r":"same"},
+                {"s":"changed","ln":2,"rn":2,"l":"left","r":"right"}
+            ]
+        });
+        let tab = webpage_tab_from_response(
+            "https://left.example/".to_owned(),
+            "https://right.example/".to_owned(),
+            "html",
+            &response,
+        )
+        .expect("webpage response should produce a tab");
+        assert_eq!(tab.mode, "Webpage");
+        assert_eq!(tab.difference_count, 1);
+        assert_eq!(tab.left_rows.len(), 2);
+    }
+
+    #[test]
+    fn webpage_summary_only_response_preserves_difference_count() {
+        let response = serde_json::json!({
+            "summary": "different (left_only=1 right_only=0 different=0)",
+            "equal": false,
+        });
+        let tab = webpage_tab_from_response(
+            "https://left.example/".to_owned(),
+            "https://right.example/".to_owned(),
+            "tree",
+            &response,
+        )
+        .expect("summary-only webpage response should produce a tab");
+        assert_eq!(tab.mode, "Webpage");
+        assert_eq!(tab.difference_count, 1);
+        assert!(tab.left_rows.is_empty());
+    }
+
+    #[test]
+    fn webpage_recent_session_reopens_from_tab_snapshot() {
+        let paths = test_app_paths("webpage-session-restore");
+        let response = serde_json::json!({
+            "summary": "different (1 diff blocks)",
+            "equal": false,
+            "truncated": false,
+            "rows": [
+                {"s":"changed","ln":1,"rn":1,"l":"left html","r":"right html"}
+            ]
+        });
+        let tab = webpage_tab_from_response(
+            "https://left.example/".to_owned(),
+            "https://right.example/".to_owned(),
+            "html",
+            &response,
+        )
+        .expect("webpage response should produce a tab");
+        let context = GuiLaunchContext::single_tab(tab);
+        record_recent_context(&paths, &context);
+
+        let recent = RecentSessionStore::new(paths.recent_sessions_file(), 20)
+            .load_or_default()
+            .expect("recent sessions should load");
+        assert_eq!(recent.sessions[0].selected_view, CompareViewMode::Webpage);
+        assert!(recent.sessions[0].layout.selected_view_state.is_some());
+
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            "GET /sessions/reopen?index=0 HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        let body = json_response_body(&resp);
+        let tab = &body["session"]["tabs"][0];
+        assert_eq!(tab["mode"], "Webpage");
+        assert_eq!(tab["left_path"], "https://left.example/");
+        assert_eq!(tab["left_rows"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn document_recent_session_reopens_extracted_rows_from_snapshot() {
+        let paths = test_app_paths("document-session-restore");
+        let response = serde_json::json!({
+            "equal": false,
+            "left_extractor": "fixture",
+            "right_extractor": "fixture",
+            "differing_lines": 1,
+            "left_text": "alpha\nsame\n",
+            "right_text": "beta\nsame\n"
+        });
+        let tab = document_tab_from_response(
+            "/tmp/linsync-left-missing.pdf".to_owned(),
+            "/tmp/linsync-right-missing.pdf".to_owned(),
+            &response,
+        )
+        .expect("document response should produce a tab");
+        let context = GuiLaunchContext::single_tab(tab);
+        record_recent_context(&paths, &context);
+
+        let recent = RecentSessionStore::new(paths.recent_sessions_file(), 20)
+            .load_or_default()
+            .expect("recent sessions should load");
+        assert_eq!(recent.sessions[0].selected_view, CompareViewMode::Document);
+        assert!(recent.sessions[0].layout.selected_view_state.is_some());
+
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            "GET /sessions/reopen?index=0 HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        let body = json_response_body(&resp);
+        let tab = &body["session"]["tabs"][0];
+        assert_eq!(tab["mode"], "Document");
+        assert_eq!(tab["difference_count"], 1);
+        assert!(tab["left_rows"].as_array().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn text_tab_updates_progress_snapshot() {
+        let root = test_file_root("text-progress");
+        let left = root.join("left.txt");
+        let right = root.join("right.txt");
+        fs::write(&left, "a\nb\nc\n").unwrap();
+        fs::write(&right, "a\nx\nc\n").unwrap();
+        let progress = Arc::new(Mutex::new(CompareProgress {
+            phase: "starting".to_owned(),
+            current: 0,
+            total: 0,
+            message: String::new(),
+        }));
+        let tab = text_tab_cancellable(
+            &left,
+            &right,
+            left.display().to_string(),
+            right.display().to_string(),
+            &TextCompareOptions::default(),
+            &|| false,
+            Some(Arc::clone(&progress)),
+        )
+        .expect("text tab should build");
+        assert_eq!(tab.mode, "Text");
+        let progress = progress.lock().unwrap();
+        assert_eq!(progress.phase, "done");
+        assert!(progress.total > 0);
     }
 
     #[test]

@@ -439,6 +439,29 @@ fn compare_supports_named_regex_rule_sets_find_render_and_encoding() {
 }
 
 #[test]
+fn compare_show_only_changes_omits_unchanged_rows() {
+    let temp = TempFixture::new();
+    let left = temp.path.join("left.txt");
+    let right = temp.path.join("right.txt");
+    fs::write(&left, "same before\nleft value\nsame after\n").unwrap();
+    fs::write(&right, "same before\nright value\nsame after\n").unwrap();
+
+    let output = run(&[
+        "compare",
+        "--show-only-changes",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("left value"));
+    assert!(stdout.contains("right value"));
+    assert!(!stdout.contains("same before"));
+    assert!(!stdout.contains("same after"));
+}
+
+#[test]
 fn compare_encoding_flag_decodes_utf16_without_bom() {
     let temp = TempFixture::new();
     let left = temp.path.join("left.txt");

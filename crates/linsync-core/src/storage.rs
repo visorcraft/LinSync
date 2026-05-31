@@ -531,6 +531,7 @@ pub enum CompareViewMode {
     Binary,
     Table,
     Image,
+    Document,
     Archive,
     Webpage,
 }

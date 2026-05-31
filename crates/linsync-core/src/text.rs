@@ -2963,11 +2963,12 @@ fn syntax_highlight_html(text: &str, mode: TextSyntaxMode) -> String {
                 &chars[cursor..start].iter().collect::<String>(),
             ));
         }
-        if end > start {
+        let display_start = start.max(cursor);
+        if end > display_start {
             output.push_str(&format!(
                 "<span class=\"syn-{}\">{}</span>",
                 span.class,
-                escape_html(&chars[start..end].iter().collect::<String>())
+                escape_html(&chars[display_start..end].iter().collect::<String>())
             ));
         }
         cursor = end.max(cursor);

@@ -60,6 +60,8 @@ Kirigami.ApplicationWindow {
     property bool contextFolding: false
     property int contextLines: 3
     property bool showOnlyChanges: false
+    property string textEncoding: "auto"
+    property var textRegexRuleSets: []
     property var bookmarkRows: []
     property int currentBookmarkPosition: -1
     property bool leftDirty: false
@@ -75,6 +77,7 @@ Kirigami.ApplicationWindow {
     property var unfilteredLeftRows: []
     property var unfilteredRightRows: []
     property var folderEntries: []
+    property var visibleFolderEntries: []
     property string folderSortColumn: ""
     property bool folderSortAscending: true
     onFolderFilterChanged: root.applyFolderFilter()
@@ -209,6 +212,12 @@ Kirigami.ApplicationWindow {
     color: activeBg
 
     readonly property color separatorColor: Kirigami.ColorUtils.tintWithAlpha(activeBg, activeText, 0.2)
+    readonly property var textRegexRuleSetEntries: [
+        { "id": "generated", "label": qsTr("Generated") },
+        { "id": "volatile", "label": qsTr("Volatile") },
+        { "id": "comments", "label": qsTr("Comments") },
+        { "id": "whitespace", "label": qsTr("Whitespace") }
+    ]
 
     // Apply user preferences to a single line of text before rendering.
     // - tabWidth replaces literal tabs with the configured number of spaces
@@ -228,6 +237,114 @@ Kirigami.ApplicationWindow {
             s = s.replace(/\t/g, " ".repeat(root.paneTabWidth))
         }
         return s
+    }
+
+    function cssColor(value) {
+        const text = String(value)
+        if (text.length === 9 && text[0] === "#")
+            return "#" + text.slice(3)
+        return text
+    }
+
+    function syntaxColor(kind) {
+        if (kind === "keyword") return "#7a3e9d"
+        if (kind === "string") return "#0b6b3a"
+        if (kind === "number") return "#8a4b08"
+        if (kind === "comment") return "#69717a"
+        if (kind === "key") return "#005f9e"
+        if (kind === "tag") return "#8a2b58"
+        return cssColor(root.activeText)
+    }
+
+    function escapeRichText(raw) {
+        if (raw === undefined || raw === null)
+            return ""
+        return String(raw)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/ /g, "&nbsp;")
+    }
+
+    function richSegment(text, className) {
+        const color = className ? root.syntaxColor(className) : root.cssColor(root.activeText)
+        return "<span style=\"color:" + color + "\">" + root.escapeRichText(root.transformLineText(text)) + "</span>"
+    }
+
+    function syntaxRichTextForRow(row) {
+        if (!row || row.text === undefined || row.text === null)
+            return ""
+        const text = String(row.text)
+        const spans = row.syntax_spans || []
+        if (spans.length === 0)
+            return root.richSegment(text, "")
+
+        const chars = Array.from(text)
+        let cursor = 0
+        let output = ""
+        for (let i = 0; i < spans.length; i++) {
+            const span = spans[i]
+            const start = Math.max(0, Math.min(chars.length, Number(span.start || 0)))
+            const end = Math.max(start, Math.min(chars.length, Number(span.end || start)))
+            if (start > cursor)
+                output += root.richSegment(chars.slice(cursor, start).join(""), "")
+            const displayStart = Math.max(start, cursor)
+            if (end > displayStart)
+                output += root.richSegment(chars.slice(displayStart, end).join(""), String(span.class || ""))
+            cursor = Math.max(cursor, end)
+        }
+        if (cursor < chars.length)
+            output += root.richSegment(chars.slice(cursor).join(""), "")
+        return output
+    }
+
+    function textRegexRuleSetEnabled(id) {
+        return root.textRegexRuleSets.indexOf(id) >= 0
+    }
+
+    function setTextRegexRuleSet(id, enabled) {
+        const sets = root.textRegexRuleSets.slice()
+        const existing = sets.indexOf(id)
+        if (enabled && existing < 0)
+            sets.push(id)
+        else if (!enabled && existing >= 0)
+            sets.splice(existing, 1)
+        root.textRegexRuleSets = sets
+        root.requestCompare(false)
+    }
+
+    function textRegexRuleSetSummary() {
+        if (root.textRegexRuleSets.length === 0)
+            return qsTr("Rules")
+        if (root.textRegexRuleSets.length === 1)
+            return root.textRegexRuleSets[0]
+        return qsTr("%1 rules").arg(root.textRegexRuleSets.length)
+    }
+
+    function appendBookmarkParams(url) {
+        const seen = ({})
+        let out = url
+        for (let i = 0; i < root.bookmarkRows.length; i++) {
+            const row = root.bookmarkRows[i]
+            const left = root.leftRows[row]
+            const right = root.rightRows[row]
+            if (left && left.number !== undefined && left.number !== null) {
+                const key = "left:" + left.number
+                if (!seen[key]) {
+                    seen[key] = true
+                    out += "&bookmark=" + encodeURIComponent(key)
+                }
+            }
+            if (right && right.number !== undefined && right.number !== null) {
+                const key = "right:" + right.number
+                if (!seen[key]) {
+                    seen[key] = true
+                    out += "&bookmark=" + encodeURIComponent(key)
+                }
+            }
+        }
+        return out
     }
 
     function makeBlankRows() {
@@ -340,6 +457,11 @@ Kirigami.ApplicationWindow {
     function scrollToCurrentDifference() {
         if (root.currentDiffRow < 0)
             return
+        if (root.compareMode === "Folder") {
+            if (folderTable && root.currentDiffRow < folderTable.count)
+                folderTable.positionViewAtIndex(root.currentDiffRow, ListView.Center)
+            return
+        }
         root.syncingScroll = true
         if (leftPane && rightPane) {
             leftPane.positionAtRow(root.currentDiffRow)
@@ -430,6 +552,37 @@ Kirigami.ApplicationWindow {
         return root.bookmarkRows.indexOf(index) >= 0
     }
 
+    function setBookmarkedInRows(rows, row, bookmarked) {
+        if (!rows || row < 0 || row >= rows.length)
+            return rows
+        const copy = rows.slice()
+        const current = copy[row] || {}
+        copy[row] = Object.assign({}, current, { "bookmarked": bookmarked })
+        return copy
+    }
+
+    function setBookmarkStateForRow(row, bookmarked) {
+        root.leftRows = setBookmarkedInRows(root.leftRows, row, bookmarked)
+        root.rightRows = setBookmarkedInRows(root.rightRows, row, bookmarked)
+        root.unfilteredLeftRows = setBookmarkedInRows(root.unfilteredLeftRows, row, bookmarked)
+        root.unfilteredRightRows = setBookmarkedInRows(root.unfilteredRightRows, row, bookmarked)
+    }
+
+    function syncBookmarkToBridge(row, bookmarked) {
+        if (root.bridgeUrl === "")
+            return
+        const request = new XMLHttpRequest()
+        request.onreadystatechange = function () {
+            if (request.readyState === XMLHttpRequest.DONE && request.status !== 200)
+                root.statusText = qsTr("Bookmark update failed")
+        }
+        const url = root.bridgeUrl
+            + "/bookmark/set?row=" + encodeURIComponent(row)
+            + "&bookmarked=" + (bookmarked ? "1" : "0")
+        request.open("GET", url)
+        request.send()
+    }
+
     function rebuildBookmarkRows() {
         const rows = []
         for (let index = 0; index < root.leftRows.length; index++) {
@@ -448,6 +601,7 @@ Kirigami.ApplicationWindow {
             return
         const rows = root.bookmarkRows.slice()
         const existing = rows.indexOf(row)
+        const bookmarked = existing < 0
         if (existing >= 0)
             rows.splice(existing, 1)
         else
@@ -455,6 +609,9 @@ Kirigami.ApplicationWindow {
         rows.sort(function(a, b) { return a - b })
         root.bookmarkRows = rows
         root.currentBookmarkPosition = rows.indexOf(row)
+        root.setBookmarkStateForRow(row, bookmarked)
+        root.updateActiveTabSnapshot()
+        root.syncBookmarkToBridge(row, bookmarked)
     }
 
     function selectBookmark(position) {
@@ -872,6 +1029,11 @@ Kirigami.ApplicationWindow {
             return ""
         if (root.currentDiffRow < 0)
             return ""
+        if (root.visibleFolderEntries.length > root.currentDiffRow) {
+            const entry = root.visibleFolderEntries[root.currentDiffRow]
+            if (entry && entry.path)
+                return String(entry.path)
+        }
         const row = root.leftRows[root.currentDiffRow] || root.rightRows[root.currentDiffRow]
         if (!row) return ""
         const id = String(row.row_id || "")
@@ -1181,6 +1343,7 @@ Kirigami.ApplicationWindow {
                 tab.summary = root.summaryItems
                 tab.left_rows = root.leftRows
                 tab.right_rows = root.rightRows
+                tab.folder_entries = root.folderEntries
                 tabs[index] = tab
                 root.sessionState = Object.assign({}, root.sessionState, { "active_tab_id": root.activeTabId, "tabs": tabs })
                 root.tabItems = tabItemsFromSession(tabs)
@@ -1463,6 +1626,9 @@ Kirigami.ApplicationWindow {
         url += "&eol=" + encodeURIComponent(root.eolNormalization)
         url += "&render_mode=" + encodeURIComponent(root.textRenderMode)
         url += "&syntax=" + encodeURIComponent(root.syntaxMode)
+        url += "&encoding=" + encodeURIComponent(root.textEncoding)
+        for (let ruleIndex = 0; ruleIndex < root.textRegexRuleSets.length; ruleIndex++)
+            url += "&regex_rule_set=" + encodeURIComponent(root.textRegexRuleSets[ruleIndex])
         if (root.contextFolding)
             url += "&context_lines=" + encodeURIComponent(root.contextLines)
         if (root.showOnlyChanges)
@@ -1472,6 +1638,7 @@ Kirigami.ApplicationWindow {
             url += "&find_regex=" + (root.searchRegex ? "1" : "0")
             url += "&find_case_sensitive=" + (root.searchCaseSensitive ? "1" : "0")
         }
+        url = root.appendBookmarkParams(url)
         if (newTab)
             url += "&new_tab=1"
         request.onreadystatechange = function () {
@@ -1514,35 +1681,115 @@ Kirigami.ApplicationWindow {
         root.requestCompare(false)
     }
 
-    function applyFolderFilter() {
-        if (root.compareMode !== "Folder" || root.folderFilter === "") {
+    function folderSizeLabel(size) {
+        if (size === undefined || size === null)
+            return ""
+        const n = Number(size)
+        if (n < 1024) return n + " B"
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB"
+        if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB"
+        return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB"
+    }
+
+    function folderEntryMatchesFilter(entry) {
+        if (root.folderFilter === "")
+            return true
+        const state = entry && entry.state ? String(entry.state) : ""
+        if (root.folderFilter === "changed")
+            return state === "left_only" || state === "right_only" || state === "changed"
+        if (root.folderFilter === "left_only")
+            return state === "left_only"
+        if (root.folderFilter === "right_only")
+            return state === "right_only"
+        if (root.folderFilter === "diff")
+            return state === "left_only" || state === "right_only" || state === "changed"
+        return true
+    }
+
+    function folderRowForEntry(entry, index, side) {
+        const path = String(entry.path || "")
+        const displayPath = entry.isDir ? path + "/" : path
+        const rightOnly = entry.state === "right_only"
+        const leftOnly = entry.state === "left_only"
+        const hidden = side === "left" ? rightOnly : leftOnly
+        const size = side === "left" ? entry.leftSize : entry.rightSize
+        const parts = hidden ? [] : [displayPath]
+        const sizeLabel = folderSizeLabel(size)
+        if (sizeLabel !== "")
+            parts.push(sizeLabel)
+        if (!entry.isDir && entry.method)
+            parts.push(entry.method)
+        return {
+            "row_id": "folder:" + path,
+            "number": index + 1,
+            "text": parts.join("  "),
+            "state": entry.state || "equal"
+        }
+    }
+
+    function rebuildFolderView() {
+        if (root.compareMode !== "Folder") {
             root.leftRows = root.unfilteredLeftRows
             root.rightRows = root.unfilteredRightRows
+            root.visibleFolderEntries = []
             return
         }
-        var filteredLeft = []
-        var filteredRight = []
-        for (var i = 0; i < root.unfilteredLeftRows.length; i++) {
-            var leftRow = root.unfilteredLeftRows[i]
-            var rightRow = root.unfilteredRightRows[i]
-            var state = leftRow.state || rightRow.state || ""
-            var include = false
-            if (root.folderFilter === "changed" && (state === "left_only" || state === "right_only" || state === "changed")) {
-                include = true
-            } else if (root.folderFilter === "left_only" && state === "left_only") {
-                include = true
-            } else if (root.folderFilter === "right_only" && state === "right_only") {
-                include = true
-            } else if (root.folderFilter === "diff" && (state === "left_only" || state === "right_only" || state === "changed")) {
-                include = true
-            }
-            if (include) {
-                filteredLeft.push(leftRow)
-                filteredRight.push(rightRow)
-            }
+        if (!root.folderEntries || root.folderEntries.length === 0) {
+            root.leftRows = root.unfilteredLeftRows
+            root.rightRows = root.unfilteredRightRows
+            root.visibleFolderEntries = []
+            rebuildDiffRows()
+            rebuildSearchRows()
+            return
         }
-        root.leftRows = filteredLeft.length > 0 ? filteredLeft : makeBlankRows()
-        root.rightRows = filteredRight.length > 0 ? filteredRight : makeBlankRows()
+        var entries = []
+        for (var i = 0; i < root.folderEntries.length; i++) {
+            if (folderEntryMatchesFilter(root.folderEntries[i]))
+                entries.push(root.folderEntries[i])
+        }
+        var col = root.folderSortColumn
+        if (col !== "") {
+            var asc = root.folderSortAscending
+            entries.sort(function (ea, eb) {
+                var va, vb
+                if (col === "path") {
+                    va = ea.path || ""
+                    vb = eb.path || ""
+                } else if (col === "state") {
+                    va = ea.state || ""
+                    vb = eb.state || ""
+                } else if (col === "leftSize") {
+                    va = ea.leftSize || 0
+                    vb = eb.leftSize || 0
+                } else if (col === "rightSize") {
+                    va = ea.rightSize || 0
+                    vb = eb.rightSize || 0
+                } else if (col === "method") {
+                    va = ea.method || ""
+                    vb = eb.method || ""
+                } else {
+                    return 0
+                }
+                if (va < vb) return asc ? -1 : 1
+                if (va > vb) return asc ? 1 : -1
+                return 0
+            })
+        }
+        var left = []
+        var right = []
+        for (var j = 0; j < entries.length; j++) {
+            left.push(folderRowForEntry(entries[j], j, "left"))
+            right.push(folderRowForEntry(entries[j], j, "right"))
+        }
+        root.visibleFolderEntries = entries
+        root.leftRows = left.length > 0 ? left : makeBlankRows()
+        root.rightRows = right.length > 0 ? right : makeBlankRows()
+        rebuildDiffRows()
+        rebuildSearchRows()
+    }
+
+    function applyFolderFilter() {
+        rebuildFolderView()
     }
 
     function toggleFolderSort(column) {
@@ -1555,52 +1802,7 @@ Kirigami.ApplicationWindow {
     }
 
     function applyFolderSort() {
-        if (root.compareMode !== "Folder" || root.folderSortColumn === "" || root.folderEntries.length === 0) {
-            return
-        }
-        var col = root.folderSortColumn
-        var asc = root.folderSortAscending
-        var entries = root.folderEntries.slice()
-        var indices = []
-        for (var i = 0; i < entries.length; i++) {
-            indices.push(i)
-        }
-        indices.sort(function (a, b) {
-            var ea = entries[a]
-            var eb = entries[b]
-            var va, vb
-            if (col === "path") {
-                va = ea.path || ""
-                vb = eb.path || ""
-            } else if (col === "state") {
-                va = ea.state || ""
-                vb = eb.state || ""
-            } else if (col === "leftSize") {
-                va = ea.leftSize || 0
-                vb = eb.leftSize || 0
-            } else if (col === "rightSize") {
-                va = ea.rightSize || 0
-                vb = eb.rightSize || 0
-            } else if (col === "method") {
-                va = ea.method || ""
-                vb = eb.method || ""
-            } else {
-                return 0
-            }
-            if (va < vb) return asc ? -1 : 1
-            if (va > vb) return asc ? 1 : -1
-            return 0
-        })
-        var srcLeft = root.unfilteredLeftRows
-        var srcRight = root.unfilteredRightRows
-        var sortedLeft = []
-        var sortedRight = []
-        for (var j = 0; j < indices.length; j++) {
-            sortedLeft.push(srcLeft[indices[j]])
-            sortedRight.push(srcRight[indices[j]])
-        }
-        root.leftRows = sortedLeft.length > 0 ? sortedLeft : makeBlankRows()
-        root.rightRows = sortedRight.length > 0 ? sortedRight : makeBlankRows()
+        rebuildFolderView()
     }
 
     function copyToClipboard(text) {
@@ -3338,10 +3540,10 @@ Kirigami.ApplicationWindow {
                         id: textRenderSelector
                         implicitHeight: 30
                         Layout.preferredWidth: 150
-                        model: [qsTr("Side by side"), qsTr("Unified"), qsTr("Context"), qsTr("Normal")]
+                        model: [qsTr("Side by side"), qsTr("Unified"), qsTr("Context"), qsTr("Normal"), qsTr("HTML")]
                         Accessible.name: qsTr("Text render mode")
                         onActivated: {
-                            const values = ["side-by-side", "unified", "context", "normal"]
+                            const values = ["side-by-side", "unified", "context", "normal", "html"]
                             root.textRenderMode = values[currentIndex] || "side-by-side"
                             root.requestCompare(false)
                         }
@@ -3406,6 +3608,46 @@ Kirigami.ApplicationWindow {
                         onActivated: {
                             const values = ["plain", "auto", "rust", "json", "html", "markdown", "shell", "toml", "yaml"]
                             root.syntaxMode = values[currentIndex] || "plain"
+                            root.requestCompare(false)
+                        }
+                    }
+
+                    Controls.ToolButton {
+                        id: regexRuleButton
+                        icon.name: "view-filter"
+                        icon.color: root.activeText
+                        text: root.textRegexRuleSetSummary()
+                        display: Controls.AbstractButton.TextBesideIcon
+                        Controls.ToolTip.text: qsTr("Text regex rule sets")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Text regex rule sets")
+                        onClicked: regexRuleMenu.open()
+
+                        Controls.Menu {
+                            id: regexRuleMenu
+
+                            Repeater {
+                                model: root.textRegexRuleSetEntries
+                                delegate: Controls.MenuItem {
+                                    required property var modelData
+                                    text: modelData.label
+                                    checkable: true
+                                    checked: root.textRegexRuleSetEnabled(modelData.id)
+                                    onTriggered: root.setTextRegexRuleSet(modelData.id, checked)
+                                }
+                            }
+                        }
+                    }
+
+                    AppComboBox {
+                        id: textEncodingSelector
+                        implicitHeight: 30
+                        Layout.preferredWidth: 122
+                        model: [qsTr("Auto"), qsTr("UTF-8"), qsTr("UTF-8 BOM"), qsTr("UTF-16 LE"), qsTr("UTF-16 BE"), qsTr("Lossy UTF-8")]
+                        Accessible.name: qsTr("Text encoding")
+                        onActivated: {
+                            const values = ["auto", "utf8", "utf8-bom", "utf16le", "utf16be", "lossy-utf8"]
+                            root.textEncoding = values[currentIndex] || "auto"
                             root.requestCompare(false)
                         }
                     }
@@ -3771,9 +4013,116 @@ Kirigami.ApplicationWindow {
                 }
             }
 
-            Controls.SplitView {
+            Rectangle {
+                visible: root.compareMode === "Folder"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                color: root.activeBg
+                border.color: root.separatorColor
+                clip: true
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 0
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 34
+                        color: root.activeBgAlt
+                        border.color: root.separatorColor
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 12
+
+                            Controls.Label { text: qsTr("Path"); Layout.fillWidth: true; color: root.activeText; font.bold: true }
+                            Controls.Label { text: qsTr("Status"); Layout.preferredWidth: 96; color: root.activeText; font.bold: true }
+                            Controls.Label { text: qsTr("Left size"); Layout.preferredWidth: 92; color: root.activeText; font.bold: true; horizontalAlignment: Text.AlignRight }
+                            Controls.Label { text: qsTr("Right size"); Layout.preferredWidth: 92; color: root.activeText; font.bold: true; horizontalAlignment: Text.AlignRight }
+                            Controls.Label { text: qsTr("Method"); Layout.preferredWidth: 120; color: root.activeText; font.bold: true }
+                        }
+                    }
+
+                    ListView {
+                        id: folderTable
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        model: root.visibleFolderEntries
+                        boundsBehavior: Flickable.StopAtBounds
+                        reuseItems: true
+
+                        delegate: Rectangle {
+                            required property var modelData
+                            required property int index
+
+                            width: folderTable.width
+                            height: 34
+                            color: index === root.currentDiffRow
+                                ? Kirigami.ColorUtils.tintWithAlpha(root.activeBg, root.activeHighlight, 0.18)
+                                : root.lineBackground(modelData.state || "equal", index)
+                            border.color: index === root.currentDiffRow ? root.activeHighlight : "transparent"
+                            border.width: index === root.currentDiffRow ? 1 : 0
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 10
+                                spacing: 12
+
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    text: (modelData.isDir ? modelData.path + "/" : modelData.path)
+                                    elide: Text.ElideMiddle
+                                    color: root.activeText
+                                    font.family: "monospace"
+                                }
+                                Controls.Label {
+                                    Layout.preferredWidth: 96
+                                    text: modelData.state || "equal"
+                                    color: root.activeText
+                                    elide: Text.ElideRight
+                                }
+                                Controls.Label {
+                                    Layout.preferredWidth: 92
+                                    text: root.folderSizeLabel(modelData.leftSize)
+                                    horizontalAlignment: Text.AlignRight
+                                    color: root.activeText
+                                    font.family: "monospace"
+                                }
+                                Controls.Label {
+                                    Layout.preferredWidth: 92
+                                    text: root.folderSizeLabel(modelData.rightSize)
+                                    horizontalAlignment: Text.AlignRight
+                                    color: root.activeText
+                                    font.family: "monospace"
+                                }
+                                Controls.Label {
+                                    Layout.preferredWidth: 120
+                                    text: modelData.method || ""
+                                    color: root.activeDisabledText
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: {
+                                    root.currentDiffRow = index
+                                    root.currentDiffPosition = root.diffRowIndexes.indexOf(index)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Controls.SplitView {
+                visible: root.compareMode !== "Folder"
+                Layout.fillHeight: root.compareMode !== "Folder"
+                Layout.fillWidth: true
                 orientation: Qt.Horizontal
 
                 PaneColumn {
@@ -3785,7 +4134,7 @@ Kirigami.ApplicationWindow {
                     sideKey: "left"
                     accentColor: root.activeNeutralText
                     pathText: root.leftPath
-                    rows: root.leftRows
+                    rows: root.compareMode === "Folder" ? [] : root.leftRows
                     useBridgeModel: root.hasSessionBridge()
                     modelRevision: root.bridgeModelRevision
                 }
@@ -3799,7 +4148,7 @@ Kirigami.ApplicationWindow {
                     sideKey: "right"
                     accentColor: root.activePositiveText
                     pathText: root.rightPath
-                    rows: root.rightRows
+                    rows: root.compareMode === "Folder" ? [] : root.rightRows
                     useBridgeModel: root.hasSessionBridge()
                     modelRevision: root.bridgeModelRevision
                 }
@@ -4211,6 +4560,7 @@ Kirigami.ApplicationWindow {
                 separatorColor:     root.separatorColor
                 leftPath:           root.leftPath
                 rightPath:          root.rightPath
+                onSessionUpdated: context => root.applyLaunchContext(context, false)
             }
 
             WebpageComparePage {
@@ -4231,6 +4581,7 @@ Kirigami.ApplicationWindow {
                 activeDisabledText: root.activeDisabledText
                 activeHighlight:    root.activeHighlight
                 separatorColor:     root.separatorColor
+                onSessionUpdated: context => root.applyLaunchContext(context, false)
             }
 
             DocumentComparePage {
@@ -4253,6 +4604,7 @@ Kirigami.ApplicationWindow {
                 separatorColor:     root.separatorColor
                 leftPath:           root.leftPath
                 rightPath:          root.rightPath
+                onSessionUpdated: context => root.applyLaunchContext(context, false)
             }
         }
     }
@@ -4267,6 +4619,7 @@ Kirigami.ApplicationWindow {
         required property var rows
         property bool useBridgeModel: false
         property int modelRevision: 0
+        property bool syntaxOverlayActive: root.compareMode === "Text" && root.syntaxMode !== "plain"
 
         // External code (sibling pane sync) sets pane.contentY to mirror
         // scroll position. Internally we proxy to the ScrollView's inner
@@ -4491,7 +4844,7 @@ Kirigami.ApplicationWindow {
                         font.family: root.paneFontFamily
                         font.pixelSize: root.paneFontSize
                         textFormat: Controls.TextArea.PlainText
-                        color: root.activeText
+                        color: pane.syntaxOverlayActive ? "transparent" : root.activeText
                         wrapMode: Controls.TextArea.NoWrap
                         selectByMouse: true
                         selectByKeyboard: true
@@ -4522,6 +4875,41 @@ Kirigami.ApplicationWindow {
                             contentArea.cursorPosition =
                                 contentArea.positionAt(curRect.x, targetY)
                             event.accepted = true
+                        }
+                    }
+                }
+
+                // Layer 2.5: syntax-coloured line text. The TextArea above
+                // still owns selection, editing, copy, and keyboard behavior;
+                // this overlay only paints the bridge-provided syntax spans.
+                Item {
+                    anchors.fill: parent
+                    clip: true
+                    z: 1.5
+                    visible: pane.syntaxOverlayActive
+
+                    Column {
+                        id: syntaxColumn
+                        x: paneStack.textLeftPadding
+                        y: -paneStack.scrollY
+                        width: Math.max(paneStack.width - x, 0)
+                        spacing: 0
+
+                        Repeater {
+                            model: pane.rows
+                            delegate: Text {
+                                required property int index
+                                required property var modelData
+
+                                width: syntaxColumn.width
+                                height: paneStack.lineHeight
+                                text: root.syntaxRichTextForRow(modelData)
+                                textFormat: Text.RichText
+                                font.family: root.paneFontFamily
+                                font.pixelSize: root.paneFontSize
+                                verticalAlignment: Text.AlignVCenter
+                                clip: true
+                            }
                         }
                     }
                 }

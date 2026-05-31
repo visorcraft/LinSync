@@ -26,6 +26,7 @@ Controls.Pane {
     required property color activeDisabledText
     required property color activeHighlight
     required property color separatorColor
+    signal sessionUpdated(var context)
 
     property string leftPath: ""
     property string rightPath: ""
@@ -34,6 +35,11 @@ Controls.Pane {
     property string statusText: "Select left and right document paths, then run compare."
     property bool running: false
     property var lastResult: null
+    property int requestCounter: 0
+    property string activeRequestId: ""
+    property int progressCurrent: 0
+    property int progressTotal: 0
+    property string progressMessage: ""
 
     // ── Bridge helper ─────────────────────────────────────────────────────────
     function bridgeGet(path, onLoad) {
@@ -66,6 +72,11 @@ Controls.Pane {
         root.running = true;
         root.lastResult = null;
         root.statusText = "Extracting text and comparing…";
+        root.requestCounter += 1;
+        root.activeRequestId = "doc-" + root.requestCounter;
+        root.progressCurrent = 0;
+        root.progressTotal = 0;
+        root.progressMessage = "";
 
         const modeStr = modeCombo.currentText === "OCR Text" ? "ocr_text" : "text";
         const lang = ocrLangField.text.trim() || "eng";
@@ -73,22 +84,46 @@ Controls.Pane {
             + "?left=" + encodeURIComponent(root.leftPath)
             + "&right=" + encodeURIComponent(root.rightPath)
             + "&mode=" + modeStr
-            + "&ocr_language=" + encodeURIComponent(lang);
+            + "&ocr_language=" + encodeURIComponent(lang)
+            + "&request_id=" + encodeURIComponent(root.activeRequestId);
 
         root.bridgeGet(url, function (ok, data) {
             root.running = false;
+            root.activeRequestId = "";
             if (!ok || !data || data.error) {
                 const msg = data && data.error ? data.error : "Compare failed — check file paths and plugin availability.";
                 root.statusText = msg;
                 return;
             }
             root.lastResult = data;
+            if (data.session)
+                root.sessionUpdated(data);
             if (data.equal) {
                 root.statusText = "Documents are equal (extracted via " + data.left_extractor + ").";
             } else {
                 root.statusText = data.differing_lines + " differing lines (extracted via " + data.left_extractor + ").";
             }
         });
+    }
+
+    Timer {
+        id: progressTimer
+        interval: 200
+        repeat: true
+        running: root.running && root.activeRequestId !== ""
+        onTriggered: {
+            root.bridgeGet("/progress?id=" + encodeURIComponent(root.activeRequestId), function (ok, data) {
+                if (!ok || !data)
+                    return;
+                root.progressCurrent = data.current || 0;
+                root.progressTotal = data.total || 0;
+                root.progressMessage = data.message || "";
+                if (root.progressTotal > 0)
+                    root.statusText = qsTr("Comparing %1/%2").arg(root.progressCurrent).arg(root.progressTotal);
+                else if (root.progressMessage !== "")
+                    root.statusText = root.progressMessage;
+            });
+        }
     }
 
     // Reusable extracted-text pane: an accent-striped header bar plus a
@@ -241,6 +276,15 @@ Controls.Pane {
                 visible: root.running
                 Layout.preferredWidth: 28
                 Layout.preferredHeight: 28
+            }
+
+            Controls.ProgressBar {
+                visible: root.running && root.progressTotal > 0
+                from: 0
+                to: root.progressTotal
+                value: root.progressCurrent
+                Layout.preferredWidth: 120
+                Layout.preferredHeight: 16
             }
 
             Item { Layout.fillWidth: true }

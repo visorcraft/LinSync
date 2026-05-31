@@ -195,6 +195,7 @@ Controls.Pane {
     required property color activeDisabledText
     required property color activeHighlight
     required property color separatorColor
+    signal sessionUpdated(var context)
 
     property string leftPath: ""
     property string rightPath: ""
@@ -250,6 +251,8 @@ Controls.Pane {
                 return;
             }
             root.lastResult = data;
+            if (data.session)
+                root.sessionUpdated(data);
             root.overlayUri = data.overlay_path || "";
             if (data.equal) {
                 root.statusText = "Images are equal (" + data.total_pixels + " pixels).";

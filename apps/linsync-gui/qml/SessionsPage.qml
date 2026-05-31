@@ -60,6 +60,9 @@ Kirigami.ScrollablePage {
             case "Folder": return "folder"
             case "Table":  return "view-table"
             case "Hex":    return "format-text-code"
+            case "Image":  return "image-x-generic"
+            case "Document": return "x-office-document"
+            case "Webpage": return "internet-web-browser"
             default:       return "text-x-generic"
         }
     }

@@ -3,6 +3,8 @@
 
 use linsync_core::{Settings as CoreSettings, ThemePreference};
 
+const RESPONSE_SCHEMA_VERSION: u32 = 1;
+
 // ── Image compare bridge ──────────────────────────────────────────────────────
 
 /// Percent-decode a URL-encoded query string value.
@@ -45,6 +47,21 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
+fn json_with_schema(mut value: serde_json::Value) -> String {
+    if let Some(object) = value.as_object_mut() {
+        object
+            .entry("schema_version".to_owned())
+            .or_insert_with(|| serde_json::json!(RESPONSE_SCHEMA_VERSION));
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| {
+        format!(r#"{{"schema_version":{RESPONSE_SCHEMA_VERSION},"error":"serialization error"}}"#)
+    })
+}
+
+fn error_json(message: impl Into<String>) -> String {
+    json_with_schema(serde_json::json!({ "error": message.into() }))
+}
+
 fn image_query_param(query: &str, key: &str) -> Option<String> {
     for part in query.split('&') {
         if let Some((_k, v)) = part.split_once('=').filter(|(k, _)| *k == key) {
@@ -79,11 +96,11 @@ pub fn image_compare_bridge_response_with_profile(
 
     let left = match image_query_param(query, "left") {
         Some(v) => std::path::PathBuf::from(v),
-        None => return (r#"{"error":"missing 'left' parameter"}"#.to_owned(), None),
+        None => return (error_json("missing 'left' parameter"), None),
     };
     let right = match image_query_param(query, "right") {
         Some(v) => std::path::PathBuf::from(v),
-        None => return (r#"{"error":"missing 'right' parameter"}"#.to_owned(), None),
+        None => return (error_json("missing 'right' parameter"), None),
     };
     let mode_str = image_query_param(query, "mode");
     let want_overlay = image_query_param(query, "overlay")
@@ -117,13 +134,7 @@ pub fn image_compare_bridge_response_with_profile(
     let result = match compare_images(&left, &right, &opts) {
         Ok(r) => r,
         Err(e) => {
-            return (
-                format!(
-                    r#"{{"error":{}}}"#,
-                    serde_json::Value::String(e.to_string())
-                ),
-                None,
-            );
+            return (error_json(e.to_string()), None);
         }
     };
 
@@ -150,9 +161,7 @@ pub fn image_compare_bridge_response_with_profile(
         json["overlay_path"] = serde_json::Value::String(uri);
     }
 
-    let json_str = serde_json::to_string(&json)
-        .unwrap_or_else(|_| r#"{"error":"serialization error"}"#.to_owned());
-    (json_str, Some(result))
+    (json_with_schema(json), Some(result))
 }
 
 /// Generate an RGBA8 overlay PNG highlighting differing pixels and return a `file://` URI.
@@ -249,11 +258,11 @@ pub fn document_compare_bridge_response_with_profile(
 
     let left = match image_query_param(query, "left") {
         Some(v) => std::path::PathBuf::from(v),
-        None => return r#"{"error":"missing 'left' parameter"}"#.to_owned(),
+        None => return error_json("missing 'left' parameter"),
     };
     let right = match image_query_param(query, "right") {
         Some(v) => std::path::PathBuf::from(v),
-        None => return r#"{"error":"missing 'right' parameter"}"#.to_owned(),
+        None => return error_json("missing 'right' parameter"),
     };
     let mode_str = image_query_param(query, "mode");
     let opts = resolve_document_options(query, profile_options);
@@ -264,16 +273,12 @@ pub fn document_compare_bridge_response_with_profile(
     let result = match compare_document_files(&left, &right, &plugins_root, &opts) {
         Ok(r) => r,
         Err(DocumentCompareError::NoSuitablePlugin { path, mime_hint }) => {
-            return format!(
-                r#"{{"error":"no document plugin for '{}' (MIME: {})"}}"#,
-                path, mime_hint
-            );
+            return error_json(format!(
+                "no document plugin for '{path}' (MIME: {mime_hint})"
+            ));
         }
         Err(e) => {
-            return format!(
-                r#"{{"error":{}}}"#,
-                serde_json::Value::String(e.to_string())
-            );
+            return error_json(e.to_string());
         }
     };
 
@@ -313,7 +318,7 @@ pub fn document_compare_bridge_response_with_profile(
         json["right_text"] = serde_json::Value::String(rt.clone());
     }
 
-    serde_json::to_string(&json).unwrap_or_else(|_| r#"{"error":"serialization error"}"#.to_owned())
+    json_with_schema(json)
 }
 
 /// Return the directory where LinSync plugins are installed.
@@ -636,7 +641,11 @@ pub mod test_support {
             urlencoding::encode(ocr_language),
         );
         let body = super::document_compare_bridge_response(&query);
-        if body.starts_with(r#"{"error":"#) {
+        if serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|value| value.get("error").cloned())
+            .is_some()
+        {
             Err(body)
         } else {
             Ok(body)
@@ -663,8 +672,11 @@ pub mod test_support {
             overlay,
         );
         let body = super::image_compare_bridge_response(&query).0;
-        // If the body starts with {"error":, treat it as an Err.
-        if body.starts_with(r#"{"error":"#) {
+        if serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|value| value.get("error").cloned())
+            .is_some()
+        {
             Err(body)
         } else {
             Ok(body)
@@ -775,11 +787,11 @@ pub fn webpage_compare_bridge_response_with_profile(
 ) -> String {
     let left = match image_query_param(query, "left") {
         Some(v) => v,
-        None => return r#"{"error":"missing 'left' parameter"}"#.to_owned(),
+        None => return error_json("missing 'left' parameter"),
     };
     let right = match image_query_param(query, "right") {
         Some(v) => v,
-        None => return r#"{"error":"missing 'right' parameter"}"#.to_owned(),
+        None => return error_json("missing 'right' parameter"),
     };
     let mode = image_query_param(query, "mode").unwrap_or_else(|| "html".to_owned());
     let cache_dir = &paths.cache_dir;
@@ -791,7 +803,7 @@ pub fn webpage_compare_bridge_response_with_profile(
         "text" => linsync_core::compare_webpage_extracted_text(&left, &right, &options, cache_dir),
         "tree" => linsync_core::compare_webpage_resource_tree(&left, &right, &options, cache_dir),
         other => {
-            return serde_json::json!({"error": format!("unsupported mode: {other}")}).to_string();
+            return error_json(format!("unsupported mode: {other}"));
         }
     };
 
@@ -828,16 +840,16 @@ pub fn webpage_compare_bridge_response_with_profile(
                     })
                 })
                 .collect();
-            serde_json::json!({
+            json_with_schema(serde_json::json!({
                 "summary": summary,
                 "equal": equal,
                 "truncated": truncated,
                 "rows": rows,
-            })
-            .to_string()
+            }))
         }
         Ok(linsync_core::WebpageCompareResult::Folder(cmp)) => {
-            let summary = if cmp.is_equal() {
+            let equal = cmp.is_equal();
+            let summary = if equal {
                 "identical".to_owned()
             } else {
                 format!(
@@ -847,7 +859,7 @@ pub fn webpage_compare_bridge_response_with_profile(
                     cmp.summary.different_count
                 )
             };
-            serde_json::json!({"summary": summary}).to_string()
+            json_with_schema(serde_json::json!({"summary": summary, "equal": equal}))
         }
         #[cfg(feature = "web-engine")]
         Ok(linsync_core::WebpageCompareResult::Rendered(r)) => {
@@ -856,20 +868,20 @@ pub fn webpage_compare_bridge_response_with_profile(
             } else {
                 "different".to_owned()
             };
-            serde_json::json!({"summary": summary}).to_string()
+            json_with_schema(serde_json::json!({"summary": summary}))
         }
         #[cfg(feature = "web-engine")]
         Ok(linsync_core::WebpageCompareResult::Screenshot(_)) => {
-            serde_json::json!({"summary": "screenshot captured"}).to_string()
+            json_with_schema(serde_json::json!({"summary": "screenshot captured"}))
         }
-        Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        Err(e) => error_json(e.to_string()),
     }
 }
 
 /// Handle `/compare/webpage/clear-cache` — remove webcompare cache.
 pub fn webpage_clear_cache_bridge_response(paths: &linsync_core::AppPaths) -> String {
     match linsync_core::clear_webcompare_cache(&paths.cache_dir) {
-        Ok(()) => r#"{"ok":true}"#.to_owned(),
-        Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        Ok(()) => json_with_schema(serde_json::json!({"ok": true})),
+        Err(e) => error_json(e.to_string()),
     }
 }

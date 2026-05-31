@@ -30,6 +30,7 @@ Controls.Pane {
     required property color activeDisabledText
     required property color activeHighlight
     required property color separatorColor
+    signal sessionUpdated(var context)
 
     // ── Internal state ────────────────────────────────────────────────────────
     property string leftUrl: ""
@@ -47,6 +48,11 @@ Controls.Pane {
     property var rightDiffRows: []
     property var diffRowIndexes: []    // row indexes that differ (for the ruler)
     property bool _syncingScroll: false
+    property int requestCounter: 0
+    property string activeRequestId: ""
+    property int progressCurrent: 0
+    property int progressTotal: 0
+    property string progressMessage: ""
 
     // Per-row diff tints over the page background (left=red, right=green,
     // changed=amber); "equal" rows are absent → transparent.
@@ -108,11 +114,17 @@ Controls.Pane {
         root.resultEqual = false;
         root.resultTruncated = false;
         root.resultError = false;
+        root.requestCounter += 1;
+        root.activeRequestId = "web-" + root.requestCounter;
+        root.progressCurrent = 0;
+        root.progressTotal = 0;
+        root.progressMessage = "";
         const left = encodeURIComponent(root.leftUrl);
         const right = encodeURIComponent(root.rightUrl);
         const mode = encodeURIComponent(root.subMode);
-        root.bridgeGet("/compare/webpage?left=" + left + "&right=" + right + "&mode=" + mode, function (ok, payload) {
+        root.bridgeGet("/compare/webpage?left=" + left + "&right=" + right + "&mode=" + mode + "&request_id=" + encodeURIComponent(root.activeRequestId), function (ok, payload) {
             root.busy = false;
+            root.activeRequestId = "";
             if (!ok || !payload) {
                 root.resultError = true;
                 root.resultSummary = qsTr("Error: bridge request failed");
@@ -127,8 +139,30 @@ Controls.Pane {
             root.resultEqual = payload.equal === true;
             root.resultTruncated = payload.truncated === true;
             root.resultRows = payload.rows ?? [];
+            if (payload.session)
+                root.sessionUpdated(payload);
             root.rebuildDiffRows();
         });
+    }
+
+    Timer {
+        id: progressTimer
+        interval: 200
+        repeat: true
+        running: root.busy && root.activeRequestId !== ""
+        onTriggered: {
+            root.bridgeGet("/progress?id=" + encodeURIComponent(root.activeRequestId), function (ok, data) {
+                if (!ok || !data)
+                    return;
+                root.progressCurrent = data.current || 0;
+                root.progressTotal = data.total || 0;
+                root.progressMessage = data.message || "";
+                if (root.progressTotal > 0)
+                    root.resultSummary = qsTr("Comparing %1/%2").arg(root.progressCurrent).arg(root.progressTotal);
+                else if (root.progressMessage !== "")
+                    root.resultSummary = root.progressMessage;
+            });
+        }
     }
 
     function clearCache() {
@@ -283,6 +317,15 @@ Controls.Pane {
                         visible: root.busy
                         Layout.preferredWidth: 24
                         Layout.preferredHeight: 24
+                    }
+
+                    Controls.ProgressBar {
+                        visible: root.busy && root.progressTotal > 0
+                        from: 0
+                        to: root.progressTotal
+                        value: root.progressCurrent
+                        Layout.preferredWidth: 120
+                        Layout.preferredHeight: 16
                     }
                 }
             }
