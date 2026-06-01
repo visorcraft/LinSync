@@ -94,7 +94,7 @@ pub use text::{
     LineEnding, MergeAction, MergeConflict, MoveDirection, SavePlan, SyntaxSpan, TextBookmark,
     TextCompareOptions, TextCompareResult, TextDocument, TextEncoding, TextFindMatch,
     TextFindOptions, TextInputEncoding, TextRegexRuleSet, TextRenderMode, TextSubstitution,
-    TextSyntaxMode, TextViewRow, builtin_text_regex_rule_sets, compare_documents,
+    TextSyntaxMode, TextViewPage, TextViewRow, builtin_text_regex_rule_sets, compare_documents,
     compare_documents_cancellable, compare_text, compare_text_files,
     compare_text_files_cancellable, compare_text_files_with_prediffer,
     compare_text_files_with_prediffer_chain, text_regex_rule_set,

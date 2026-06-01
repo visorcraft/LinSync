@@ -206,6 +206,16 @@ pub struct SyntaxSpan {
     pub class: String,
 }
 
+/// A page of diff view rows produced by
+/// [`TextCompareResult::view_rows_window`]: the rows in the requested window,
+/// the clamped `offset` actually used, and the total row count for pagination.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextViewPage {
+    pub total_rows: usize,
+    pub offset: usize,
+    pub rows: Vec<TextViewRow>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextViewRow {
     pub index: usize,
@@ -501,6 +511,91 @@ impl TextCompareResult {
         }
 
         rows
+    }
+
+    /// Like [`view_rows`](Self::view_rows) but materializes only the rows in the
+    /// window `[offset, offset + limit)`, reporting the total row count so a UI
+    /// (or any client) can paginate a large diff without building every row.
+    ///
+    /// The expensive per-row work (syntax highlighting, find-match marking) runs
+    /// only for the windowed rows; rows outside it are enumerated cheaply for
+    /// counting and indexing. The returned rows are byte-for-byte identical to
+    /// the matching slice of `view_rows`, including each row's display `index`.
+    pub fn view_rows_window(
+        &self,
+        options: &TextCompareOptions,
+        offset: usize,
+        limit: usize,
+    ) -> TextViewPage {
+        // A cheap structural slot for each display row: either a folded gap of
+        // `n` equal lines, or a real diff line at `source_index`.
+        enum Slot {
+            Fold(usize),
+            Line(usize),
+        }
+
+        let visible = visible_line_ranges(&self.lines, options);
+        let mut slots: Vec<Slot> = Vec::new();
+        let mut previous_end = 0;
+        for range in visible {
+            if range.start > previous_end && !options.show_only_changes {
+                slots.push(Slot::Fold(range.start - previous_end));
+            }
+            for source_index in range.start..range.end {
+                slots.push(Slot::Line(source_index));
+            }
+            previous_end = range.end;
+        }
+        if previous_end < self.lines.len() && !options.show_only_changes {
+            slots.push(Slot::Fold(self.lines.len() - previous_end));
+        }
+
+        let total_rows = slots.len();
+        let start = offset.min(total_rows);
+        let end = start.saturating_add(limit).min(total_rows);
+
+        if start >= end {
+            return TextViewPage {
+                total_rows,
+                offset: start,
+                rows: Vec::new(),
+            };
+        }
+
+        // Find matches and syntax mode are needed identically to `view_rows`,
+        // but only when the window actually yields rows.
+        let find_matches = options
+            .find
+            .as_ref()
+            .and_then(|find| self.find_matches(find).ok())
+            .unwrap_or_default();
+        let syntax_mode = resolved_syntax_mode(
+            options.syntax_mode,
+            self.left_document.path.as_deref(),
+            self.right_document.path.as_deref(),
+        );
+
+        let mut rows = Vec::with_capacity(end - start);
+        for (display_index, slot) in slots.iter().enumerate().take(end).skip(start) {
+            match slot {
+                Slot::Fold(count) => rows.push(fold_row(display_index, *count)),
+                Slot::Line(source_index) => rows.push(view_row_for_line(
+                    display_index,
+                    *source_index,
+                    &self.lines[*source_index],
+                    self,
+                    syntax_mode,
+                    &find_matches,
+                    &options.bookmarks,
+                )),
+            }
+        }
+
+        TextViewPage {
+            total_rows,
+            offset: start,
+            rows,
+        }
     }
 
     pub fn find_matches(&self, find: &TextFindOptions) -> Result<Vec<TextFindMatch>, regex::Error> {
@@ -3441,6 +3536,45 @@ mod tests {
 
         assert!(rows.iter().any(|row| row.folded_count == Some(2)));
         assert!(rows.iter().any(|row| row.state == "changed"));
+    }
+
+    #[test]
+    fn view_rows_window_matches_full_view_slice() {
+        // 40 lines with a single change in the middle, context 2, so the
+        // full view has folds around the change.
+        let left = (1..=40)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut right_lines: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
+        right_lines[19] = "line 20 CHANGED".to_string();
+        let right = right_lines.join("\n");
+        let opts = TextCompareOptions {
+            context_lines: Some(2),
+            ..TextCompareOptions::default()
+        };
+        let result = compare_text("L", &left, "R", &right, &opts);
+        let full = result.view_rows(&opts);
+        let total = full.len();
+        assert!(total >= 3, "fixture should yield several rows, got {total}");
+
+        // A full-width window reproduces the entire view exactly.
+        let all = result.view_rows_window(&opts, 0, total);
+        assert_eq!(all.total_rows, total);
+        assert_eq!(all.offset, 0);
+        assert_eq!(all.rows, full, "full window must equal view_rows");
+
+        // An interior window equals the matching slice, indices included.
+        let win = result.view_rows_window(&opts, 1, 2);
+        let hi = (1 + 2).min(total);
+        assert_eq!(win.total_rows, total);
+        assert_eq!(win.offset, 1);
+        assert_eq!(win.rows, full[1..hi]);
+
+        // Offset past the end clamps to an empty, terminal page.
+        let beyond = result.view_rows_window(&opts, total + 10, 5);
+        assert_eq!(beyond.offset, total);
+        assert!(beyond.rows.is_empty());
     }
 
     #[test]
