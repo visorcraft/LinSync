@@ -3129,6 +3129,7 @@ fn bridge_response_with_token(
         "/plugins/options/get" => plugins_options_get_bridge_response(query, paths),
         "/plugins/options/set" => plugins_options_set_bridge_response(query, paths),
         "/plugins/diagnostic" => plugins_diagnostic_bridge_response(query, paths),
+        "/folder/query" => folder_query_bridge_response(query),
         "/folder/op/plan" => folder_op_plan_bridge_response(query, paths, state),
         "/folder/op/execute" => folder_op_execute_bridge_response(query, paths, state),
         "/merge/conflicts" => merge_conflicts_bridge_response(state),
@@ -4225,6 +4226,80 @@ fn bookmark_set_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>)
         Ok(body) => http_response(200, "OK", "application/json", body.into_bytes()),
         Err(err) => bridge_error(500, "Internal Server Error", &err.to_string()),
     }
+}
+
+/// Build a core `FolderQuery` from `/folder/query` request parameters
+/// (`search`, `types`, `offset`, `limit`).
+fn folder_query_from_params(params: &[(String, String)]) -> linsync_core::FolderQuery {
+    let mut query = linsync_core::FolderQuery::default();
+    if let Some(search) = query_value(params, "search")
+        && !search.is_empty()
+    {
+        query.search = Some(search.to_owned());
+    }
+    if let Some(types) = query_value(params, "types") {
+        let mut filter = linsync_core::FolderTypeFilter {
+            files: false,
+            directories: false,
+            symlinks: false,
+            special: false,
+        };
+        for token in types.split(',') {
+            match token.trim() {
+                "file" | "files" => filter.files = true,
+                "dir" | "directory" | "directories" => filter.directories = true,
+                "symlink" | "symlinks" | "link" => filter.symlinks = true,
+                "special" => filter.special = true,
+                _ => {}
+            }
+        }
+        if filter.files || filter.directories || filter.symlinks || filter.special {
+            query.types = filter;
+        }
+    }
+    if let Some(offset) = query_value(params, "offset").and_then(|v| v.parse::<usize>().ok()) {
+        query.offset = offset;
+    }
+    if let Some(limit) = query_value(params, "limit").and_then(|v| v.parse::<usize>().ok()) {
+        query.limit = Some(limit);
+    }
+    query
+}
+
+/// `/folder/query?left=&right=&search=&types=&offset=&limit=` — compare two
+/// folders and return the entries filtered/paged through the core `FolderQuery`,
+/// so the GUI folder table can search + type-filter + paginate via the core API.
+fn folder_query_bridge_response(query: &str) -> Vec<u8> {
+    let params = query_params(query);
+    let (Some(left), Some(right)) = (query_value(&params, "left"), query_value(&params, "right"))
+    else {
+        return bridge_error(400, "Bad Request", "missing left or right path");
+    };
+    let result = match compare_folders(
+        Path::new(left),
+        Path::new(right),
+        &FolderCompareOptions::default(),
+    ) {
+        Ok(result) => result,
+        Err(err) => return bridge_error(500, "Internal Server Error", &err.to_string()),
+    };
+    let folder_query = folder_query_from_params(&params);
+    let page = result.query(&folder_query);
+    let filtered: Vec<FolderEntryDiff> = page
+        .groups
+        .iter()
+        .flat_map(|group| group.entries.iter().map(|entry| (*entry).clone()))
+        .collect();
+    let entries = folder_entries_for_gui(&filtered);
+    let body = serde_json::json!({
+        "entries": entries,
+        "totalMatched": page.total_matched,
+        "offset": page.offset,
+        "returned": page.returned,
+        "hasMore": page.has_more,
+    })
+    .to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
 }
 
 fn folder_open_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
@@ -6720,6 +6795,49 @@ mod tests {
             body["sandbox"]["confined"].is_boolean(),
             "plugins/list should report whether plugin helpers run confined: {body}"
         );
+    }
+
+    #[test]
+    fn folder_query_filters_and_paginates() {
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let left = fixture_root.join("tests/fixtures/folders/left");
+        let right = fixture_root.join("tests/fixtures/folders/right");
+        let paths = test_app_paths("folder-query");
+        let state = test_bridge_state(None);
+
+        // Unpaged: capture the full match count.
+        let all = json_response_body(
+            &String::from_utf8(bridge_response(
+                &format!(
+                    "GET /folder/query?left={}&right={} HTTP/1.1\r\n",
+                    urlencoding::encode(left.to_str().unwrap()),
+                    urlencoding::encode(right.to_str().unwrap())
+                ),
+                &paths,
+                &state,
+            ))
+            .expect("utf-8"),
+        );
+        let total = all["totalMatched"].as_u64().expect("totalMatched present");
+        assert!(total > 1, "fixture folders should yield several entries");
+        assert_eq!(all["hasMore"], serde_json::json!(false));
+
+        // limit=1 returns a single entry and reports more remain.
+        let page = json_response_body(
+            &String::from_utf8(bridge_response(
+                &format!(
+                    "GET /folder/query?left={}&right={}&limit=1 HTTP/1.1\r\n",
+                    urlencoding::encode(left.to_str().unwrap()),
+                    urlencoding::encode(right.to_str().unwrap())
+                ),
+                &paths,
+                &state,
+            ))
+            .expect("utf-8"),
+        );
+        assert_eq!(page["totalMatched"].as_u64(), Some(total));
+        assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(page["hasMore"], serde_json::json!(true));
     }
 
     #[test]
