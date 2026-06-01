@@ -5,8 +5,9 @@ use std::time::Duration;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 
 use linsync_core::{
-    BinaryCompareOptions, TableCompareOptions, TextCompareOptions, TextDocument, compare_binary,
-    compare_documents, compare_tables, compare_text,
+    BinaryCompareOptions, CompareMethod, FolderCompareOptions, TableCompareOptions,
+    TextCompareOptions, TextDocument, compare_binary, compare_documents, compare_folders,
+    compare_tables, compare_text,
 };
 use linsync_core::{
     CURRENT_PLUGIN_SCHEMA_VERSION, PluginClass, PluginError, PluginExecutionOptions,
@@ -259,6 +260,82 @@ fn table_compare(c: &mut Criterion) {
             ..TableCompareOptions::default()
         };
         b.iter(|| compare_tables("left", &left, "right", &right, &opts));
+    });
+
+    group.finish();
+}
+
+struct FolderTreeFixture {
+    _dir: tempfile::TempDir,
+    left: PathBuf,
+    right: PathBuf,
+}
+
+impl FolderTreeFixture {
+    fn new(dir_count: usize, files_per_dir: usize) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let left = dir.path().join("left");
+        let right = dir.path().join("right");
+        fs::create_dir_all(&left).unwrap();
+        fs::create_dir_all(&right).unwrap();
+
+        for dir_index in 0..dir_count {
+            let relative_dir = PathBuf::from(format!("group_{:02}", dir_index % 32))
+                .join(format!("leaf_{dir_index:04}"));
+            let left_dir = left.join(&relative_dir);
+            let right_dir = right.join(&relative_dir);
+            fs::create_dir_all(&left_dir).unwrap();
+            fs::create_dir_all(&right_dir).unwrap();
+
+            for file_index in 0..files_per_dir {
+                let filename = format!("file_{file_index:02}.txt");
+                let content = format!("folder benchmark {dir_index}:{file_index}\n");
+                let right_content = if file_index == 0 && dir_index % 17 == 0 {
+                    format!("folder benchmark changed {dir_index}:{file_index}\n")
+                } else {
+                    content.clone()
+                };
+
+                fs::write(left_dir.join(&filename), &content).unwrap();
+                fs::write(right_dir.join(&filename), right_content).unwrap();
+            }
+
+            if dir_index % 53 == 0 {
+                fs::write(left_dir.join("left_only.txt"), "left only\n").unwrap();
+            }
+
+            if dir_index % 59 == 0 {
+                fs::write(right_dir.join("right_only.txt"), "right only\n").unwrap();
+            }
+        }
+
+        Self {
+            _dir: dir,
+            left,
+            right,
+        }
+    }
+}
+
+fn folder_tree_compare(c: &mut Criterion) {
+    let fixture = FolderTreeFixture::new(512, 8);
+    let mut group = c.benchmark_group("folder_tree_compare");
+    group.sample_size(10);
+
+    group.bench_function("huge_tree_existence_4096_files", |b| {
+        let opts = FolderCompareOptions {
+            compare_method: CompareMethod::Existence,
+            ..FolderCompareOptions::default()
+        };
+        b.iter(|| compare_folders(&fixture.left, &fixture.right, &opts).unwrap());
+    });
+
+    group.bench_function("huge_tree_binary_contents_4096_files", |b| {
+        let opts = FolderCompareOptions {
+            compare_method: CompareMethod::BinaryContents,
+            ..FolderCompareOptions::default()
+        };
+        b.iter(|| compare_folders(&fixture.left, &fixture.right, &opts).unwrap());
     });
 
     group.finish();
@@ -528,6 +605,7 @@ criterion_group!(
     text_compare_options,
     binary_compare,
     table_compare,
+    folder_tree_compare,
     plugin_startup_timeout,
     image_compare,
 );
@@ -541,6 +619,7 @@ criterion_group!(
     text_compare_options,
     binary_compare,
     table_compare,
+    folder_tree_compare,
     plugin_startup_timeout,
 );
 
