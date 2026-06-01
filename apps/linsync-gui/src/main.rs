@@ -2937,7 +2937,7 @@ fn start_bridge_server(
     if let Ok(s) = state.lock()
         && let Ok(mut pe) = s.plugin_enabled.lock()
     {
-        *pe = load_plugin_enabled_map(&paths);
+        *pe = linsync_core::load_plugin_enabled_map(&paths);
     }
 
     // Clear a stale active-profile pointer once at startup (e.g. a user profile
@@ -5001,14 +5001,6 @@ fn split_csv_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn load_plugin_enabled_map(paths: &AppPaths) -> std::collections::HashMap<String, bool> {
-    let file = paths.plugins_enabled_file();
-    let Ok(text) = fs::read_to_string(&file) else {
-        return Default::default();
-    };
-    serde_json::from_str(&text).unwrap_or_default()
-}
-
 fn plugins_list_bridge_response(
     paths: &AppPaths,
     plugin_enabled: &Arc<Mutex<HashMap<String, bool>>>,
@@ -5085,61 +5077,12 @@ fn plugins_toggle_bridge_response(
     }
 }
 
-/// Whether a client-supplied plugin id is safe to use as a filename component.
-///
-/// The id is interpolated into `<plugin-options-dir>/{id}.json`, so without
-/// this guard a `/`-bearing id would let `/plugins/options/{get,set}` read or
-/// write arbitrary `*.json` paths. Mirrors `linsync-core`'s stable-id rule
-/// (alphanumeric plus `. _ -`) and additionally rejects `.`/`..`.
-fn is_safe_plugin_id(id: &str) -> bool {
-    !id.is_empty()
-        && id != "."
-        && id != ".."
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-}
-
-/// Load the per-plugin options JSON map for `plugin_id`.  Returns an empty map
-/// if no file exists yet.
-fn load_plugin_options(
-    paths: &AppPaths,
-    plugin_id: &str,
-) -> serde_json::Map<String, serde_json::Value> {
-    let file = paths.plugin_options_file(plugin_id);
-    let Ok(text) = fs::read_to_string(&file) else {
-        return serde_json::Map::new();
-    };
-    serde_json::from_str(&text).unwrap_or_default()
-}
-
-/// Persist a single option key for `plugin_id`.
-fn save_plugin_option(
-    paths: &AppPaths,
-    plugin_id: &str,
-    key: &str,
-    raw_value: &str,
-) -> std::io::Result<()> {
-    let dir = paths.plugin_options_dir();
-    fs::create_dir_all(&dir)?;
-    let file = paths.plugin_options_file(plugin_id);
-    let mut map = load_plugin_options(paths, plugin_id);
-    // Parse the incoming value as JSON; fall back to treating it as a plain
-    // string so callers can pass un-quoted values for convenience.
-    let value: serde_json::Value = serde_json::from_str(raw_value)
-        .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_owned()));
-    map.insert(key.to_owned(), value);
-    let text = serde_json::to_string_pretty(&map)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    fs::write(&file, text)
-}
-
 fn plugins_options_get_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
     let params = query_params(query);
     let Some(id) = query_value(&params, "id") else {
         return bridge_error(400, "Bad Request", "missing plugin id");
     };
-    if !is_safe_plugin_id(id) {
+    if !linsync_core::is_stable_plugin_id(id) {
         return bridge_error(400, "Bad Request", "invalid plugin id");
     }
 
@@ -5166,7 +5109,7 @@ fn plugins_options_get_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8>
         })
         .unwrap_or_default();
 
-    let values = load_plugin_options(paths, id);
+    let values = linsync_core::load_plugin_options(paths, id);
     let body = serde_json::json!({
         "schema": schema,
         "values": values,
@@ -5180,18 +5123,23 @@ fn plugins_options_set_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8>
     let Some(id) = query_value(&params, "id") else {
         return bridge_error(400, "Bad Request", "missing plugin id");
     };
-    if !is_safe_plugin_id(id) {
+    if !linsync_core::is_stable_plugin_id(id) {
         return bridge_error(400, "Bad Request", "invalid plugin id");
     }
     let Some(key) = query_value(&params, "key") else {
         return bridge_error(400, "Bad Request", "missing option key");
     };
-    let Some(value) = query_value(&params, "value") else {
+    let Some(raw) = query_value(&params, "value") else {
         return bridge_error(400, "Bad Request", "missing option value");
     };
 
-    match save_plugin_option(paths, id, key, value) {
-        Ok(()) => {
+    // Parse the value as JSON so `true`/`7`/`"x"` get the right type; fall back
+    // to a plain string. The core store validates it against the plugin's
+    // manifest schema before persisting.
+    let value: serde_json::Value =
+        serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_owned()));
+    match linsync_core::set_plugin_option(paths, id, key, value) {
+        Ok(_) => {
             let body = serde_json::json!({ "ok": true }).to_string();
             http_response(200, "OK", "application/json", body.into_bytes())
         }
@@ -6185,16 +6133,19 @@ mod tests {
 
     #[test]
     fn plugin_id_guard_blocks_path_traversal() {
-        assert!(is_safe_plugin_id("tesseract-ocr"));
-        assert!(is_safe_plugin_id("com.example.plugin_v2"));
+        // The bridge guards /plugins/options/{get,set} ids with the core's
+        // stable-id rule.
+        use linsync_core::is_stable_plugin_id as safe;
+        assert!(safe("tesseract-ocr"));
+        assert!(safe("com.example.plugin_v2"));
         // Anything that could escape `<options-dir>/{id}.json` is rejected.
-        assert!(!is_safe_plugin_id(""));
-        assert!(!is_safe_plugin_id("."));
-        assert!(!is_safe_plugin_id(".."));
-        assert!(!is_safe_plugin_id("../../etc/cron.d/evil"));
-        assert!(!is_safe_plugin_id("a/b"));
-        assert!(!is_safe_plugin_id("a\\b"));
-        assert!(!is_safe_plugin_id("with space"));
+        assert!(!safe(""));
+        assert!(!safe("."));
+        assert!(!safe(".."));
+        assert!(!safe("../../etc/cron.d/evil"));
+        assert!(!safe("a/b"));
+        assert!(!safe("a\\b"));
+        assert!(!safe("with space"));
     }
 
     fn test_app_paths(name: &str) -> AppPaths {
