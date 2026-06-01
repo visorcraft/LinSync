@@ -13,9 +13,10 @@ use linsync_core::{
     SymlinkPolicy, TableCellState, TableCompareOptions, TextBookmark, TextCompareOptions,
     TextDocument, TextFindOptions, TextInputEncoding, TextRenderMode, TextSubstitution,
     TextSyntaxMode, ThreeWayConflict, ThreeWayMergeState, assess_operation_risks, builtin_profiles,
-    builtin_text_regex_rule_sets, compare_binary_files, compare_folders, compare_table_files,
-    compare_text, compare_text_files, find_builtin, is_likely_binary, merge_three_way,
-    parse_conflict_markers, plan_folder_operation,
+    builtin_text_regex_rule_sets, clear_plugin_option, compare_binary_files, compare_folders,
+    compare_table_files, compare_text, compare_text_files, discover_installed_plugins,
+    find_builtin, is_likely_binary, load_plugin_enabled_map, load_plugin_options, merge_three_way,
+    parse_conflict_markers, plan_folder_operation, set_plugin_enabled, set_plugin_option,
 };
 
 fn main() -> ExitCode {
@@ -49,6 +50,7 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
         "open-external" => open_external_command(&args[1..]),
         "patch" => patch_command(&args[1..]),
         "profile" => profile_command(&args[1..]),
+        "plugin" | "plugins" => plugin_command(&args[1..]),
         "reveal" => reveal_command(&args[1..]),
         "report" => report_command(&args[1..]),
         "self-compare" => self_compare_command(&args[1..]),
@@ -82,6 +84,7 @@ const CLI_COMMANDS: &[&str] = &[
     "mergetool",
     "open-external",
     "patch",
+    "plugin",
     "profile",
     "reveal",
     "report",
@@ -1380,6 +1383,229 @@ fn extract_archive(
 }
 
 // ── Profile management ───────────────────────────────────────────────────────
+
+fn plugin_command(args: &[String]) -> Result<ExitCode, String> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        eprintln!(
+            "usage: linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY>"
+        );
+        return Ok(ExitCode::from(2));
+    };
+    let paths = AppPaths::from_env();
+    let rest = &args[1..];
+    let wants_json = rest.iter().any(|arg| arg == "--json");
+    let first_positional = rest.iter().find(|arg| !arg.starts_with("--"));
+    match subcommand {
+        "list" => plugin_list(&paths, wants_json),
+        "inspect" | "show" => {
+            let Some(id) = first_positional else {
+                return Err("usage: linsync-cli plugin inspect ID [--json]".to_owned());
+            };
+            plugin_inspect(&paths, id, wants_json)
+        }
+        "validate" => {
+            let Some(id) = first_positional else {
+                return Err("usage: linsync-cli plugin validate ID".to_owned());
+            };
+            plugin_validate(&paths, id)
+        }
+        "enable" | "disable" => {
+            let Some(id) = first_positional else {
+                return Err(format!("usage: linsync-cli plugin {subcommand} ID"));
+            };
+            let enabled = subcommand == "enable";
+            set_plugin_enabled(&paths, id, enabled).map_err(|err| err.to_string())?;
+            println!(
+                "{} plugin '{id}'",
+                if enabled { "enabled" } else { "disabled" }
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        "set-option" => {
+            let (Some(id), Some(key), Some(raw)) = (rest.first(), rest.get(1), rest.get(2)) else {
+                return Err("usage: linsync-cli plugin set-option ID KEY VALUE".to_owned());
+            };
+            // Parse VALUE as JSON so `true`/`7`/`"x"` get the right type; fall
+            // back to a plain string for un-quoted convenience.
+            let value: serde_json::Value = serde_json::from_str(raw)
+                .unwrap_or_else(|_| serde_json::Value::String(raw.to_owned()));
+            set_plugin_option(&paths, id, key, value).map_err(|err| err.to_string())?;
+            println!("set option '{key}' for plugin '{id}'");
+            Ok(ExitCode::SUCCESS)
+        }
+        "clear-option" => {
+            let (Some(id), Some(key)) = (rest.first(), rest.get(1)) else {
+                return Err("usage: linsync-cli plugin clear-option ID KEY".to_owned());
+            };
+            clear_plugin_option(&paths, id, key).map_err(|err| err.to_string())?;
+            println!("cleared option '{key}' for plugin '{id}'");
+            Ok(ExitCode::SUCCESS)
+        }
+        other => Err(format!(
+            "unknown plugin subcommand '{other}'; expected list, inspect, validate, enable, disable, set-option, or clear-option"
+        )),
+    }
+}
+
+fn plugin_class_names(classes: &[linsync_core::PluginClass]) -> Vec<String> {
+    classes.iter().map(|c| format!("{c:?}")).collect()
+}
+
+fn plugin_list(paths: &AppPaths, as_json: bool) -> Result<ExitCode, String> {
+    let discovery = discover_installed_plugins(paths);
+    let enabled = load_plugin_enabled_map(paths);
+    if as_json {
+        let plugins: Vec<serde_json::Value> = discovery
+            .plugins
+            .iter()
+            .map(|p| {
+                let m = &p.manifest;
+                serde_json::json!({
+                    "id": m.id,
+                    "name": m.name,
+                    "version": m.version,
+                    "classes": plugin_class_names(&m.classes),
+                    "enabled": enabled.get(&m.id).copied().unwrap_or(true),
+                    "has_options": !m.options_schema.is_empty(),
+                })
+            })
+            .collect();
+        let errors: Vec<serde_json::Value> = discovery
+            .errors
+            .iter()
+            .map(
+                |e| serde_json::json!({"path": e.path.display().to_string(), "message": e.message}),
+            )
+            .collect();
+        let body = serde_json::json!({ "plugins": plugins, "errors": errors });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?
+        );
+    } else {
+        if discovery.plugins.is_empty() {
+            println!("No plugins discovered.");
+        }
+        for p in &discovery.plugins {
+            let m = &p.manifest;
+            let state = if enabled.get(&m.id).copied().unwrap_or(true) {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            let opts = if m.options_schema.is_empty() {
+                ""
+            } else {
+                " [options]"
+            };
+            println!(
+                "{}\t{}\t{}{}",
+                m.id,
+                state,
+                plugin_class_names(&m.classes).join(","),
+                opts
+            );
+        }
+        for e in &discovery.errors {
+            eprintln!("error: {}: {}", e.path.display(), e.message);
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn plugin_inspect(paths: &AppPaths, id: &str, as_json: bool) -> Result<ExitCode, String> {
+    let discovery = discover_installed_plugins(paths);
+    let plugin = discovery
+        .plugins
+        .iter()
+        .find(|p| p.manifest.id == id)
+        .ok_or_else(|| format!("no installed plugin with id '{id}'"))?;
+    let m = &plugin.manifest;
+    let enabled = load_plugin_enabled_map(paths)
+        .get(id)
+        .copied()
+        .unwrap_or(true);
+    let values = load_plugin_options(paths, id);
+    if as_json {
+        let schema: Vec<serde_json::Value> = m
+            .options_schema
+            .iter()
+            .map(|o| {
+                serde_json::json!({
+                    "key": o.key,
+                    "label": o.label,
+                    "kind": format!("{:?}", o.kind).to_lowercase(),
+                    "default": o.default,
+                    "choices": o.choices,
+                })
+            })
+            .collect();
+        let body = serde_json::json!({
+            "id": m.id,
+            "name": m.name,
+            "version": m.version,
+            "license": m.license,
+            "classes": plugin_class_names(&m.classes),
+            "enabled": enabled,
+            "root": plugin.root.display().to_string(),
+            "options_schema": schema,
+            "values": values,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!("id:       {}", m.id);
+        println!("name:     {}", m.name);
+        println!("version:  {}", m.version);
+        println!("license:  {}", m.license);
+        println!("classes:  {}", plugin_class_names(&m.classes).join(", "));
+        println!("enabled:  {enabled}");
+        println!("root:     {}", plugin.root.display());
+        if m.options_schema.is_empty() {
+            println!("options:  (none)");
+        } else {
+            println!("options:");
+            for o in &m.options_schema {
+                let current = values
+                    .get(&o.key)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "<unset>".to_owned());
+                let choices = if o.choices.is_empty() {
+                    String::new()
+                } else {
+                    format!(" choices=[{}]", o.choices.join(","))
+                };
+                println!("  {} ({:?}){}  current={current}", o.key, o.kind, choices);
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn plugin_validate(paths: &AppPaths, id: &str) -> Result<ExitCode, String> {
+    let discovery = discover_installed_plugins(paths);
+    let plugin = discovery
+        .plugins
+        .iter()
+        .find(|p| p.manifest.id == id)
+        .ok_or_else(|| format!("no installed plugin with id '{id}'"))?;
+    let values = load_plugin_options(paths, id);
+    match plugin.manifest.validate_options(&values) {
+        Ok(()) => {
+            println!(
+                "plugin '{id}' options are valid ({} option(s) set)",
+                values.len()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            eprintln!("invalid: {err}");
+            Ok(ExitCode::from(1))
+        }
+    }
+}
 
 fn profile_command(args: &[String]) -> Result<ExitCode, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
@@ -4889,6 +5115,9 @@ Open files or folders through the configured external viewer, xdg-open, or a nam
 .B patch LEFT RIGHT [--format unified|context|normal] [--context LINES] [--preview|--output FILE]
 Generate or preview a unified, context, or normal diff from two text files or text-only folder changes.
 .TP
+.B plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY>
+Manage discovered plugins. list shows installed plugins with enabled state; inspect shows a plugin's manifest, option schema, and current values; validate checks the persisted options against the manifest schema; enable/disable toggle a plugin; set-option validates a value against the schema before persisting it; clear-option removes a stored option. Enabled state lives in $XDG_CONFIG_HOME/linsync/plugins.json and option values under $XDG_CONFIG_HOME/linsync/plugin-options/.
+.TP
 .B profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
 Manage compare profiles — named bundles of per-mode comparison options. Built-in profiles ship with the binary; user profiles live under $XDG_CONFIG_HOME/linsync/profiles/. Use --profile NAME-OR-PATH on a compare command to source options from a profile; CLI flags override profile values.
 .TP
@@ -4955,6 +5184,7 @@ USAGE:
     linsync-cli mergetool --base BASE --local LOCAL --remote REMOTE --merged MERGED [--auto-resolve left|right|base] [--json]
     linsync-cli open-external [--wait] [--preset PRESET] PATH...
     linsync-cli patch LEFT RIGHT [--format unified|context|normal] [--context LINES] [--preview|--output FILE]
+    linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY>
     linsync-cli profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
     linsync-cli reveal [--wait] PATH...
     linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]
@@ -4968,6 +5198,14 @@ mergetool:
     the result is written to --merged. Add --json to print a machine-readable merge
     summary. Without --auto-resolve, returns exit code 2 (GUI integration deferred to a
     future release).
+
+plugin:
+    Manage discovered plugins. `list [--json]` shows installed plugins and their
+    enabled state; `inspect ID [--json]` prints the manifest, option schema, and
+    current values; `validate ID` checks the persisted options against the
+    schema; `enable`/`disable ID` toggle a plugin; `set-option ID KEY VALUE`
+    validates the value against the schema before persisting it (VALUE is parsed
+    as JSON, falling back to a string); `clear-option ID KEY` removes it.
 
 profile:
     Manage compare profiles — named bundles of per-mode options stored under
