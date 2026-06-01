@@ -332,6 +332,10 @@ pub struct PluginTextOperationOptions {
     pub encoding: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_ending: Option<String>,
+    /// OCR / text-extraction language hint (e.g. `"eng"`). Passed through to
+    /// text-extractor and OCR plugins via `options.language`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -704,6 +708,27 @@ fn run_plugin_helper_with_temp(
             });
         }
 
+        // Enforce the output limits *during* the run, not just after exit, so a
+        // helper that floods stdout/stderr cannot fill the disk/RAM before the
+        // post-exit check fires. A flooding helper is killed as soon as either
+        // stream crosses its cap.
+        let oversize = output_limit_exceeded(
+            &stdout_path,
+            PluginOutputStream::Stdout,
+            options.stdout_limit,
+        )
+        .or_else(|| {
+            output_limit_exceeded(
+                &stderr_path,
+                PluginOutputStream::Stderr,
+                options.stderr_limit,
+            )
+        });
+        if let Some(err) = oversize {
+            kill_plugin_helper(&mut child);
+            return Err(err);
+        }
+
         std::thread::sleep(Duration::from_millis(10));
     };
 
@@ -855,7 +880,13 @@ pub fn run_streaming_plugin(
         let chunk_len = u32::from_le_bytes(header) as usize;
 
         // Cap check: would accepting this chunk push us over the limit?
-        let new_total = total_bytes.saturating_add(chunk_len);
+        //
+        // Count the 4-byte frame header toward the total as well, so a flood of
+        // zero-length chunks still consumes budget and cannot grow the
+        // accumulated `chunks` Vec without bound (memory DoS).
+        let new_total = total_bytes
+            .saturating_add(header.len())
+            .saturating_add(chunk_len);
         if new_total > options.max_total_bytes {
             kill_plugin_helper(&mut child);
             return Err(PluginError::StreamTotalBytesExceeded {
@@ -1334,6 +1365,22 @@ fn discovery_error(path: &Path, message: String) -> PluginDiscoveryError {
         path: path.to_path_buf(),
         message,
     }
+}
+
+/// Return [`PluginError::OutputTooLarge`] if the file at `path` already exceeds
+/// `limit` bytes, otherwise `None`. Used to enforce stdout/stderr caps while the
+/// helper is still running (a missing file simply means nothing written yet).
+fn output_limit_exceeded(
+    path: &Path,
+    stream: PluginOutputStream,
+    limit: usize,
+) -> Option<PluginError> {
+    let actual = fs::metadata(path).ok()?.len();
+    (actual > limit as u64).then_some(PluginError::OutputTooLarge {
+        stream,
+        limit,
+        actual,
+    })
 }
 
 fn read_limited_text(
@@ -2270,5 +2317,146 @@ emit '{"index":1,"msg":"bbbbbbbbbb"}'
         assert_eq!(classes[0], PluginClass::DocumentTextExtractor);
         assert_eq!(classes[1], PluginClass::OcrEngine);
         assert_eq!(classes[2], PluginClass::PdfRenderer);
+    }
+
+    #[test]
+    fn text_operation_options_serialize_language() {
+        let options = PluginTextOperationOptions {
+            language: Some("deu".to_owned()),
+            ..PluginTextOperationOptions::default()
+        };
+        let json = serde_json::to_string(&options).unwrap();
+        assert!(
+            json.contains("\"language\":\"deu\""),
+            "expected language in serialized options, got: {json}"
+        );
+
+        // Absent language must be omitted (skip_serializing_if).
+        let empty = serde_json::to_string(&PluginTextOperationOptions::default()).unwrap();
+        assert!(
+            !empty.contains("language"),
+            "expected no language key when unset, got: {empty}"
+        );
+    }
+
+    #[test]
+    fn operation_request_serializes_language_option() {
+        // Mirror the request `run_text_operation` builds and assert the language
+        // survives serialization into `PluginOperationRequest.options` — the wire
+        // contract the plugin reads as `options.language`.
+        let request = PluginOperationRequest {
+            protocol_version: CURRENT_PLUGIN_PROTOCOL_VERSION,
+            operation: PluginOperation::UnpackText,
+            request_id: "linsync-unpack_text-test".to_owned(),
+            inputs: vec![PluginInputDescriptor::for_file(
+                "source",
+                PathBuf::from("/tmp/document.pdf"),
+            )],
+            options: PluginTextOperationOptions {
+                language: Some("fra".to_owned()),
+                ..PluginTextOperationOptions::default()
+            },
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(
+            json.contains("\"options\":{\"language\":\"fra\"}"),
+            "expected language inside request options, got: {json}"
+        );
+    }
+
+    #[test]
+    fn streaming_plugin_caps_flood_of_empty_chunks() {
+        let fixture = TempFixture::new();
+        let plugin_dir = fixture.path.join("plugins/streaming-empty");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        // Emit many zero-length chunks (header only, no payload). Without
+        // counting header overhead these would grow the chunk Vec unboundedly.
+        write_helper(
+            &plugin_dir,
+            "stream-empty.sh",
+            r#"#!/usr/bin/env bash
+read REQ
+i=0
+while [ "$i" -lt 1000 ]; do
+    printf '\x00\x00\x00\x00'
+    i=$((i + 1))
+done
+"#,
+        );
+        let mut manifest = sample_manifest("example.streaming-empty");
+        manifest.entry = vec!["stream-empty.sh".to_owned()];
+        manifest.streaming = true;
+
+        // Cap of 20 bytes allows only ~5 four-byte headers before the cap trips.
+        let err = run_streaming_plugin(
+            &plugin_dir,
+            &manifest,
+            "{}\n",
+            &PluginExecutionOptions {
+                max_total_bytes: 20,
+                ..PluginExecutionOptions::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, PluginError::StreamTotalBytesExceeded { limit: 20, .. }),
+            "expected StreamTotalBytesExceeded from empty-chunk flood, got: {err}"
+        );
+    }
+
+    #[test]
+    fn helper_output_limit_enforced_during_run() {
+        let fixture = TempFixture::new();
+        let plugin_dir = fixture.path.join("plugins/flooding");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        // A long-running helper that floods stdout then sleeps. The host must
+        // kill it once the cap is crossed rather than waiting for it to exit.
+        write_helper(
+            &plugin_dir,
+            "flood.sh",
+            r#"#!/bin/sh
+i=0
+while [ "$i" -lt 200 ]; do
+    printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+    i=$((i + 1))
+done
+sleep 30
+"#,
+        );
+        let mut manifest = sample_manifest("example.flooding");
+        manifest.entry = vec!["flood.sh".to_owned()];
+
+        let started = std::time::Instant::now();
+        let err = run_plugin_helper(
+            &plugin_dir,
+            &manifest,
+            "{}",
+            &PluginExecutionOptions {
+                stdout_limit: 64,
+                timeout: Duration::from_secs(20),
+                ..PluginExecutionOptions::default()
+            },
+        )
+        .unwrap_err();
+
+        // The helper sleeps 30s and the timeout is 20s, so finishing quickly
+        // proves the limit was enforced mid-run (not via timeout or exit).
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "expected mid-run kill, but the call took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(
+                err,
+                PluginError::OutputTooLarge {
+                    stream: PluginOutputStream::Stdout,
+                    limit: 64,
+                    ..
+                }
+            ),
+            "expected OutputTooLarge during run, got: {err}"
+        );
     }
 }

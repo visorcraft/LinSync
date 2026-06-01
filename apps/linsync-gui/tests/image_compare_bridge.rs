@@ -226,3 +226,68 @@ fn overlay_png_has_visible_pixels_for_diffs() {
         "overlay PNG at {path} should mark differing pixels (all-zero buffer is the placeholder)"
     );
 }
+
+// The overlay PNG must not be written to a predictable, world-readable path in
+// the shared temp dir. It must live in a per-process directory locked to the
+// owner (0700), the file itself must be owner-only (0600), and repeated
+// overlays in the same process must get distinct, unpredictable names.
+#[cfg(unix)]
+#[test]
+fn overlay_png_is_owner_only_and_unpredictable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    let red: RgbaImage = ImageBuffer::from_fn(4, 4, |_, _| Rgba([255u8, 0, 0, 255]));
+    let blue: RgbaImage = ImageBuffer::from_fn(4, 4, |_, _| Rgba([0u8, 0, 255, 255]));
+    let left = save_png(&dir, "left.png", &red);
+    let right = save_png(&dir, "right.png", &blue);
+
+    let overlay_path = |_label: &str| -> PathBuf {
+        let json = image_compare_test(
+            left.to_str().unwrap(),
+            right.to_str().unwrap(),
+            "exact",
+            0,
+            2.3,
+            true,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let uri = v["overlay_path"].as_str().expect("overlay_path present");
+        PathBuf::from(uri.strip_prefix("file://").expect("file:// URI"))
+    };
+
+    let first = overlay_path("first");
+    let second = overlay_path("second");
+
+    // Distinct (process-wide counter) so concurrent compares cannot collide and
+    // an attacker cannot guess the next name from the previous one.
+    assert_ne!(
+        first, second,
+        "successive overlays must use distinct, unpredictable paths"
+    );
+
+    // The containing directory must be a per-process dir locked to 0700.
+    let parent = first.parent().expect("overlay has a parent dir");
+    assert!(
+        parent
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("linsync-overlays-"))
+            .unwrap_or(false),
+        "overlay must live in a per-process linsync-overlays-<pid> dir, got {}",
+        parent.display()
+    );
+    let dir_mode = std::fs::metadata(parent).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        dir_mode, 0o700,
+        "overlay directory must be owner-only (0700), got {dir_mode:o}"
+    );
+
+    // The PNG itself must be owner-only (0600) — no group/other read.
+    let file_mode = std::fs::metadata(&first).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        file_mode, 0o600,
+        "overlay PNG must be owner-only (0600), got {file_mode:o}"
+    );
+}

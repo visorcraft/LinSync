@@ -255,10 +255,23 @@ fn dimension_stream_trigger(path: &Path) -> bool {
 }
 
 fn open_image(path: &Path) -> Result<DynamicImage, ImageCompareError> {
-    ImageReader::open(path)
+    // Strict dimension cap for untrusted input; combined with the default
+    // 512 MiB allocation cap below it bounds the decoded image (and therefore
+    // the RGBA + overlay buffers built from it).
+    const MAX_IMAGE_DIMENSION: u32 = 30_000;
+
+    let mut reader = ImageReader::open(path)
         .map_err(|e| ImageCompareError::IoError(e.to_string()))?
         .with_guessed_format()
-        .map_err(|e| ImageCompareError::UnsupportedFormat(e.to_string()))?
+        .map_err(|e| ImageCompareError::UnsupportedFormat(e.to_string()))?;
+    // Without calling `limits`, the decoder is completely unbounded, so a
+    // crafted decompression bomb can force unbounded allocation. `default()`
+    // caps total decoder allocation at 512 MiB; we add a strict pixel cap.
+    let mut limits = ::image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    reader.limits(limits);
+    reader
         .decode()
         .map_err(|e| ImageCompareError::DecodeError(e.to_string()))
 }
@@ -487,14 +500,17 @@ pub fn generate_overlay(
     let total = width as u64 * height as u64;
     let mut differing: u64 = 0;
     let mut bbox = None;
-    let mut overlay_rgba = vec![0u8; (width * height * 4) as usize];
+    // usize arithmetic: `width * height * 4` in u32 overflows and wraps for
+    // large images, yielding an undersized buffer and out-of-bounds writes
+    // below. Decoder limits in `open_image` bound the dimensions up front.
+    let mut overlay_rgba = vec![0u8; width as usize * height as usize * 4];
     let mut diff_mask = vec![vec![false; width as usize]; height as usize];
 
     for y in 0..height {
         for x in 0..width {
             let lp = left_rgba.get_pixel(x, y).0;
             let rp = right_rgba.get_pixel(x, y).0;
-            let idx = ((y * width + x) * 4) as usize;
+            let idx = (y as usize * width as usize + x as usize) * 4;
             if pixels_differ(&lp, &rp, options) {
                 differing += 1;
                 expand_bbox(&mut bbox, x, y);

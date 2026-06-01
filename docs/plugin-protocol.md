@@ -141,10 +141,15 @@ Large file contents are passed by path or file descriptor, not embedded in JSON.
   ],
   "options": {
     "encoding": "utf-8",
-    "line_ending": "lf"
+    "line_ending": "lf",
+    "language": "eng"
   }
 }
 ```
+
+`options.language` is an optional ISO 639-2 language hint (omitted when unset).
+Text-extractor / OCR plugins (e.g. `tesseract-ocr`) use it to select the
+recognition language; plugins that do not need it ignore the field.
 
 Supported initial operations:
 

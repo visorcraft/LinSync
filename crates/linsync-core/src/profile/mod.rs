@@ -327,11 +327,16 @@ impl ProfileStore {
             return Err(ProfileStoreError::NotFound(id.clone()));
         }
         let bytes = fs::read(&path)?;
-        let profile: CompareProfile =
+        let mut profile: CompareProfile =
             serde_json::from_slice(&bytes).map_err(|err| ProfileStoreError::Parse {
                 path: path.clone(),
                 message: err.to_string(),
             })?;
+        // The filename is the source of truth for a profile's id: every
+        // write/lookup keys off it. A file body declaring a mismatched id
+        // (hand-edited, copied, or imported) is self-healed here so the
+        // returned profile is consistent with where it was loaded from.
+        profile.id = id.clone();
         profile.validate()?;
         Ok(profile)
     }
@@ -595,6 +600,25 @@ mod tests {
         assert!(!loaded.builtin);
         // Default options should be populated.
         assert_eq!(loaded.text, TextCompareOptions::default());
+        drop(dir);
+    }
+
+    #[test]
+    fn load_overrides_mismatched_body_id_with_filename() {
+        // The filename is the source of truth. A file body declaring a
+        // different id must load as the requested (filename) id so every
+        // subsequent write/lookup stays consistent.
+        let (dir, store) = temp_store();
+        fs::create_dir_all(&store.profiles_dir).unwrap();
+        fs::write(
+            store.profiles_dir.join("user-a.json"),
+            br#"{"schema_version": 1, "id": "user-b", "name": "Mismatch"}"#,
+        )
+        .unwrap();
+        let requested = ProfileId::new("user-a").unwrap();
+        let loaded = store.load(&requested).unwrap();
+        assert_eq!(loaded.id, requested);
+        assert_eq!(loaded.name, "Mismatch");
         drop(dir);
     }
 

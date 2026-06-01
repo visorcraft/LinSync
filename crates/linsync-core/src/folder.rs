@@ -1096,10 +1096,12 @@ fn execute_delete(
     data_home: &Path,
     use_trash: bool,
 ) -> Result<String, String> {
+    // Delete operations carry the path to remove in `source` (see
+    // `plan_delete_side`); `target` is always `None` for a delete.
     let target = op
-        .target
+        .source
         .as_ref()
-        .ok_or_else(|| "delete operation missing target".to_owned())?;
+        .ok_or_else(|| "delete operation missing source path".to_owned())?;
     if use_trash {
         crate::trash::move_to_freedesktop_trash(target, data_home)
             .map(|trashed| format!("moved to trash at '{}'", trashed.trash_file_path.display()))
@@ -1354,8 +1356,11 @@ fn build_folder_entry(
             state,
             FolderEntryState::Identical | FolderEntryState::Different
         ) {
-        let needs_hash = options.compare_method == CompareMethod::HashBlake3
-            || options.hash_algorithm != HashAlgorithm::Blake3;
+        // Only the hash-based compare method reads file contents to hash
+        // them; populating the display hash for any other method (regardless
+        // of the configured algorithm) would force a full read of every file
+        // pair and double I/O on large trees.
+        let needs_hash = options.compare_method == CompareMethod::HashBlake3;
         if needs_hash {
             let lh = compute_file_hash(&left.join(&relative_path), options.hash_algorithm).ok();
             let rh = compute_file_hash(&right.join(&relative_path), options.hash_algorithm).ok();
@@ -1879,7 +1884,7 @@ fn collect_symlink_entry(
     match options.symlink_policy {
         SymlinkPolicy::CompareTarget => match fs::read_link(path) {
             Ok(target) => {
-                let context = filter_context(relative_path, false, Some(0), None, None);
+                let context = filter_context(relative_path, false, Some(0), None, None, None);
                 let skipped = is_filtered(&context, options);
                 entries.insert(
                     relative_path.to_path_buf(),
@@ -1897,7 +1902,7 @@ fn collect_symlink_entry(
             Err(err) => insert_error_entry(entries, relative_path, err.to_string()),
         },
         SymlinkPolicy::SpecialFile => {
-            let context = filter_context(relative_path, false, Some(0), None, None);
+            let context = filter_context(relative_path, false, Some(0), None, None, None);
             let skipped = is_filtered(&context, options);
             entries.insert(
                 relative_path.to_path_buf(),
@@ -1972,6 +1977,7 @@ fn collect_metadata_entry(
         Some(metadata.len()),
         metadata.modified().ok(),
         file_kind,
+        Some(path),
     );
     let skipped = is_filtered(&context, options);
     let error = if kind == EntryKind::Special {
@@ -2067,13 +2073,17 @@ fn filter_context<'a>(
     size: Option<u64>,
     modified: Option<SystemTime>,
     file_kind: Option<FilterFileKind>,
+    resolved_path: Option<&'a Path>,
 ) -> FilterEntryContext<'a> {
     FilterEntryContext {
+        // Rules match against the *relative* path; `resolved_path` carries the
+        // real filesystem path so a directory `size` expression can recurse.
         path: relative_path,
         is_dir,
         size,
         modified,
         file_kind,
+        resolved_path,
     }
 }
 
@@ -2359,6 +2369,38 @@ mod tests {
             result.entries[0].effective_method,
             Some(CompareMethod::HashBlake3)
         );
+        // The hash-based method populates the display hashes.
+        assert!(result.entries[0].left_hash.is_some());
+        assert!(result.entries[0].right_hash.is_some());
+    }
+
+    #[test]
+    fn display_hash_skipped_for_non_hash_method_with_non_blake3_algorithm() {
+        // Selecting a non-Blake3 algorithm must not force per-file hashing
+        // when the compare method does not actually hash content — doing so
+        // doubled I/O on large trees.
+        let fixture = TempFixture::new();
+        let left = fixture.path.join("left");
+        let right = fixture.path.join("right");
+        fs::create_dir_all(&left).unwrap();
+        fs::create_dir_all(&right).unwrap();
+        fs::write(left.join("same.txt"), "abcd").unwrap();
+        fs::write(right.join("same.txt"), "abcd").unwrap();
+
+        let result = compare_folders(
+            &left,
+            &right,
+            &FolderCompareOptions {
+                compare_method: CompareMethod::Size,
+                hash_algorithm: HashAlgorithm::Sha256,
+                ..FolderCompareOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.entries[0].state, FolderEntryState::Identical);
+        assert!(result.entries[0].left_hash.is_none());
+        assert!(result.entries[0].right_hash.is_none());
     }
 
     #[test]
@@ -2940,7 +2982,7 @@ mod tests {
         let filter = FileFilter::generated_directories();
 
         for name in ["proc", "sys", "dev", "run"] {
-            let context = filter_context(Path::new(name), true, None, None, None);
+            let context = filter_context(Path::new(name), true, None, None, None, None);
             assert!(is_filtered(
                 &context,
                 &FolderCompareOptions {

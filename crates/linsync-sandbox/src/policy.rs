@@ -105,7 +105,9 @@ pub struct PluginSandboxFields {
 /// - `source_path` is added to `read_paths` (the file being processed).
 /// - `temp_dir` is added to `write_paths` (plugin output, intermediate state).
 /// - `sandbox.network` controls the seccomp socket block.
-/// - `sandbox.requires_home_access` adds `$HOME` to read + write paths.
+/// - `sandbox.requires_home_access` adds `$HOME` to read paths only (plugins
+///   that need to write keep their writable `temp_dir`; granting write over the
+///   whole home would let a confined helper tamper with the user's files).
 pub fn policy_for_plugin(
     plugin_sandbox: &PluginSandboxFields,
     plugin_dir: &Path,
@@ -121,7 +123,9 @@ pub fn policy_for_plugin(
     if plugin_sandbox.requires_home_access
         && let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
     {
-        builder = builder.read(&home).write(&home);
+        // Read-only: helpers read runtime profiles from `$HOME`, but a confined
+        // process must never be able to write across the user's whole home.
+        builder = builder.read(&home);
     }
 
     builder.build()

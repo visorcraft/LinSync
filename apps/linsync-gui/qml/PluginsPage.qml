@@ -22,7 +22,9 @@ Kirigami.ScrollablePage {
 
     signal pluginToggled(string id, bool enabled)
     signal refreshRequested()
-    signal pluginOptionsFetched(string id, var schema, var values)
+    // Request that the bridge layer (Main.qml) fetch this plugin's option
+    // schema+values and then call `openOptionsDialog`.
+    signal pluginOptionsRequested(string id, string name)
     signal pluginOptionSaved(string id, string key, bool ok, string error)
 
     function applyDiscovery(payload) {
@@ -587,7 +589,7 @@ Kirigami.ScrollablePage {
                                 ? qsTr("Configure plugin options")
                                 : qsTr("Plugin options require a bridge connection")
                             Controls.ToolTip.visible: hovered
-                            onClicked: page.pluginOptionsFetched(modelData.id, [], {})
+                            onClicked: page.pluginOptionsRequested(modelData.id, modelData.name)
                         }
 
                         Controls.Switch {

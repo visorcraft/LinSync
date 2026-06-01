@@ -5,8 +5,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::text::{
-    DiffBlockKind, MergeAction, MergeConflict, SavePlan, TextCompareOptions, TextCompareResult,
-    TextDocument, TextEncoding, compare_documents,
+    DiffBlockKind, LineEnding, MergeAction, MergeConflict, SavePlan, TextCompareOptions,
+    TextCompareResult, TextDocument, TextEncoding, compare_documents,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +181,9 @@ pub struct ThreeWayMergeState {
     resolutions: HashMap<ConflictId, MergeChoice>,
     /// Stable ordered list of conflict IDs derived from the initial merge.
     conflict_ids: Vec<ConflictId>,
+    /// Line ending to use when writing the merged output, detected from the
+    /// inputs so a CRLF/CR file is not silently rewritten with LF on save.
+    output_newline: &'static str,
 }
 
 impl ThreeWayMergeState {
@@ -227,10 +230,22 @@ impl ThreeWayMergeState {
         let conflict_count = merge_result.conflicts.len() as u32;
         let conflict_ids: Vec<ConflictId> = (0..conflict_count).map(ConflictId).collect();
 
+        // Preserve the inputs' line ending (prefer left, then base) on save.
+        // Read it from the documents' detected `line_ending` — the flattened
+        // `*_text` above always uses '\n', so it cannot be the source.
+        let output_newline = newline_for(left.line_ending)
+            .or_else(|| newline_for(base.line_ending))
+            .unwrap_or("\n");
+
         let base_doc = EditableDocument::from_document(base);
         let left_doc = EditableDocument::from_document(left);
         let right_doc = EditableDocument::from_document(right);
-        let output_doc = Self::build_output_doc(&merge_result, &conflict_ids, &HashMap::new());
+        let output_doc = Self::build_output_doc(
+            &merge_result,
+            &conflict_ids,
+            &HashMap::new(),
+            output_newline,
+        );
 
         Self {
             base: base_doc,
@@ -239,30 +254,37 @@ impl ThreeWayMergeState {
             output: output_doc,
             resolutions: HashMap::new(),
             conflict_ids,
+            output_newline,
         }
     }
 
     /// Returns the list of conflicts that still need (or have) a resolution.
     /// The list is stable across calls.
     pub fn conflicts(&self) -> Vec<ThreeWayConflict> {
-        // Re-run the merge to get the current conflict structure from result_lines.
+        // Re-run the merge to reflect any edits to the inputs, then build the
+        // conflict list from the structured regions. We deliberately do NOT
+        // re-parse the rendered marker text: file content that itself contains
+        // lines like `=======` or `<<<<<<<` would otherwise corrupt parsing and
+        // mis-segment the conflict (silent data loss on resolve/save).
         let base_text = editable_to_string(&self.base);
         let left_text = editable_to_string(&self.left);
         let right_text = editable_to_string(&self.right);
         let merge_result = merge_three_way(&base_text, &left_text, &right_text);
-        let merged_text = merge_result.text();
-        let markers = parse_conflict_markers(&merged_text).unwrap_or_default();
 
-        markers
+        // `merge_three_way` emits at most one whole-file conflict, rendered as
+        // the entire `result_lines`, so each region spans line 1..=N.
+        let end_line = merge_result.result_lines.len();
+        merge_result
+            .conflict_regions
             .into_iter()
             .zip(self.conflict_ids.iter().copied())
-            .map(|(marker, id)| ThreeWayConflict {
+            .map(|(region, id)| ThreeWayConflict {
                 id,
-                start_line: marker.start_line,
-                end_line: marker.end_line,
-                base_lines: marker.base_lines,
-                left_lines: marker.left_lines,
-                right_lines: marker.right_lines,
+                start_line: 1,
+                end_line,
+                base_lines: region.base_lines,
+                left_lines: region.left_lines,
+                right_lines: region.right_lines,
             })
             .collect()
     }
@@ -297,7 +319,12 @@ impl ThreeWayMergeState {
     }
 
     pub fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
-        std::fs::write(path, self.output.text())
+        // Route through the module's safe writer: atomic temp+rename,
+        // permission preservation, and O_NOFOLLOW (instead of a bare
+        // fs::write that truncates the target in place and follows symlinks).
+        let plan = create_save_plan(path, false);
+        write_text_with_plan(&plan, &self.output.text())
+            .map_err(|err| std::io::Error::other(err.to_string()))
     }
 
     fn rebuild_output(&mut self) {
@@ -305,81 +332,59 @@ impl ThreeWayMergeState {
         let left_text = editable_to_string(&self.left);
         let right_text = editable_to_string(&self.right);
         let merge_result = merge_three_way(&base_text, &left_text, &right_text);
-        self.output = Self::build_output_doc(&merge_result, &self.conflict_ids, &self.resolutions);
+        self.output = Self::build_output_doc(
+            &merge_result,
+            &self.conflict_ids,
+            &self.resolutions,
+            self.output_newline,
+        );
     }
 
     /// Build an `EditableDocument` from a merge result, substituting resolved
     /// conflicts with the chosen lines.
+    ///
+    /// Resolution is driven by the merge's structured [`ConflictRegion`]s, never
+    /// by re-parsing the rendered marker text — so file content that contains
+    /// marker-like lines cannot corrupt the output.
     fn build_output_doc(
         merge_result: &ThreeWayMergeResult,
         conflict_ids: &[ConflictId],
         resolutions: &HashMap<ConflictId, MergeChoice>,
+        newline: &str,
     ) -> EditableDocument {
         if !merge_result.has_conflicts() {
             // Clean merge – use result_lines directly.
-            let text = merge_result.text();
+            let text = join_lines(&merge_result.result_lines, newline, true);
             return EditableDocument::from_document(TextDocument::from_text("output", &text));
         }
 
-        // Parse conflict markers from the merge output and apply resolutions.
-        let merged_text = merge_result.text();
-        let markers = parse_conflict_markers(&merged_text).unwrap_or_default();
+        // `merge_three_way` emits a single whole-file conflict whose rendered
+        // form is the entire `result_lines`. If it is resolved, emit the chosen
+        // side's structured lines; otherwise keep the conflict-marker text.
+        let chosen = conflict_ids.first().and_then(|id| resolutions.get(id));
+        let output_lines: Vec<String> = match (merge_result.conflict_regions.first(), chosen) {
+            (Some(region), Some(choice)) => match choice {
+                MergeChoice::Left => region.left_lines.clone(),
+                MergeChoice::Right => region.right_lines.clone(),
+                MergeChoice::Base => region.base_lines.clone(),
+                MergeChoice::Custom(text) => text.lines().map(str::to_owned).collect(),
+            },
+            _ => merge_result.result_lines.clone(),
+        };
 
-        // Walk through result_lines. Each conflict marker occupies a contiguous
-        // span of lines (from `<<<<<<<` to `>>>>>>>`).  Build a new set of lines
-        // replacing each marker span with the chosen content.
-        let result_lines = &merge_result.result_lines;
-        let mut output_lines: Vec<String> = Vec::new();
-        let mut line_idx = 0usize; // 0-based index into result_lines
-
-        for (marker_order, marker) in markers.iter().enumerate() {
-            let conflict_id = conflict_ids.get(marker_order).copied();
-
-            // Lines before this conflict marker (1-based start_line → 0-based).
-            let marker_start_0 = marker.start_line - 1;
-            let marker_end_0 = marker.end_line - 1; // inclusive, 0-based
-
-            // Copy any non-conflict lines that come before this marker.
-            while line_idx < marker_start_0 {
-                output_lines.push(result_lines[line_idx].clone());
-                line_idx += 1;
-            }
-
-            // Determine what to emit for the conflict section.
-            let chosen_lines: Option<Vec<String>> = conflict_id
-                .and_then(|id| resolutions.get(&id))
-                .map(|choice| match choice {
-                    MergeChoice::Left => marker.left_lines.clone(),
-                    MergeChoice::Right => marker.right_lines.clone(),
-                    MergeChoice::Base => marker.base_lines.clone(),
-                    MergeChoice::Custom(text) => text.lines().map(str::to_owned).collect(),
-                });
-
-            if let Some(lines) = chosen_lines {
-                output_lines.extend(lines);
-            } else {
-                // Keep the conflict marker lines as-is.
-                while line_idx <= marker_end_0 {
-                    output_lines.push(result_lines[line_idx].clone());
-                    line_idx += 1;
-                }
-                // line_idx is now past the marker.
-                continue;
-            }
-
-            // Skip over the marker lines in result_lines.
-            line_idx = marker_end_0 + 1;
-        }
-
-        // Copy any trailing non-conflict lines.
-        while line_idx < result_lines.len() {
-            output_lines.push(result_lines[line_idx].clone());
-            line_idx += 1;
-        }
-
-        // Reconstruct text with trailing newline (merge_three_way always adds one).
-        let text = join_lines(&output_lines, "\n", true);
+        let text = join_lines(&output_lines, newline, true);
         EditableDocument::from_document(TextDocument::from_text("output", &text))
+    }
+}
+
+/// Map a detected [`LineEnding`] to the newline string to write, or `None` when
+/// it is indeterminate (no newline / mixed) so a fallback can be chosen.
+fn newline_for(line_ending: LineEnding) -> Option<&'static str> {
+    match line_ending {
+        LineEnding::Lf => Some("\n"),
+        LineEnding::Crlf => Some("\r\n"),
+        LineEnding::Cr => Some("\r"),
+        LineEnding::None | LineEnding::Mixed => None,
     }
 }
 
@@ -391,6 +396,20 @@ fn editable_to_string(doc: &EditableDocument) -> String {
 pub struct ThreeWayMergeResult {
     pub result_lines: Vec<String>,
     pub conflicts: Vec<MergeConflict>,
+    /// Structured content of each conflict, parallel to `conflicts`. Lets
+    /// consumers resolve a conflict from real line vectors instead of
+    /// re-parsing marker text out of `result_lines` (which silently corrupts
+    /// when the file content itself contains marker-like lines).
+    pub conflict_regions: Vec<ConflictRegion>,
+}
+
+/// The left/base/right line content of a single conflict, kept structured so
+/// resolution never has to re-parse rendered conflict-marker text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictRegion {
+    pub left_lines: Vec<String>,
+    pub base_lines: Vec<String>,
+    pub right_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -466,6 +485,7 @@ pub fn merge_three_way(base: &str, left: &str, right: &str) -> ThreeWayMergeResu
         return ThreeWayMergeResult {
             result_lines: left_lines,
             conflicts: Vec::new(),
+            conflict_regions: Vec::new(),
         };
     }
 
@@ -473,6 +493,7 @@ pub fn merge_three_way(base: &str, left: &str, right: &str) -> ThreeWayMergeResu
         return ThreeWayMergeResult {
             result_lines: right_lines,
             conflicts: Vec::new(),
+            conflict_regions: Vec::new(),
         };
     }
 
@@ -480,6 +501,7 @@ pub fn merge_three_way(base: &str, left: &str, right: &str) -> ThreeWayMergeResu
         return ThreeWayMergeResult {
             result_lines: left_lines,
             conflicts: Vec::new(),
+            conflict_regions: Vec::new(),
         };
     }
 
@@ -487,6 +509,7 @@ pub fn merge_three_way(base: &str, left: &str, right: &str) -> ThreeWayMergeResu
         return ThreeWayMergeResult {
             result_lines: merged,
             conflicts: Vec::new(),
+            conflict_regions: Vec::new(),
         };
     }
 
@@ -500,6 +523,11 @@ pub fn merge_three_way(base: &str, left: &str, right: &str) -> ThreeWayMergeResu
             left_len: left_lines.len(),
             base_len: base_lines.len(),
             right_len: right_lines.len(),
+        }],
+        conflict_regions: vec![ConflictRegion {
+            left_lines,
+            base_lines,
+            right_lines,
         }],
     }
 }
@@ -599,6 +627,12 @@ fn marker_label(line: &str, marker: &str) -> Option<String> {
 }
 
 fn merge_append_only(base: &[String], left: &[String], right: &[String]) -> Option<Vec<String>> {
+    if base.is_empty() {
+        // Every slice "starts with" an empty base, so without this guard two
+        // unrelated edits over an empty base would be silently concatenated as
+        // a clean merge. Fall through to the conflict path instead.
+        return None;
+    }
     if !left.starts_with(base) || !right.starts_with(base) {
         return None;
     }
@@ -873,6 +907,52 @@ mod tests {
     use crate::text::{MergeAction, TextCompareOptions, compare_text};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn resolving_conflict_with_marker_like_content_is_not_corrupted() {
+        // Left content itself contains a line that looks like a conflict
+        // separator. Resolving to Left must reproduce the left content exactly,
+        // not a mis-parsed fragment.
+        let base = TextDocument::from_text("base", "x\n");
+        let left = TextDocument::from_text("left", "L1\n=======\nL2\n");
+        let right = TextDocument::from_text("right", "R1\n");
+        let mut state = ThreeWayMergeState::new(base, left, right);
+
+        let conflicts = state.conflicts();
+        assert_eq!(conflicts.len(), 1, "expected one whole-file conflict");
+        assert_eq!(conflicts[0].left_lines, vec!["L1", "=======", "L2"]);
+
+        state
+            .resolve(conflicts[0].id, MergeChoice::Left)
+            .expect("resolve left");
+        assert_eq!(state.output().text(), "L1\n=======\nL2\n");
+    }
+
+    #[test]
+    fn merge_output_preserves_crlf_line_endings() {
+        // A clean merge of CRLF inputs must not be rewritten with LF.
+        let base = TextDocument::from_text("base", "a\r\n");
+        let left = TextDocument::from_text("left", "a\r\nb\r\n");
+        let right = TextDocument::from_text("right", "a\r\n");
+        let state = ThreeWayMergeState::new(base, left, right);
+        assert_eq!(state.output().text(), "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn empty_base_with_divergent_sides_is_a_conflict_not_a_concat() {
+        // With an empty base, the append-only heuristic must not silently
+        // concatenate two unrelated edits into a "clean" merge.
+        let result = merge_three_way("", "apple\n", "banana\n");
+        assert!(
+            result.has_conflicts(),
+            "empty base + divergent sides must conflict, got {:?}",
+            result.result_lines
+        );
+        // A genuine shared prefix still merges append-only.
+        let appended = merge_three_way("base\n", "base\nleft\n", "base\nright\n");
+        assert!(!appended.has_conflicts());
+        assert_eq!(appended.result_lines, vec!["base", "left", "right"]);
+    }
 
     #[test]
     fn copies_left_block_to_right_and_tracks_dirty_state() {

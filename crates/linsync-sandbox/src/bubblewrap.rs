@@ -7,6 +7,7 @@
 use seccompiler::BpfProgram;
 use std::io::Write;
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
@@ -95,6 +96,24 @@ pub(crate) fn spawn_with_bwrap(
         bwrap_cmd.arg("--setenv").arg(k).arg(v);
     }
 
+    // Apply the same resource limits the Landlock path sets in its pre_exec.
+    // Set on the bwrap process itself; setrlimit values are preserved across
+    // bwrap's execve and inherited by the confined target it spawns, so the
+    // fd/proc caps still bind the helper. Without this the bwrap fallback would
+    // silently drop policy.fd_limit / policy.proc_limit.
+    let fd_limit = policy.fd_limit;
+    let proc_limit = policy.proc_limit;
+    // SAFETY: pre_exec runs in the forked child before exec. set_rlimit calls
+    // only setrlimit(2), which is async-signal-safe; no heap allocation or
+    // locking — the same constraints the Landlock path's pre_exec observes.
+    unsafe {
+        bwrap_cmd.pre_exec(move || {
+            set_rlimit(libc::RLIMIT_NOFILE as libc::__rlimit_resource_t, fd_limit)?;
+            set_rlimit(libc::RLIMIT_NPROC as libc::__rlimit_resource_t, proc_limit)?;
+            Ok(())
+        });
+    }
+
     // Compile seccomp filter and pass via a pipe fd to bwrap --seccomp.
     let seccomp_prog = crate::seccomp::build_seccomp_filter(policy.network)
         .map_err(|e| SandboxError::Os(std::io::Error::other(format!("{e:?}"))))?;
@@ -115,15 +134,44 @@ pub(crate) fn spawn_with_bwrap(
     Ok(child)
 }
 
+/// Set a soft+hard `setrlimit(2)` resource limit. Async-signal-safe — safe to
+/// call from `pre_exec`. Mirrors the helper on the Landlock path (kept local
+/// because that one is module-private to `landlock.rs`).
+fn set_rlimit(resource: libc::__rlimit_resource_t, value: u64) -> std::io::Result<()> {
+    let lim = libc::rlimit {
+        rlim_cur: value,
+        rlim_max: value,
+    };
+    let rc = unsafe { libc::setrlimit(resource, &lim) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 /// Write the BPF program bytes to a pipe; return the (read_fd, write_guard).
 /// The write guard must be kept alive until after bwrap forks, then dropped.
 ///
 /// Each `sock_filter` instruction is 8 bytes: code(2LE) + jt(1) + jf(1) + k(4LE).
 fn pipe_seccomp_filter(prog: &BpfProgram) -> Result<(OwnedFd, std::fs::File), SandboxError> {
     let mut fds = [0i32; 2];
-    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    // Create both ends close-on-exec. The write end must NOT leak into the
+    // bwrap child: if bwrap inherited a copy of the write end it would never
+    // observe EOF on the --seccomp fd and would block forever. We then clear
+    // close-on-exec on the read end alone, since bwrap must inherit it to read
+    // the filter.
+    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
     if rc != 0 {
         return Err(SandboxError::Os(std::io::Error::last_os_error()));
+    }
+    if unsafe { libc::fcntl(fds[0], libc::F_SETFD, 0) } != 0 {
+        let err = std::io::Error::last_os_error();
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+        return Err(SandboxError::Os(err));
     }
     let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
     let mut write_fd = unsafe { std::fs::File::from_raw_fd(fds[1]) };

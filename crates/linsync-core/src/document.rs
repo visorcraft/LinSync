@@ -12,8 +12,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::plugin::{
-    DiscoveredPlugin, PluginExecutionOptions, PluginInputDescriptor, discover_plugins,
-    run_unpack_text_plugin,
+    DiscoveredPlugin, PluginExecutionOptions, PluginInputDescriptor, PluginTextOperationOptions,
+    discover_plugins, run_unpack_text_plugin_with_options,
 };
 use crate::text::{TextCompareOptions, compare_text};
 
@@ -198,6 +198,7 @@ fn extract_text_with_plugin(
     path: &Path,
     role: &str,
     timeout_secs: u64,
+    language: &str,
     temp_root: Option<&Path>,
 ) -> Result<String, DocumentCompareError> {
     let opts = PluginExecutionOptions {
@@ -205,8 +206,18 @@ fn extract_text_with_plugin(
         temp_root: temp_root.map(Path::to_path_buf),
         ..PluginExecutionOptions::default()
     };
+    let operation_options = PluginTextOperationOptions {
+        language: Some(language.to_owned()),
+        ..PluginTextOperationOptions::default()
+    };
     let input = PluginInputDescriptor::for_file(role, path);
-    let text_result = run_unpack_text_plugin(&plugin.root, &plugin.manifest, input, &opts)?;
+    let text_result = run_unpack_text_plugin_with_options(
+        &plugin.root,
+        &plugin.manifest,
+        input,
+        &operation_options,
+        &opts,
+    )?;
     Ok(text_result.text)
 }
 
@@ -250,13 +261,20 @@ pub fn compare_document_files(
     let right_name = extractor_name(&right_plugin);
 
     let temp_root = options.temp_root.as_deref();
-    let left_text =
-        extract_text_with_plugin(&left_plugin, left, "left", options.timeout_secs, temp_root)?;
+    let left_text = extract_text_with_plugin(
+        &left_plugin,
+        left,
+        "left",
+        options.timeout_secs,
+        &options.ocr_language,
+        temp_root,
+    )?;
     let right_text = extract_text_with_plugin(
         &right_plugin,
         right,
         "right",
         options.timeout_secs,
+        &options.ocr_language,
         temp_root,
     )?;
 

@@ -413,11 +413,12 @@ pub fn compare_tables(
     })
 }
 
-fn row_key(row: &[String], key_columns: &[usize]) -> Vec<String> {
-    key_columns
-        .iter()
-        .map(|&ci| row.get(ci).cloned().unwrap_or_default())
-        .collect()
+/// Builds the join key for a row, or `None` when the row is too short to
+/// contain every key column. Ragged rows missing a key column must not
+/// silently collapse onto one another (or onto a genuinely empty value), so
+/// they yield no key and are treated as unmatched by the caller.
+fn row_key(row: &[String], key_columns: &[usize]) -> Option<Vec<String>> {
+    key_columns.iter().map(|&ci| row.get(ci).cloned()).collect()
 }
 
 fn compare_rows_by_cell(
@@ -504,75 +505,109 @@ fn compare_by_key(
     tolerance: Option<f64>,
 ) -> TableCompareResult {
     let hdr_ref = header.as_ref();
-    let mut left_map: HashMap<Vec<String>, usize> = HashMap::new();
-    for (i, row) in left_rows.iter().enumerate() {
-        let key = row_key(row, key_columns);
-        left_map.entry(key).or_insert(i);
-    }
 
-    let mut right_map: HashMap<Vec<String>, usize> = HashMap::new();
+    // Group right-row indices by key, preserving file order within each key so
+    // duplicate keys can be paired by occurrence (the Nth left row with key K
+    // matches the Nth right row with key K). Ragged rows lacking a key column
+    // (`row_key` returns `None`) are never matched and are emitted as
+    // right-only at the end.
+    let mut right_by_key: HashMap<Vec<String>, std::collections::VecDeque<usize>> = HashMap::new();
+    let mut right_unkeyed: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
     for (i, row) in right_rows.iter().enumerate() {
-        let key = row_key(row, key_columns);
-        right_map.entry(key).or_insert(i);
+        match row_key(row, key_columns) {
+            Some(key) => right_by_key.entry(key).or_default().push_back(i),
+            None => right_unkeyed.push_back(i),
+        }
     }
 
     let mut rows = Vec::new();
     let mut changed_cells = 0;
-    let mut seen_keys = std::collections::HashSet::new();
+
+    let emit = |rows: &mut Vec<TableRowDiff>,
+                changed_cells: &mut usize,
+                left: Option<&[String]>,
+                right: Option<&[String]>| {
+        let (row_diff, cc) =
+            compare_rows_by_cell(rows.len(), left, right, ignore_set, hdr_ref, tolerance);
+        *changed_cells += cc;
+        rows.push(row_diff);
+    };
 
     if ignore_row_order {
-        let mut all_keys: Vec<&Vec<String>> = left_map.keys().chain(right_map.keys()).collect();
-        all_keys.sort();
-        for key in all_keys {
-            if !seen_keys.insert(key.clone()) {
-                continue;
+        // Pair left rows against right rows sharing the same key in occurrence
+        // order; collect leftovers (unmatched left, unmatched right, and rows
+        // lacking a key column on either side) afterwards.
+        let mut left_unmatched: Vec<usize> = Vec::new();
+        for (i, row) in left_rows.iter().enumerate() {
+            match row_key(row, key_columns) {
+                Some(key) => match right_by_key.get_mut(&key).and_then(|q| q.pop_front()) {
+                    Some(ri) => emit(
+                        &mut rows,
+                        &mut changed_cells,
+                        Some(row.as_slice()),
+                        Some(right_rows[ri].as_slice()),
+                    ),
+                    None => left_unmatched.push(i),
+                },
+                None => left_unmatched.push(i),
             }
-            let left_idx = left_map.get(key);
-            let right_idx = right_map.get(key);
-            let (row_diff, cc) = compare_rows_by_cell(
-                rows.len(),
-                left_idx.map(|&i| left_rows[i].as_slice()),
-                right_idx.map(|&i| right_rows[i].as_slice()),
-                ignore_set,
-                hdr_ref,
-                tolerance,
+        }
+
+        for i in left_unmatched {
+            emit(
+                &mut rows,
+                &mut changed_cells,
+                Some(left_rows[i].as_slice()),
+                None,
             );
-            changed_cells += cc;
-            rows.push(row_diff);
+        }
+
+        let mut leftover_right: Vec<usize> = right_by_key
+            .into_values()
+            .flatten()
+            .chain(right_unkeyed)
+            .collect();
+        leftover_right.sort_unstable();
+        for ri in leftover_right {
+            emit(
+                &mut rows,
+                &mut changed_cells,
+                None,
+                Some(right_rows[ri].as_slice()),
+            );
         }
     } else {
         for row in left_rows {
-            let key = row_key(row, key_columns);
-            seen_keys.insert(key.clone());
-            let right_idx = right_map.get(&key);
-            let (row_diff, cc) = compare_rows_by_cell(
-                rows.len(),
+            let right_slice = match row_key(row, key_columns) {
+                Some(key) => right_by_key
+                    .get_mut(&key)
+                    .and_then(|q| q.pop_front())
+                    .map(|ri| right_rows[ri].as_slice()),
+                None => None,
+            };
+            emit(
+                &mut rows,
+                &mut changed_cells,
                 Some(row.as_slice()),
-                right_idx.map(|&ri| right_rows[ri].as_slice()),
-                ignore_set,
-                hdr_ref,
-                tolerance,
+                right_slice,
             );
-            changed_cells += cc;
-            rows.push(row_diff);
         }
 
-        for row in right_rows {
-            let key = row_key(row, key_columns);
-            if seen_keys.contains(&key) {
-                continue;
-            }
-            seen_keys.insert(key);
-            let (row_diff, cc) = compare_rows_by_cell(
-                rows.len(),
+        // Any right rows left unpaired (unmatched keys, surplus duplicates, or
+        // ragged rows) become right-only, emitted in original file order.
+        let mut leftover_right: Vec<usize> = right_by_key
+            .into_values()
+            .flatten()
+            .chain(right_unkeyed)
+            .collect();
+        leftover_right.sort_unstable();
+        for ri in leftover_right {
+            emit(
+                &mut rows,
+                &mut changed_cells,
                 None,
-                Some(row.as_slice()),
-                ignore_set,
-                hdr_ref,
-                tolerance,
+                Some(right_rows[ri].as_slice()),
             );
-            changed_cells += cc;
-            rows.push(row_diff);
         }
     }
 
@@ -732,6 +767,7 @@ fn finish_row(
     skip_blank: bool,
 ) {
     let is_comment = comment_prefix
+        .filter(|prefix| !prefix.is_empty())
         .is_some_and(|prefix| row.first().is_some_and(|first| first.starts_with(prefix)));
     let is_blank = row.iter().all(|c| c.is_empty());
 
@@ -1095,6 +1131,170 @@ mod tests {
 
         assert!(result.is_equal());
         assert_eq!(result.changed_cells, 0);
+    }
+
+    #[test]
+    fn key_columns_pair_duplicate_keys_by_occurrence() {
+        // Two left rows and two right rows share key "1"; the first left pairs
+        // with the first right, the second with the second. No rows are dropped
+        // and no false add/remove is produced.
+        let result = compare_tables(
+            "left",
+            "id,val\n1,a\n1,b\n2,c\n",
+            "right",
+            "id,val\n1,a\n1,b\n2,c\n",
+            &TableCompareOptions {
+                delimiter: ',',
+                has_header: true,
+                key_columns: vec![0],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(result.is_equal(), "duplicate keys should pair 1:1");
+        assert_eq!(result.rows.len(), 3);
+        for row in &result.rows {
+            assert!(!row.has_difference);
+            assert!(
+                row.cells.iter().all(|c| c.state == TableCellState::Equal),
+                "no row should be dropped or marked add/remove"
+            );
+        }
+    }
+
+    #[test]
+    fn key_columns_duplicate_keys_with_changed_value() {
+        // The second occurrence of key "1" differs; it must surface as a Changed
+        // cell rather than collapsing onto the first occurrence.
+        let result = compare_tables(
+            "left",
+            "id,val\n1,a\n1,b\n",
+            "right",
+            "id,val\n1,a\n1,z\n",
+            &TableCompareOptions {
+                delimiter: ',',
+                has_header: true,
+                key_columns: vec![0],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!result.is_equal());
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.changed_cells, 1);
+        assert_eq!(result.rows[0].cells[1].state, TableCellState::Equal);
+        assert_eq!(result.rows[1].cells[1].state, TableCellState::Changed);
+    }
+
+    #[test]
+    fn key_columns_unbalanced_duplicate_keys_emit_add_remove() {
+        // Two left rows with key "1" but only one right row with key "1": the
+        // surplus left row becomes left-only, and the unmatched right key "2"
+        // becomes right-only.
+        let result = compare_tables(
+            "left",
+            "id,val\n1,a\n1,b\n",
+            "right",
+            "id,val\n1,a\n2,c\n",
+            &TableCompareOptions {
+                delimiter: ',',
+                has_header: true,
+                key_columns: vec![0],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!result.is_equal());
+        let left_only = result
+            .rows
+            .iter()
+            .filter(|r| r.cells.iter().any(|c| c.state == TableCellState::LeftOnly))
+            .count();
+        let right_only = result
+            .rows
+            .iter()
+            .filter(|r| r.cells.iter().any(|c| c.state == TableCellState::RightOnly))
+            .count();
+        assert_eq!(left_only, 1);
+        assert_eq!(right_only, 1);
+    }
+
+    #[test]
+    fn key_columns_ragged_rows_do_not_collapse() {
+        // Two left rows are too short to contain the key column (index 1). They
+        // must not share a key with each other or match the right "blank"-keyed
+        // rows; each ragged row stays unmatched (left-only / right-only).
+        let result = compare_tables(
+            "left",
+            "a,key\nx\ny\n",
+            "right",
+            "a,key\np\nq\n",
+            &TableCompareOptions {
+                delimiter: ',',
+                has_header: true,
+                key_columns: vec![1],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!result.is_equal());
+        // 2 ragged left rows (left-only) + 2 ragged right rows (right-only).
+        assert_eq!(result.rows.len(), 4);
+        let left_only = result
+            .rows
+            .iter()
+            .filter(|r| r.cells.iter().any(|c| c.state == TableCellState::LeftOnly))
+            .count();
+        let right_only = result
+            .rows
+            .iter()
+            .filter(|r| r.cells.iter().any(|c| c.state == TableCellState::RightOnly))
+            .count();
+        assert_eq!(left_only, 2, "ragged left rows must not collapse together");
+        assert_eq!(
+            right_only, 2,
+            "ragged right rows must not collapse together"
+        );
+    }
+
+    #[test]
+    fn key_columns_ragged_row_does_not_match_empty_key() {
+        // A row missing the key column must not match a row whose key column is
+        // present but empty. `row_key` distinguishes "absent" from "empty".
+        let result = compare_tables(
+            "left",
+            "a,key\nx\n",
+            "right",
+            "a,key\ny,\n",
+            &TableCompareOptions {
+                delimiter: ',',
+                has_header: true,
+                key_columns: vec![1],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!result.is_equal());
+        // Left row (no key column) is left-only; right row (empty key) is
+        // right-only — they must not pair.
+        assert_eq!(result.rows.len(), 2);
+        let left_only = result
+            .rows
+            .iter()
+            .filter(|r| r.cells.iter().any(|c| c.state == TableCellState::LeftOnly))
+            .count();
+        let right_only = result
+            .rows
+            .iter()
+            .filter(|r| r.cells.iter().any(|c| c.state == TableCellState::RightOnly))
+            .count();
+        assert_eq!(left_only, 1);
+        assert_eq!(right_only, 1);
     }
 
     #[test]

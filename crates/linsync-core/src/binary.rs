@@ -143,7 +143,7 @@ impl std::fmt::Display for HexParseError {
 impl std::error::Error for HexParseError {}
 
 pub fn parse_hex_pattern(hex: &str) -> Result<Vec<u8>, HexParseError> {
-    let cleaned: String = hex.split_whitespace().collect();
+    let cleaned: Vec<char> = hex.split_whitespace().flat_map(str::chars).collect();
     if cleaned.is_empty() {
         return Ok(Vec::new());
     }
@@ -151,21 +151,19 @@ pub fn parse_hex_pattern(hex: &str) -> Result<Vec<u8>, HexParseError> {
         return Err(HexParseError::InvalidLength);
     }
     let mut bytes = Vec::with_capacity(cleaned.len() / 2);
-    for chunk in cleaned.as_bytes().chunks(2) {
-        let high =
-            hex_digit_value(chunk[0]).ok_or(HexParseError::InvalidCharacter(chunk[0] as char))?;
-        let low =
-            hex_digit_value(chunk[1]).ok_or(HexParseError::InvalidCharacter(chunk[1] as char))?;
+    for chunk in cleaned.chunks(2) {
+        let high = hex_digit_value(chunk[0]).ok_or(HexParseError::InvalidCharacter(chunk[0]))?;
+        let low = hex_digit_value(chunk[1]).ok_or(HexParseError::InvalidCharacter(chunk[1]))?;
         bytes.push((high << 4) | low);
     }
     Ok(bytes)
 }
 
-fn hex_digit_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
+fn hex_digit_value(c: char) -> Option<u8> {
+    match c {
+        '0'..='9' => Some(c as u8 - b'0'),
+        'a'..='f' => Some(c as u8 - b'a' + 10),
+        'A'..='F' => Some(c as u8 - b'A' + 10),
         _ => None,
     }
 }
@@ -304,9 +302,12 @@ impl BinaryCompareResult {
     }
 
     pub fn hex_page(&self, page: usize, page_size: usize) -> HexPage {
-        let start = page * page_size;
+        // Saturating arithmetic: large page/page_size values would otherwise
+        // panic on overflow in debug builds and wrap in release, slipping a
+        // bogus `start` past the bounds check below.
+        let start = page.saturating_mul(page_size);
         let rows = if start < self.rows.len() {
-            let end = (start + page_size).min(self.rows.len());
+            let end = start.saturating_add(page_size).min(self.rows.len());
             self.rows[start..end].to_vec()
         } else {
             Vec::new()
@@ -846,6 +847,22 @@ mod tests {
             vec![0xFF, 0x0A, 0x1B]
         );
         assert!(parse_hex_pattern("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_hex_pattern_reports_non_ascii_character() {
+        // A multibyte char must be reported verbatim, not truncated to a
+        // wrong Latin-1 byte. "é" is two UTF-8 bytes; "é0" is two *chars*.
+        match parse_hex_pattern("é0") {
+            Err(HexParseError::InvalidCharacter('é')) => {}
+            other => panic!("expected InvalidCharacter('é'), got {other:?}"),
+        }
+        // A lone multibyte char is an odd char count -> InvalidLength, not a
+        // spurious even byte-length pass.
+        match parse_hex_pattern("é") {
+            Err(HexParseError::InvalidLength) => {}
+            other => panic!("expected InvalidLength, got {other:?}"),
+        }
     }
 
     #[test]

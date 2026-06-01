@@ -207,38 +207,73 @@ fn build_overlay_png(
     options: &linsync_core::ImageCompareOptions,
 ) -> Option<String> {
     use ::image::ImageBuffer;
-    if result.overlay.is_empty() {
+    let (width, height) = (
+        result.left_dims.0.max(result.right_dims.0),
+        result.left_dims.1.max(result.right_dims.1),
+    );
+    let img: image::RgbaImage = if result.overlay.is_empty() {
         let overlay_result = linsync_core::generate_overlay(left, right, options).ok()?;
-        let (width, height) = (
-            result.left_dims.0.max(result.right_dims.0),
-            result.left_dims.1.max(result.right_dims.1),
-        );
-        let img: image::RgbaImage = ImageBuffer::from_raw(width, height, overlay_result.overlay)?;
-        let tmp_path = std::env::temp_dir().join(format!(
-            "linsync-overlay-{}.png",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0)
-        ));
-        img.save(&tmp_path).ok()?;
-        Some(format!("file://{}", tmp_path.display()))
+        ImageBuffer::from_raw(width, height, overlay_result.overlay)?
     } else {
-        let (width, height) = (
-            result.left_dims.0.max(result.right_dims.0),
-            result.left_dims.1.max(result.right_dims.1),
-        );
-        let img: image::RgbaImage = ImageBuffer::from_raw(width, height, result.overlay.clone())?;
-        let tmp_path = std::env::temp_dir().join(format!(
-            "linsync-overlay-{}.png",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0)
-        ));
-        img.save(&tmp_path).ok()?;
-        Some(format!("file://{}", tmp_path.display()))
+        ImageBuffer::from_raw(width, height, result.overlay.clone())?
+    };
+
+    let tmp_path = overlay_output_path()?;
+    img.save(&tmp_path).ok()?;
+    // The PNG can contain rendered file contents, so deny group/other access.
+    restrict_overlay_file(&tmp_path);
+    Some(format!("file://{}", tmp_path.display()))
+}
+
+/// Build an unpredictable, per-process overlay output path under a private,
+/// owner-only directory in the temp dir.
+///
+/// The previous scheme used only `SystemTime` subsec-nanos as the filename
+/// token directly in the shared temp dir, which another local user could
+/// predict (and pre-create or read). The token now combines full epoch nanos,
+/// the process id, and a process-wide monotonic counter, and the file lives in
+/// a `0700` per-process subdirectory so the bytes are not world-readable.
+fn overlay_output_path() -> Option<std::path::PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let dir = overlay_dir()?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    Some(dir.join(format!(
+        "linsync-overlay-{}-{nanos}-{seq}.png",
+        std::process::id()
+    )))
+}
+
+/// Resolve (creating if needed) a per-process, owner-only directory for overlay
+/// PNGs. Returns `None` if it cannot be confirmed as a directory owned by us.
+fn overlay_dir() -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let dir = std::env::temp_dir().join(format!("linsync-overlays-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    // Confirm a real directory owned by us before trusting it.
+    let meta = std::fs::symlink_metadata(&dir).ok()?;
+    let euid = unsafe { libc::geteuid() };
+    if !meta.is_dir() || meta.uid() != euid {
+        return None;
     }
+    // Lock to owner-only and reject any residual group/other access.
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    if std::fs::symlink_metadata(&dir).ok()?.mode() & 0o077 != 0 {
+        return None;
+    }
+    Some(dir)
+}
+
+/// Tighten an overlay PNG to owner-only (`0600`) after `image` has written it.
+fn restrict_overlay_file(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
 }
 
 // ── Document compare bridge ───────────────────────────────────────────────────

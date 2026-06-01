@@ -271,7 +271,10 @@ Controls.Pane {
 
         const modeStr = modeCombo.currentText.toLowerCase();
         const tol = toleranceSpin.value;
-        const deltaE = deltaESpin.value;
+        // The spinbox is an integer in tenths of a ΔE unit (its label reads
+        // "×10"), so the default 23 means ΔE 2.3. Scale to the real value the
+        // bridge expects; sending it unscaled made the threshold 10× too lenient.
+        const deltaE = deltaESpin.value / 10;
         const url = "/compare/image" + "?left=" + encodeURIComponent(root.leftPath) + "&right=" + encodeURIComponent(root.rightPath) + "&mode=" + modeStr + "&tolerance=" + tol + "&delta_e=" + deltaE + "&overlay=true";
 
         root.bridgeGet(url, function (ok, data) {

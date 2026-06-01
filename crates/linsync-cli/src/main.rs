@@ -373,8 +373,12 @@ fn detect_compare_type(
         return Ok(CompareType::Text);
     }
 
-    let left_sample = fs::read(left).map_err(|err| err.to_string())?;
-    let right_sample = fs::read(right).map_err(|err| err.to_string())?;
+    // Classify binary-ness from a bounded prefix only; the chosen engine still
+    // does its own full read. `is_likely_binary` already caps its control-char
+    // scan at 4 KiB, so a prefix of that size yields the same verdict while
+    // avoiding loading entire (possibly huge) files just to detect their type.
+    let left_sample = read_classification_prefix(left)?;
+    let right_sample = read_classification_prefix(right)?;
     if binary_extension(left)
         || binary_extension(right)
         || is_likely_binary(&left_sample)
@@ -388,6 +392,24 @@ fn detect_compare_type(
     }
 
     Ok(CompareType::Text)
+}
+
+/// Read at most the leading 4 KiB of `path` for binary/text classification.
+///
+/// `is_likely_binary`'s control-character heuristic already samples only the
+/// first 4 KiB, and NUL detection over this prefix matches the standard
+/// prefix-based approach, so this bounded read produces the same verdict as
+/// reading the whole file without paying to load large inputs twice.
+fn read_classification_prefix(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    const PREFIX_LEN: u64 = 4096;
+    let file = fs::File::open(path).map_err(|err| err.to_string())?;
+    let mut buf = Vec::with_capacity(PREFIX_LEN as usize);
+    file.take(PREFIX_LEN)
+        .read_to_end(&mut buf)
+        .map_err(|err| err.to_string())?;
+    Ok(buf)
 }
 
 fn table_extension(path: &Path) -> bool {
@@ -1207,8 +1229,12 @@ fn archive_command(args: &[String]) -> Result<ExitCode, String> {
     let cache_root = AppPaths::from_env().comparison_cache_dir();
     fs::create_dir_all(&cache_root).map_err(|err| format!("cannot prepare cache dir: {err}"))?;
 
-    let left = extract_archive(&PathBuf::from(&paths[0]), &cache_root, "left")?;
-    let right = extract_archive(&PathBuf::from(&paths[1]), &cache_root, "right")?;
+    let mut left = extract_archive(&PathBuf::from(&paths[0]), &cache_root, "left")?;
+    let mut right = extract_archive(&PathBuf::from(&paths[1]), &cache_root, "right")?;
+    if keep_temp {
+        left.keep();
+        right.keep();
+    }
 
     let result = compare_folders(&left.path, &right.path, &FolderCompareOptions::default())
         .map_err(|err| format!("folder compare failed: {err}"))?;
@@ -1237,10 +1263,9 @@ fn archive_command(args: &[String]) -> Result<ExitCode, String> {
         );
     }
 
-    if !keep_temp {
-        let _ = fs::remove_dir_all(&left.temp_root);
-        let _ = fs::remove_dir_all(&right.temp_root);
-    }
+    // `left`/`right` clean their extracted trees on drop (best-effort
+    // `remove_dir_all`) unless `keep_temp` flagged them to be retained, so the
+    // cache dir is never leaked even on the error paths above.
 
     let code = if result.summary.different_count > 0
         || result.summary.one_sided_count > 0
@@ -1256,6 +1281,22 @@ fn archive_command(args: &[String]) -> Result<ExitCode, String> {
 struct ExtractedArchive {
     path: PathBuf,
     temp_root: PathBuf,
+    keep: bool,
+}
+
+impl ExtractedArchive {
+    /// Retain the extracted tree past drop (honors `--keep-temp`).
+    fn keep(&mut self) {
+        self.keep = true;
+    }
+}
+
+impl Drop for ExtractedArchive {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = fs::remove_dir_all(&self.temp_root);
+        }
+    }
 }
 
 fn extract_archive(
@@ -1316,6 +1357,7 @@ fn extract_archive(
             .status()
             .map_err(|err| format!("failed to invoke tar: {err}"))?
     } else {
+        let _ = fs::remove_dir_all(&temp_root);
         return Err(format!(
             "unsupported archive extension for '{}'; install a plugin or use a supported type (zip, jar, tar, tgz, tar.xz, tar.zst, ...)",
             archive.display()
@@ -1323,6 +1365,7 @@ fn extract_archive(
     };
 
     if !status.success() {
+        let _ = fs::remove_dir_all(&temp_root);
         return Err(format!(
             "archive extraction failed for '{}': exit status {status}",
             archive.display()
@@ -1332,6 +1375,7 @@ fn extract_archive(
     Ok(ExtractedArchive {
         path: extracted,
         temp_root,
+        keep: false,
     })
 }
 
@@ -3344,6 +3388,34 @@ enum CompareType {
     Document,
 }
 
+/// Number of value tokens the named `compare` option consumes after itself in
+/// the main option parser, or `None` for flags/positional tokens that take no
+/// value. Kept in lockstep with the `index += N` branches in
+/// [`split_compare_args`]; `--profile` is intentionally excluded because the
+/// first pass resolves it directly.
+fn compare_flag_value_count(flag: &str) -> Option<usize> {
+    match flag {
+        "--diff-algorithm"
+        | "--inline-granularity"
+        | "--regex-rule-set"
+        | "--context"
+        | "--render"
+        | "--syntax"
+        | "--find"
+        | "--bookmark"
+        | "--encoding"
+        | "--type"
+        | "--ignore-line-regex"
+        | "--image-mode"
+        | "--image-tolerance"
+        | "--image-delta-e"
+        | "--document-mode"
+        | "--ocr-language" => Some(1),
+        "--substitute-regex" => Some(2),
+        _ => None,
+    }
+}
+
 fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
     let mut output = OutputMode::Text;
     let mut compare_type = CompareType::Auto;
@@ -3365,6 +3437,21 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
     let mut filtered: Vec<&String> = Vec::with_capacity(args.len());
     let mut profile_seek = 0;
     while profile_seek < args.len() {
+        // Skip past the value token(s) of any other value-taking flag so a
+        // `--profile` that is actually *another* flag's argument (e.g.
+        // `--ignore-line-regex --profile`) is not misread as the profile
+        // selector. This mirrors the value-consumption (`index += N`) of the
+        // main option parser below.
+        if let Some(values) = compare_flag_value_count(args[profile_seek].as_str()) {
+            filtered.push(&args[profile_seek]);
+            for offset in 1..=values {
+                if let Some(token) = args.get(profile_seek + offset) {
+                    filtered.push(token);
+                }
+            }
+            profile_seek += 1 + values;
+            continue;
+        }
         if args[profile_seek] == "--profile" {
             let Some(value) = args.get(profile_seek + 1) else {
                 return Err(
@@ -5064,5 +5151,53 @@ fn webpage_command(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::from(2))
         }
         Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn owned(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    #[test]
+    fn profile_token_consumed_by_value_flag_is_not_the_profile_selector() {
+        // `--profile` here is the *value* of `--ignore-line-regex`, so the
+        // first pass must leave the profile unresolved and feed the literal
+        // string through to the regex option rather than misrouting parsing.
+        let args = owned(&["--ignore-line-regex", "--profile", "left.txt", "right.txt"]);
+        let parsed = split_compare_args(&args).expect("parse should succeed");
+        assert!(parsed.effective_profile.is_none());
+        assert_eq!(parsed.text_options.ignore_line_patterns, vec!["--profile"]);
+        assert_eq!(parsed.paths, vec!["left.txt", "right.txt"]);
+    }
+
+    #[test]
+    fn profile_in_flag_position_is_still_resolved() {
+        let args = owned(&["--profile", "default", "left.txt", "right.txt"]);
+        let parsed = split_compare_args(&args).expect("parse should succeed");
+        assert_eq!(parsed.effective_profile.as_deref(), Some("default"));
+        assert_eq!(parsed.paths, vec!["left.txt", "right.txt"]);
+    }
+
+    #[test]
+    fn two_value_flag_does_not_swallow_following_profile() {
+        // `--substitute-regex` takes two value tokens; a real `--profile`
+        // immediately after them must still be honored.
+        let args = owned(&[
+            "--substitute-regex",
+            "a",
+            "b",
+            "--profile",
+            "default",
+            "left.txt",
+            "right.txt",
+        ]);
+        let parsed = split_compare_args(&args).expect("parse should succeed");
+        assert_eq!(parsed.effective_profile.as_deref(), Some("default"));
+        assert_eq!(parsed.text_options.substitutions.len(), 1);
+        assert_eq!(parsed.paths, vec!["left.txt", "right.txt"]);
     }
 }

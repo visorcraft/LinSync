@@ -489,7 +489,9 @@ Kirigami.ApplicationWindow {
         searchField.selectAll()
     }
 
-    function rowMatchesSearch(index) {
+    // `searchRe` is the regex compiled once per rebuild (or null for literal
+    // search); compiling it per row froze the UI on large diffs.
+    function rowMatchesSearch(index, searchRe) {
         if (root.searchText === "")
             return false
 
@@ -505,14 +507,7 @@ Kirigami.ApplicationWindow {
                 entry.method || ""
             ].join(" ")
             if (root.searchRegex) {
-                try {
-                    const flags = root.searchCaseSensitive ? "" : "i"
-                    const re = new RegExp(root.searchText, flags)
-                    return re.test(folderText)
-                } catch (e) {
-                    root.statusText = qsTr("Invalid find regex")
-                    return false
-                }
+                return searchRe ? searchRe.test(folderText) : false
             }
 
             const needle = root.searchCaseSensitive ? root.searchText : root.searchText.toLocaleLowerCase()
@@ -523,14 +518,7 @@ Kirigami.ApplicationWindow {
         const leftText = root.leftRows[index] ? String(root.leftRows[index].text || "") : ""
         const rightText = root.rightRows[index] ? String(root.rightRows[index].text || "") : ""
         if (root.searchRegex) {
-            try {
-                const flags = root.searchCaseSensitive ? "" : "i"
-                const re = new RegExp(root.searchText, flags)
-                return re.test(leftText) || re.test(rightText)
-            } catch (e) {
-                root.statusText = qsTr("Invalid find regex")
-                return false
-            }
+            return searchRe ? (searchRe.test(leftText) || searchRe.test(rightText)) : false
         }
 
         const needle = root.searchCaseSensitive ? root.searchText : root.searchText.toLocaleLowerCase()
@@ -542,8 +530,21 @@ Kirigami.ApplicationWindow {
     function rebuildSearchRows() {
         const rows = []
         const rowCount = root.compareMode === "Folder" ? root.visibleFolderEntries.length : root.leftRows.length
+        // Compile the find regex ONCE per rebuild rather than once per row.
+        let searchRe = null
+        if (root.searchRegex && root.searchText !== "") {
+            try {
+                searchRe = new RegExp(root.searchText, root.searchCaseSensitive ? "" : "i")
+            } catch (e) {
+                root.statusText = qsTr("Invalid find regex")
+                root.searchRowIndexes = []
+                root.currentSearchPosition = -1
+                root.currentSearchRow = -1
+                return
+            }
+        }
         for (let index = 0; index < rowCount; index++) {
-            if (rowMatchesSearch(index))
+            if (rowMatchesSearch(index, searchRe))
                 rows.push(index)
         }
 
@@ -1086,9 +1087,19 @@ Kirigami.ApplicationWindow {
         return String(row.text || "").replace(/\/$/, "")
     }
 
+    // Encode each selected entry as its own `entries=` query param so paths
+    // that contain a comma are not split apart server-side.
+    function encodeEntries(entries) {
+        var qs = ""
+        var list = entries || []
+        for (var i = 0; i < list.length; i++)
+            qs += "&entries=" + encodeURIComponent(list[i])
+        return qs
+    }
+
     function planFolderOp(kind, entries, callback) {
         const qs = "/folder/op/plan?kind=" + encodeURIComponent(kind)
-                 + "&entries=" + encodeURIComponent((entries || []).join(","))
+                 + root.encodeEntries(entries)
         bridgeGet(qs, function (ok, payload) {
             if (callback) callback(ok, payload)
         })
@@ -1119,7 +1130,7 @@ Kirigami.ApplicationWindow {
 
     function executeFolderOp(kind, entries, options, callback) {
         let qs = "/folder/op/execute?kind=" + encodeURIComponent(kind)
-               + "&entries=" + encodeURIComponent((entries || []).join(","))
+               + root.encodeEntries(entries)
         if (options && options.new_name)
             qs += "&new_name=" + encodeURIComponent(options.new_name)
         bridgeGet(qs, function (ok, payload) {
@@ -4462,6 +4473,24 @@ Kirigami.ApplicationWindow {
                         + encodeURIComponent(id) + "&enabled=" + (enabled ? "true" : "false")
                     const xhr = new XMLHttpRequest()
                     xhr.open("GET", url)
+                    xhr.send()
+                }
+                onPluginOptionsRequested: function(id, name) {
+                    if (root.bridgeUrl === "") return
+                    const url = root.bridgeUrl + "/plugins/options/get?id=" + encodeURIComponent(id)
+                    const xhr = new XMLHttpRequest()
+                    xhr.open("GET", url)
+                    xhr.onreadystatechange = function() {
+                        if (xhr.readyState !== XMLHttpRequest.DONE) return
+                        if (xhr.status === 200) {
+                            try {
+                                const data = JSON.parse(xhr.responseText)
+                                pluginsPage.openOptionsDialog(id, name, data.schema || [], data.values || {})
+                            } catch (e) {
+                                // Ignore a malformed options payload.
+                            }
+                        }
+                    }
                     xhr.send()
                 }
                 onPluginOptionSaved: function(id, key, ok, error) {

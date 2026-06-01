@@ -182,6 +182,29 @@ pub mod ffi {
         #[cxx_override]
         fn roleNames(self: &LinSyncSessionBridge) -> QHash_i32_QByteArray;
     }
+
+    // Inherited QAbstractItemModel hooks used to notify bound QML views when the
+    // active tab's rows are replaced wholesale (compare / undo / redo / copy /
+    // save / tab switch). Without these, the view keeps rendering stale rows.
+    extern "RustQt" {
+        /// # Safety
+        ///
+        /// Inherited `beginResetModel` from the base class. If you call
+        /// `begin_reset_model`, it is your responsibility to ensure
+        /// `end_reset_model` is called.
+        #[inherit]
+        #[cxx_name = "beginResetModel"]
+        unsafe fn begin_reset_model(self: Pin<&mut LinSyncSessionBridge>);
+
+        /// # Safety
+        ///
+        /// Inherited `endResetModel` from the base class. If you call
+        /// `begin_reset_model`, it is your responsibility to ensure
+        /// `end_reset_model` is called.
+        #[inherit]
+        #[cxx_name = "endResetModel"]
+        unsafe fn end_reset_model(self: Pin<&mut LinSyncSessionBridge>);
+    }
 }
 
 use core::pin::Pin;
@@ -706,9 +729,23 @@ impl ffi::LinSyncSessionBridge {
         match context_to_json(context) {
             Ok(json) => {
                 let qjson = QString::from(json);
+                // The active tab's row set (which `row_count`/`model_data`
+                // read) has just been replaced wholesale by the calling
+                // invokable, so notify bound QML views to re-query rather than
+                // render stale rows. A model reset matches the wholesale
+                // replacement (compare / undo / redo / copy / save / tab switch)
+                // better than incremental insert/remove notifications.
+                // SAFETY: `end_reset_model` is paired with this call below.
+                unsafe {
+                    self.as_mut().begin_reset_model();
+                }
                 self.as_mut()
                     .sync_active_tab_properties(ActiveTabSnapshot::from_context(context));
                 self.as_mut().set_context_json(qjson.clone());
+                // SAFETY: paired with the `begin_reset_model` call above.
+                unsafe {
+                    self.as_mut().end_reset_model();
+                }
                 qjson
             }
             Err(err) => self.set_error(err),

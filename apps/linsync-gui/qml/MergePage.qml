@@ -109,7 +109,11 @@ Item {
                     // Advance to next unresolved conflict when available.
                     if (root.currentConflict >= root.conflicts.length)
                         root.currentConflict = Math.max(0, root.conflicts.length - 1)
-                    const remaining = root.conflicts.length
+                    // `conflicts` is the stable full list; the count of
+                    // still-unresolved conflicts comes from the bridge.
+                    const remaining = data.unresolved_count !== undefined
+                        ? data.unresolved_count
+                        : root.conflicts.length
                     root.statusText = remaining > 0
                         ? remaining + " conflict(s) remaining"
                         : "All conflicts resolved — ready to save"
@@ -132,7 +136,11 @@ Item {
                     root.outputText = data.output_text || ""
                     if (root.currentConflict >= root.conflicts.length)
                         root.currentConflict = Math.max(0, root.conflicts.length - 1)
-                    const remaining = root.conflicts.length
+                    // `conflicts` is the stable full list; the count of
+                    // still-unresolved conflicts comes from the bridge.
+                    const remaining = data.unresolved_count !== undefined
+                        ? data.unresolved_count
+                        : root.conflicts.length
                     root.statusText = remaining > 0
                         ? remaining + " conflict(s) remaining"
                         : "All conflicts resolved — ready to save"

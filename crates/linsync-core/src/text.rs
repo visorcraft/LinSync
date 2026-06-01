@@ -960,6 +960,11 @@ fn decode_utf16(bytes: &[u8], little_endian: bool) -> DecodedText {
         };
         words.push(word);
     }
+    if bytes.len() % 2 == 1 {
+        // A trailing odd byte is a truncated UTF-16 code unit; surface it as a
+        // replacement character instead of silently discarding the byte.
+        words.push(0xFFFD);
+    }
 
     let text = String::from_utf16_lossy(&words);
     DecodedText {
@@ -2238,6 +2243,12 @@ fn detect_moved_blocks(lines: &[DiffLine], blocks: &mut [DiffBlock], options: &T
     // key → vec of block indices that are right-only
     let mut add_map: HashMap<String, Vec<usize>> = HashMap::new();
 
+    // `diff_blocks` builds one block per maximal run of same-kind lines, so the
+    // blocks line up 1:1, in order, with these positional runs. Slicing by
+    // position is robust to non-contiguous line numbers (blank-line / regex
+    // filtering leaves gaps that a line-number-range lookup would mis-handle).
+    let ranges = block_line_ranges(lines);
+
     for (block_idx, block) in blocks.iter().enumerate() {
         if !matches!(block.kind, DiffBlockKind::Difference) {
             continue;
@@ -2245,7 +2256,7 @@ fn detect_moved_blocks(lines: &[DiffLine], blocks: &mut [DiffBlock], options: &T
 
         // Determine if this block is purely left-only (delete) or purely
         // right-only (add).  Mixed blocks (Changed lines) are skipped.
-        let block_lines = block_diff_lines(lines, block);
+        let block_lines: Vec<&DiffLine> = lines[ranges[block_idx].clone()].iter().collect();
 
         let all_left_only = block_lines
             .iter()
@@ -2308,35 +2319,23 @@ fn detect_moved_blocks(lines: &[DiffLine], blocks: &mut [DiffBlock], options: &T
     }
 }
 
-/// Return the slice of `DiffLine`s that belong to `block` by matching line
-/// numbers stored in the block against the line list.
-fn block_diff_lines<'a>(lines: &'a [DiffLine], block: &DiffBlock) -> Vec<&'a DiffLine> {
-    lines
-        .iter()
-        .filter(|line| match line.kind {
-            DiffLineKind::LeftOnly => block.left_start.is_some_and(|s| {
-                line.left_line
-                    .is_some_and(|n| n >= s && n < s + block.left_len)
-            }),
-            DiffLineKind::RightOnly => block.right_start.is_some_and(|s| {
-                line.right_line
-                    .is_some_and(|n| n >= s && n < s + block.right_len)
-            }),
-            DiffLineKind::Changed => {
-                // Changed lines are mixed; include if left or right side falls in range.
-                let left_in = block.left_start.is_some_and(|s| {
-                    line.left_line
-                        .is_some_and(|n| n >= s && n < s + block.left_len)
-                });
-                let right_in = block.right_start.is_some_and(|s| {
-                    line.right_line
-                        .is_some_and(|n| n >= s && n < s + block.right_len)
-                });
-                left_in || right_in
-            }
-            DiffLineKind::Equal => false,
-        })
-        .collect()
+/// Partition `lines` into the contiguous index runs that [`diff_blocks`] groups
+/// into blocks — one range per block, in the same order. Recovering a block's
+/// lines by position (rather than by line-number range) is correct even when
+/// blank-line / regex filtering leaves gaps in the document line numbers.
+fn block_line_ranges(lines: &[DiffLine]) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let kind = block_kind(lines[i].kind);
+        let start = i;
+        i += 1;
+        while i < lines.len() && block_kind(lines[i].kind) == kind {
+            i += 1;
+        }
+        ranges.push(start..i);
+    }
+    ranges
 }
 
 fn compare_summary(lines: &[DiffLine], blocks: &[DiffBlock]) -> CompareSummary {

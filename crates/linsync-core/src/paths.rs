@@ -11,24 +11,27 @@ pub struct AppPaths {
 }
 
 impl AppPaths {
+    /// Read an environment variable as a directory path, treating an **empty**
+    /// value as unset. `env::var_os` returns `Some("")` for an empty variable;
+    /// without this an empty `HOME`/`XDG_*` would produce relative paths and
+    /// LinSync would write config/data/cache under the process CWD.
+    fn env_dir(key: &str) -> Option<PathBuf> {
+        let value = env::var_os(key)?;
+        if value.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(value))
+        }
+    }
+
     pub fn from_env() -> Self {
-        let home = env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
+        let home = Self::env_dir("HOME").unwrap_or_else(|| PathBuf::from("."));
 
         Self::from_base_dirs(
-            env::var_os("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".config")),
-            env::var_os("XDG_DATA_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".local/share")),
-            env::var_os("XDG_CACHE_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".cache")),
-            env::var_os("XDG_STATE_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".local/state")),
+            Self::env_dir("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config")),
+            Self::env_dir("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share")),
+            Self::env_dir("XDG_CACHE_HOME").unwrap_or_else(|| home.join(".cache")),
+            Self::env_dir("XDG_STATE_HOME").unwrap_or_else(|| home.join(".local/state")),
         )
     }
 

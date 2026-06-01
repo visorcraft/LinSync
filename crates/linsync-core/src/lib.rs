@@ -49,8 +49,8 @@ pub use image::{
 };
 pub use logging::{LoggingError, init_file_logging, install_panic_log_hook};
 pub use merge::{
-    ConflictId, ConflictMarkerParseError, EditableDocument, MergeChoice, MergeError,
-    ParsedConflictMarker, ThreeWayConflict, ThreeWayMergeError, ThreeWayMergeResult,
+    ConflictId, ConflictMarkerParseError, ConflictRegion, EditableDocument, MergeChoice,
+    MergeError, ParsedConflictMarker, ThreeWayConflict, ThreeWayMergeError, ThreeWayMergeResult,
     ThreeWayMergeState, TwoWayMergeState, backup_path, create_save_plan, merge_three_way,
     parse_conflict_markers, restore_backup, write_encoded_text_with_plan, write_text_with_plan,
 };

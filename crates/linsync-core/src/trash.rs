@@ -333,7 +333,12 @@ fn rename_no_replace_fallback(source: &Path, destination: &Path) -> io::Result<(
     let metadata = fs::symlink_metadata(source)?;
     if metadata.is_file() {
         fs::hard_link(source, destination)?;
-        fs::remove_file(source)?;
+        if let Err(err) = fs::remove_file(source) {
+            // The source still holds the content; remove the trash-side hard
+            // link so the file never lives in both places.
+            let _ = fs::remove_file(destination);
+            return Err(err);
+        }
         return Ok(());
     }
 
@@ -405,15 +410,16 @@ fn trash_info_text(original_path: &Path, deleted_at: SystemTime) -> String {
 }
 
 fn percent_encode_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .bytes()
-        .flat_map(|byte| match byte {
+    let mut encoded = String::new();
+    for &byte in path.as_os_str().as_bytes() {
+        match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'_' | b'-' | b'~' => {
-                vec![byte as char]
+                encoded.push(byte as char);
             }
-            _ => format!("%{byte:02X}").chars().collect(),
-        })
-        .collect()
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 fn deletion_date(time: SystemTime) -> String {
@@ -731,6 +737,56 @@ mod tests {
             deletion_date(UNIX_EPOCH + Duration::from_secs(86_400 + 3_661)),
             "1970-01-02T01:01:01"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn percent_encode_preserves_non_utf8_bytes() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        // A path containing an invalid UTF-8 byte (0xFF) must survive
+        // round-trip through the trashinfo Path= field rather than being
+        // replaced by U+FFFD.
+        let raw = OsString::from_vec(vec![b'/', b'a', 0xFF, b'b', b'.', b't', b'x', b't']);
+        let encoded = percent_encode_path(Path::new(&raw));
+        assert_eq!(encoded, "/a%FFb.txt");
+        assert!(!encoded.contains('\u{FFFD}'));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_fallback_rolls_back_when_source_unlink_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Directory permissions do not restrict root, so the source unlink
+        // would succeed and the rollback path would never be exercised.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
+        let fixture = TempFixture::new();
+        let source_dir = fixture.path.join("locked");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("source.txt");
+        let destination = fixture.path.join("destination.txt");
+        fs::write(&source, "content").unwrap();
+
+        // Make the source's parent read-only so unlinking the source fails
+        // after the hard link into the destination succeeds.
+        fs::set_permissions(&source_dir, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let err = rename_no_replace_fallback(&source, &destination).unwrap_err();
+
+        // Restore permissions so the fixture can be cleaned up.
+        fs::set_permissions(&source_dir, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(err.kind() != io::ErrorKind::NotFound);
+        // Source content preserved, destination hard link rolled back so the
+        // file never lives in both places.
+        assert!(source.exists());
+        assert_eq!(fs::read_to_string(&source).unwrap(), "content");
+        assert!(!destination.exists());
     }
 
     struct TempFixture {

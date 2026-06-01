@@ -83,6 +83,7 @@ impl FileFilter {
                 size: None,
                 modified: None,
                 file_kind: None,
+                resolved_path: None,
             },
             options,
         )
@@ -134,6 +135,7 @@ impl FileFilter {
             size: None,
             modified: None,
             file_kind: None,
+            resolved_path: None,
         };
         let decision =
             self.decision_for_entry_with_options(&context, &FilterMatchOptions::default());
@@ -158,6 +160,7 @@ impl FileFilter {
             size: None,
             modified: None,
             file_kind: None,
+            resolved_path: None,
         };
         let decision =
             self.decision_for_entry_with_options(&context, &FilterMatchOptions::default());
@@ -242,6 +245,11 @@ pub struct FilterEntryContext<'a> {
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
     pub file_kind: Option<FilterFileKind>,
+    /// A filesystem-resolvable path for `path` when `path` itself is relative
+    /// (the folder walk matches rules against the relative path but needs a
+    /// real path to stat / recursively size a directory). `None` falls back to
+    /// `path`.
+    pub resolved_path: Option<&'a Path>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -728,19 +736,26 @@ fn parse_date_ms(s: &str) -> Option<u128> {
 
 /// Number of days from 1970-01-01 to the given date (must be >= 1970-01-01).
 fn days_since_epoch(year: i64, month: u8, day: u8) -> Option<u64> {
-    // Julian Day Number helper — works for the Gregorian calendar.
-    fn jdn(y: i64, m: u8, d: u8) -> i64 {
-        let m = i64::from(m);
-        let d = i64::from(d);
+    // Julian Day Number helper — works for the Gregorian calendar. Computed in
+    // i128 so an extreme but i64-parseable `year` cannot overflow `365 * y2`
+    // (which panics in debug builds and wraps to a garbage epoch in release).
+    fn jdn(y: i64, m: u8, d: u8) -> i128 {
+        let y = i128::from(y);
+        let m = i128::from(m);
+        let d = i128::from(d);
         let a = (14 - m) / 12;
         let y2 = y + 4800 - a;
         let m2 = m + 12 * a - 3;
         d + (153 * m2 + 2) / 5 + 365 * y2 + y2 / 4 - y2 / 100 + y2 / 400 - 32045
     }
     // JDN of 1970-01-01.
-    const EPOCH_JDN: i64 = 2_440_588;
+    const EPOCH_JDN: i128 = 2_440_588;
     let diff = jdn(year, month, day) - EPOCH_JDN;
-    if diff < 0 { None } else { Some(diff as u64) }
+    if diff < 0 {
+        None
+    } else {
+        u64::try_from(diff).ok()
+    }
 }
 
 /// Recursively sum the sizes of all files under `dir`.  Symlinks are not
@@ -788,12 +803,17 @@ fn expression_match(
             .file_kind
             .is_some_and(|actual| compare_file_kind(actual, expected, expression.operator)),
         (ExpressionAttribute::Size, ExpressionValue::Number(expected)) => {
-            let actual = if let Some(s) = context.size {
+            // A directory's `size` expression should reflect the recursive
+            // content size, never the directory inode size (~4096 bytes) that
+            // the folder walk records in `context.size`. So for directories the
+            // recursive walk always wins over the cached inode size.
+            let resolvable = context.resolved_path.unwrap_or(context.path);
+            let actual = if context.is_dir {
+                dir_size_recursive(resolvable)
+            } else if let Some(s) = context.size {
                 s
-            } else if context.is_dir {
-                dir_size_recursive(context.path)
             } else {
-                match std::fs::metadata(context.path) {
+                match std::fs::metadata(resolvable) {
                     Ok(m) => m.len(),
                     Err(_) => return false,
                 }
@@ -910,10 +930,14 @@ fn regex_match(pattern: &str, value: &str, case_sensitive: bool) -> bool {
 }
 
 fn wildcard_match(pattern: &str, value: &str) -> bool {
-    wildcard_match_inner(pattern.as_bytes(), value.as_bytes())
+    // Match on Unicode scalar values, not bytes, so `?` matches exactly one
+    // character and literals compare per-character for multibyte UTF-8 names.
+    let pattern: Vec<char> = pattern.chars().collect();
+    let value: Vec<char> = value.chars().collect();
+    wildcard_match_inner(&pattern, &value)
 }
 
-fn wildcard_match_inner(pattern: &[u8], value: &[u8]) -> bool {
+fn wildcard_match_inner(pattern: &[char], value: &[char]) -> bool {
     let mut pattern_index = 0;
     let mut value_index = 0;
     let mut star_index = None;
@@ -921,11 +945,11 @@ fn wildcard_match_inner(pattern: &[u8], value: &[u8]) -> bool {
 
     while value_index < value.len() {
         if pattern_index < pattern.len()
-            && (pattern[pattern_index] == b'?' || pattern[pattern_index] == value[value_index])
+            && (pattern[pattern_index] == '?' || pattern[pattern_index] == value[value_index])
         {
             pattern_index += 1;
             value_index += 1;
-        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == '*' {
             star_index = Some(pattern_index);
             match_index = value_index;
             pattern_index += 1;
@@ -938,7 +962,7 @@ fn wildcard_match_inner(pattern: &[u8], value: &[u8]) -> bool {
         }
     }
 
-    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+    while pattern_index < pattern.len() && pattern[pattern_index] == '*' {
         pattern_index += 1;
     }
 
@@ -1103,6 +1127,7 @@ mod tests {
             modified: modified_ms
                 .map(|millis| std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis)),
             file_kind,
+            resolved_path: None,
         }
     }
 
@@ -1434,6 +1459,26 @@ d!:^target/tmp$
     }
 
     #[test]
+    fn wildcard_matches_per_character_for_non_ascii_names() {
+        // `?` must match exactly one Unicode scalar value, not one UTF-8 byte.
+        // "café" and "naïve" each contain a multibyte char (é = 2 bytes,
+        // ï = 2 bytes) that a byte-wise `?` would mishandle.
+        assert!(wildcard_match("caf?", "café"));
+        assert!(wildcard_match("na?ve", "naïve"));
+        // A single `?` must not match the two bytes of a multibyte char.
+        assert!(!wildcard_match("caf?", "cafée"));
+
+        // Literal comparison is per-character, so a multibyte literal pattern
+        // matches its identical multibyte value and rejects a different one.
+        assert!(wildcard_match("café.txt", "café.txt"));
+        assert!(!wildcard_match("café.txt", "cafe.txt"));
+
+        // `*` semantics are unchanged across multibyte content.
+        assert!(wildcard_match("*é.txt", "résumé.txt"));
+        assert!(wildcard_match("caf*", "café"));
+    }
+
+    #[test]
     fn de_excludes_large_dirs() {
         // de!: size > 10 MB — directory whose recursive file content exceeds the
         // threshold should be excluded; one that stays under should be kept.
@@ -1448,6 +1493,51 @@ d!:^target/tmp$
 
         assert!(f.matches_dir(small_dir.path()), "small dir should be kept");
         assert!(!f.matches_dir(big_dir.path()), "big dir should be excluded");
+    }
+
+    #[test]
+    fn dir_size_expression_uses_recursive_content_not_inode_size() {
+        // The folder walk records the directory inode size (~4096 bytes) in
+        // `context.size`.  A `size` expression on a directory must ignore that
+        // and use the recursive content size instead.
+        let f = FileFilter::parse("de!: size > 10485760").unwrap();
+        let options = FilterMatchOptions::default();
+
+        let big_dir = TempDir::new();
+        std::fs::write(big_dir.path().join("blob"), vec![0u8; 11 * 1024 * 1024]).unwrap();
+
+        // Simulate the production context: a populated inode size that, on its
+        // own, would stay under the 10 MB threshold and wrongly keep the dir.
+        let inode_sized_context = FilterEntryContext {
+            path: big_dir.path(),
+            is_dir: true,
+            size: Some(4096),
+            modified: None,
+            file_kind: None,
+            resolved_path: None,
+        };
+        assert_eq!(
+            f.decision_for_entry_with_options(&inode_sized_context, &options),
+            FilterDecision::Exclude,
+            "directory should be excluded based on 11 MB of recursive content, \
+             not the 4096-byte inode size"
+        );
+
+        let small_dir = TempDir::new();
+        std::fs::write(small_dir.path().join("tiny"), b"x").unwrap();
+        let small_context = FilterEntryContext {
+            path: small_dir.path(),
+            is_dir: true,
+            size: Some(4096),
+            modified: None,
+            file_kind: None,
+            resolved_path: None,
+        };
+        assert_eq!(
+            f.decision_for_entry_with_options(&small_context, &options),
+            FilterDecision::Neutral,
+            "small directory should not match the exclude rule"
+        );
     }
 
     #[test]

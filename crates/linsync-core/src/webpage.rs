@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Which sub-mode to use for a webpage comparison.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,14 +254,44 @@ fn invoke_web_fetch(
     }
 }
 
+/// Monotonic, process-wide counter so concurrent (or same-instant) calls to
+/// [`write_temp_text`] never collide on a filename even when the wall clock
+/// has not advanced.
+static TEMP_TEXT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn write_temp_text(dir: &Path, prefix: &str, text: &str) -> Result<PathBuf, WebpageCompareError> {
-    let timestamp = std::time::SystemTime::now()
+    // Use the full duration since the epoch (secs *and* nanos) so the name is
+    // unique across compares, plus a process-wide atomic counter so two calls
+    // observing the same instant still differ. `prefix` already encodes the
+    // left/right side, so left vs right never collide.
+    let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let path = dir.join(format!("{prefix}-{timestamp}.txt"));
+        .unwrap_or(std::time::Duration::ZERO);
+    let seq = TEMP_TEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!(
+        "{prefix}-{}-{}-{seq}.txt",
+        elapsed.as_secs(),
+        elapsed.subsec_nanos()
+    ));
     std::fs::write(&path, text)?;
     Ok(path)
+}
+
+/// RAII guard that removes a fetched-page temp file when dropped.
+///
+/// Fetched pages may carry authenticated/private content, so the cache files
+/// written by [`write_temp_text`] must not persist at rest beyond the compare.
+/// Holding the guard keeps the file alive while it is being read/compared; the
+/// file is removed on every exit path (success, error, or panic). Removal
+/// errors are ignored — best-effort cleanup of a temp file.
+struct TempFileGuard {
+    path: PathBuf,
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 fn invoke_fetch_html(
@@ -463,7 +494,15 @@ pub fn compare_webpage_html_source(
     let right_html = invoke_fetch_html(&plugin_dir, right_url, options, &exec_opts)?;
     let fetch_dir = webcompare_cache_dir(cache_dir)?;
     let left_path = write_temp_text(&fetch_dir, "left-html", &left_html)?;
+    // Guards remove the fetched files on every exit path; they stay alive
+    // (and so do the files) until this function returns.
+    let _left_guard = TempFileGuard {
+        path: left_path.clone(),
+    };
     let right_path = write_temp_text(&fetch_dir, "right-html", &right_html)?;
+    let _right_guard = TempFileGuard {
+        path: right_path.clone(),
+    };
     let cmp = crate::text::compare_text_files(
         &left_path,
         &right_path,
@@ -488,7 +527,15 @@ pub fn compare_webpage_extracted_text(
     let right_text = invoke_extract_text(&plugin_dir, right_url, options, &exec_opts)?;
     let fetch_dir = webcompare_cache_dir(cache_dir)?;
     let left_path = write_temp_text(&fetch_dir, "left-text", &left_text)?;
+    // Guards remove the fetched files on every exit path; they stay alive
+    // (and so do the files) until this function returns.
+    let _left_guard = TempFileGuard {
+        path: left_path.clone(),
+    };
     let right_path = write_temp_text(&fetch_dir, "right-text", &right_text)?;
+    let _right_guard = TempFileGuard {
+        path: right_path.clone(),
+    };
     let cmp = crate::text::compare_text_files(
         &left_path,
         &right_path,
@@ -637,6 +684,52 @@ mod tests {
         assert!(dir.ends_with("webcompare/fetched"));
     }
 
+    // ── write_temp_text uniqueness (Finding 1) ────────────────────────────────
+
+    #[test]
+    fn write_temp_text_filenames_are_unique_within_one_compare() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Same prefix, written back-to-back: the atomic counter must keep them
+        // distinct even if the clock does not advance between calls.
+        let a = write_temp_text(tmp.path(), "left-html", "a").unwrap();
+        let b = write_temp_text(tmp.path(), "left-html", "b").unwrap();
+        assert_ne!(a, b, "same-prefix temp files collided");
+        assert!(a.exists() && b.exists());
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "b");
+    }
+
+    #[test]
+    fn write_temp_text_left_and_right_never_collide() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = write_temp_text(tmp.path(), "left-html", "L").unwrap();
+        let right = write_temp_text(tmp.path(), "right-html", "R").unwrap();
+        assert_ne!(left, right);
+    }
+
+    // ── TempFileGuard cleanup (Finding 2) ─────────────────────────────────────
+
+    #[test]
+    fn temp_file_guard_removes_file_on_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_temp_text(tmp.path(), "left-html", "content").unwrap();
+        assert!(path.exists());
+        {
+            let _guard = TempFileGuard { path: path.clone() };
+            // File still present while the guard is alive.
+            assert!(path.exists());
+        }
+        assert!(!path.exists(), "guard should remove file on drop");
+    }
+
+    #[test]
+    fn temp_file_guard_drop_is_infallible_for_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("never-created.txt");
+        // Dropping a guard whose file is already gone must not panic.
+        let _guard = TempFileGuard { path };
+    }
+
     // ── Task 9.3 tests ────────────────────────────────────────────────────────
 
     fn plugin_script_exists() -> bool {
@@ -756,6 +849,45 @@ mod tests {
         } else {
             panic!("expected Text result");
         }
+    }
+
+    #[test]
+    fn html_source_does_not_leave_fetched_files_behind() {
+        if !plugin_script_exists() {
+            return;
+        }
+        use httptest::{Expectation, Server, matchers::*, responders::*};
+        let server_l = Server::run();
+        server_l.expect(
+            Expectation::matching(request::method_path("GET", "/"))
+                .respond_with(status_code(200).body("<html><body>Left</body></html>")),
+        );
+        let server_r = Server::run();
+        server_r.expect(
+            Expectation::matching(request::method_path("GET", "/"))
+                .respond_with(status_code(200).body("<html><body>Right</body></html>")),
+        );
+        let opts = WebpageCompareOptions {
+            confirmed_by_user: true,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        compare_webpage_html_source(
+            &server_l.url_str("/"),
+            &server_r.url_str("/"),
+            &opts,
+            tmp.path(),
+        )
+        .unwrap();
+        let fetched = tmp.path().join("webcompare").join("fetched");
+        let leftovers: Vec<_> = std::fs::read_dir(&fetched)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "fetched cache should be empty after compare, found: {leftovers:?}"
+        );
     }
 
     // ── Task 9.4 tests ────────────────────────────────────────────────────────

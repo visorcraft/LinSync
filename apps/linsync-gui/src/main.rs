@@ -5085,6 +5085,21 @@ fn plugins_toggle_bridge_response(
     }
 }
 
+/// Whether a client-supplied plugin id is safe to use as a filename component.
+///
+/// The id is interpolated into `<plugin-options-dir>/{id}.json`, so without
+/// this guard a `/`-bearing id would let `/plugins/options/{get,set}` read or
+/// write arbitrary `*.json` paths. Mirrors `linsync-core`'s stable-id rule
+/// (alphanumeric plus `. _ -`) and additionally rejects `.`/`..`.
+fn is_safe_plugin_id(id: &str) -> bool {
+    !id.is_empty()
+        && id != "."
+        && id != ".."
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 /// Load the per-plugin options JSON map for `plugin_id`.  Returns an empty map
 /// if no file exists yet.
 fn load_plugin_options(
@@ -5124,6 +5139,9 @@ fn plugins_options_get_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8>
     let Some(id) = query_value(&params, "id") else {
         return bridge_error(400, "Bad Request", "missing plugin id");
     };
+    if !is_safe_plugin_id(id) {
+        return bridge_error(400, "Bad Request", "invalid plugin id");
+    }
 
     // Look up the schema from the discovered manifest (empty if plugin not found).
     let discovery = discover_installed_plugins(paths);
@@ -5162,6 +5180,9 @@ fn plugins_options_set_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8>
     let Some(id) = query_value(&params, "id") else {
         return bridge_error(400, "Bad Request", "missing plugin id");
     };
+    if !is_safe_plugin_id(id) {
+        return bridge_error(400, "Bad Request", "invalid plugin id");
+    }
     let Some(key) = query_value(&params, "key") else {
         return bridge_error(400, "Bad Request", "missing option key");
     };
@@ -5227,9 +5248,11 @@ fn folder_op_plan_bridge_response(
     let Some(kind) = query_value(&params, "kind") else {
         return bridge_error(400, "Bad Request", "missing op kind");
     };
-    let selection = query_value(&params, "entries").unwrap_or("");
-    let entries: Vec<PathBuf> = split_csv_list(selection)
+    // Each selected entry arrives as its own `entries=` param (percent-encoded),
+    // so paths containing commas survive intact.
+    let entries: Vec<PathBuf> = query_values(&params, "entries")
         .into_iter()
+        .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .collect();
 
@@ -5293,9 +5316,11 @@ fn folder_op_execute_bridge_response(
     let Some(kind) = query_value(&params, "kind") else {
         return bridge_error(400, "Bad Request", "missing op kind");
     };
-    let selection = query_value(&params, "entries").unwrap_or("");
-    let entries: Vec<PathBuf> = split_csv_list(selection)
+    // Each selected entry arrives as its own `entries=` param (percent-encoded),
+    // so paths containing commas survive intact.
+    let entries: Vec<PathBuf> = query_values(&params, "entries")
         .into_iter()
+        .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .collect();
 
@@ -5693,6 +5718,8 @@ pub(crate) fn start_three_way_merge_session(
     let body = serde_json::json!({
         "ok": true,
         "conflicts": conflicts_json,
+        // At start nothing is resolved yet, so every conflict is unresolved.
+        "unresolved_count": conflicts_json.len(),
         "output_text": output_text,
     })
     .to_string();
@@ -5750,9 +5777,12 @@ pub(crate) fn resolve_three_way_conflict(
 
     let conflicts_json = three_way_conflicts_json(session);
     let output_text = session.output().text();
+    // `conflicts` is the stable full list (it never shrinks as conflicts are
+    // resolved), so the GUI must use `unresolved_count` for "remaining".
     let body = serde_json::json!({
         "ok": true,
         "conflicts": conflicts_json,
+        "unresolved_count": session.unresolved_count(),
         "output_text": output_text,
     })
     .to_string();
@@ -5885,6 +5915,18 @@ fn query_value<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a str>
         .iter()
         .find(|(candidate, _)| candidate == key)
         .map(|(_, value)| value.as_str())
+}
+
+/// All values for a repeated query key, in order (each already percent-decoded
+/// by [`query_params`]). Used for multi-valued params like `entries`, where one
+/// param per item avoids an in-band separator that would split values
+/// containing that separator (e.g. a path with a comma).
+fn query_values<'a>(params: &'a [(String, String)], key: &str) -> Vec<&'a str> {
+    params
+        .iter()
+        .filter(|(candidate, _)| candidate == key)
+        .map(|(_, value)| value.as_str())
+        .collect()
 }
 
 fn query_bool(params: &[(String, String)], key: &str) -> bool {
@@ -6140,6 +6182,20 @@ mod tests {
     use super::*;
     use linsync_core::backup_path;
     use std::io::{Read, Write};
+
+    #[test]
+    fn plugin_id_guard_blocks_path_traversal() {
+        assert!(is_safe_plugin_id("tesseract-ocr"));
+        assert!(is_safe_plugin_id("com.example.plugin_v2"));
+        // Anything that could escape `<options-dir>/{id}.json` is rejected.
+        assert!(!is_safe_plugin_id(""));
+        assert!(!is_safe_plugin_id("."));
+        assert!(!is_safe_plugin_id(".."));
+        assert!(!is_safe_plugin_id("../../etc/cron.d/evil"));
+        assert!(!is_safe_plugin_id("a/b"));
+        assert!(!is_safe_plugin_id("a\\b"));
+        assert!(!is_safe_plugin_id("with space"));
+    }
 
     fn test_app_paths(name: &str) -> AppPaths {
         let root = env::temp_dir().join(format!("linsync-gui-test-{name}-{}", process::id()));

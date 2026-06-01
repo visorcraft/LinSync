@@ -19,7 +19,7 @@ fn current_storage_schema_version() -> u32 {
     CURRENT_STORAGE_SCHEMA_VERSION
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub schema_version: u32,
@@ -59,6 +59,11 @@ pub struct Settings {
     pub session_includes: Vec<String>,
     #[serde(default)]
     pub session_excludes: Vec<String>,
+    /// Unknown keys from a richer/newer build, preserved verbatim across a
+    /// load→save round-trip so an older build never silently drops settings it
+    /// does not understand.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_true() -> bool {
@@ -97,6 +102,7 @@ impl Default for Settings {
             max_walk_depth: 0,
             session_includes: Vec::new(),
             session_excludes: Vec::new(),
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -340,11 +346,14 @@ impl SettingsStore {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecentPaths {
     pub schema_version: u32,
     pub paths: Vec<PathBuf>,
+    /// Unknown keys preserved across a load→save round-trip (forward-compat).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for RecentPaths {
@@ -352,6 +361,7 @@ impl Default for RecentPaths {
         Self {
             schema_version: 1,
             paths: Vec::new(),
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -454,7 +464,9 @@ impl RecentPathStore {
         let mut recent = self.load_or_default()?;
         recent.paths.retain(|existing| existing != &path);
         recent.paths.insert(0, path);
-        recent.paths.truncate(self.limit);
+        // `max(1)`: a limit of 0 would truncate away the entry we just added,
+        // silently discarding the caller's data.
+        recent.paths.truncate(self.limit.max(1));
         self.save(&recent)?;
         Ok(recent)
     }
@@ -490,7 +502,7 @@ impl RecentPathStore {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionFile {
     #[serde(default = "current_storage_schema_version")]
     pub schema_version: u32,
@@ -501,6 +513,9 @@ pub struct SessionFile {
     pub filter_names: Vec<String>,
     #[serde(default)]
     pub layout: SessionLayout,
+    /// Unknown keys preserved across a load→save round-trip (forward-compat).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl SessionFile {
@@ -511,6 +526,7 @@ impl SessionFile {
             selected_view: CompareViewMode::default(),
             filter_names: Vec::new(),
             layout: SessionLayout::default(),
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -539,13 +555,16 @@ pub enum CompareViewMode {
     Webpage,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionLayout {
     pub active_side: Option<CompareSide>,
     pub visible_columns: Vec<String>,
     pub sort_column: Option<String>,
     pub selected_view_state: Option<String>,
+    /// Unknown keys preserved across a load→save round-trip (forward-compat).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -567,7 +586,7 @@ impl SessionFileStore {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
     #[serde(default = "current_storage_schema_version")]
     pub schema_version: u32,
@@ -633,11 +652,14 @@ impl ProjectFileStore {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecentSessions {
     pub schema_version: u32,
     pub sessions: Vec<SessionFile>,
+    /// Unknown keys preserved across a load→save round-trip (forward-compat).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for RecentSessions {
@@ -645,6 +667,7 @@ impl Default for RecentSessions {
         Self {
             schema_version: CURRENT_STORAGE_SCHEMA_VERSION,
             sessions: Vec::new(),
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -691,7 +714,8 @@ impl RecentSessionStore {
             .sessions
             .retain(|existing| existing.session != session.session);
         recent.sessions.insert(0, session);
-        recent.sessions.truncate(self.limit);
+        // `max(1)`: a limit of 0 would truncate away the entry we just added.
+        recent.sessions.truncate(self.limit.max(1));
         self.save(&recent)?;
         Ok(recent)
     }
