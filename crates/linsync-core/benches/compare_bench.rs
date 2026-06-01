@@ -188,6 +188,7 @@ fn text_compare_options(c: &mut Criterion) {
 
 fn binary_compare(c: &mut Criterion) {
     let mut group = c.benchmark_group("binary_compare");
+    group.sample_size(20);
 
     group.bench_function("equal_4kb", |b| {
         let data = vec![0xFF_u8; 4096];
@@ -207,6 +208,20 @@ fn binary_compare(c: &mut Criterion) {
         for byte in right.iter_mut().step_by(17) {
             *byte = 0xCD;
         }
+        let opts = BinaryCompareOptions::default();
+        b.iter(|| compare_binary("left", &left, "right", &right, &opts));
+    });
+
+    group.bench_function("equal_8mb", |b| {
+        let data = vec![0xEF_u8; 8 * 1024 * 1024];
+        let opts = BinaryCompareOptions::default();
+        b.iter(|| compare_binary("left", &data, "right", &data, &opts));
+    });
+
+    group.bench_function("tail_difference_8mb", |b| {
+        let left = vec![0xEF_u8; 8 * 1024 * 1024];
+        let mut right = left.clone();
+        *right.last_mut().unwrap() = 0xFE;
         let opts = BinaryCompareOptions::default();
         b.iter(|| compare_binary("left", &left, "right", &right, &opts));
     });
