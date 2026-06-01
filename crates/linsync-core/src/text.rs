@@ -3170,6 +3170,7 @@ fn span(start: usize, end: usize, class: &str) -> SyntaxSpan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn compare_documents_cancellable_aborts_when_flagged() {
@@ -3187,6 +3188,32 @@ mod tests {
         let got = compare_documents_cancellable(left, right, &opts, &|| false);
         assert!(got.is_some(), "never-cancel must yield a result");
         assert!(!got.unwrap().lines.is_empty());
+    }
+
+    #[test]
+    fn large_lcs_compare_can_cancel_after_work_starts() {
+        let opts = TextCompareOptions::default();
+        let left_text = (0..=LCS_FULL_TABLE_THRESHOLD)
+            .map(|line| format!("left-{line}\n"))
+            .collect::<String>();
+        let right_text = (0..=LCS_FULL_TABLE_THRESHOLD)
+            .map(|line| format!("right-{line}\n"))
+            .collect::<String>();
+        let left = TextDocument::from_text("l", &left_text);
+        let right = TextDocument::from_text("r", &right_text);
+        let polls = Cell::new(0usize);
+
+        let got = compare_documents_cancellable(left, right, &opts, &|| {
+            let next = polls.get() + 1;
+            polls.set(next);
+            next >= 6
+        });
+
+        assert!(got.is_none(), "mid-compare cancellation must abort");
+        assert!(
+            polls.get() >= 6,
+            "cancellation should happen after the large-input diff starts"
+        );
     }
 
     #[test]
