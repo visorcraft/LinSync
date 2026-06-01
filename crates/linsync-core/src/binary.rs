@@ -185,7 +185,7 @@ fn find_all(haystack: &[u8], needle: &[u8], from_offset: usize) -> Vec<usize> {
     offsets
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinaryCompareResult {
     pub left_name: String,
     pub right_name: String,
@@ -196,13 +196,83 @@ pub struct BinaryCompareResult {
     pub metadata_differences: Vec<BinaryMetadataDifference>,
     pub differences: Vec<ByteDiff>,
     pub rows: Vec<HexRow>,
+    // Raw buffers back search/paging but are not part of the serialized report:
+    // skipped so a saved result stays small and re-renders from `rows`.
+    #[serde(skip)]
     pub(crate) left_data: Vec<u8>,
+    #[serde(skip)]
     pub(crate) right_data: Vec<u8>,
 }
 
 impl BinaryCompareResult {
     pub fn is_equal(&self) -> bool {
         self.differences.is_empty() && self.metadata_differences.is_empty()
+    }
+
+    /// Render a self-contained HTML hex report from the computed rows, with
+    /// differing rows highlighted. Renders from `rows`, so it works on a result
+    /// re-loaded from JSON (where the raw buffers are not present).
+    pub fn to_html_report(&self) -> String {
+        let mut html = String::new();
+        html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">\n");
+        html.push_str(&format!(
+            "<title>LinSync binary report: {} vs {}</title>\n",
+            escape_binary_html(&self.left_name),
+            escape_binary_html(&self.right_name)
+        ));
+        html.push_str(
+            "<style>\n\
+             body{font-family:system-ui,sans-serif;margin:1.5rem;}\n\
+             table{border-collapse:collapse;}\n\
+             td,th{border:1px solid #ccc;padding:2px 6px;font-family:monospace;white-space:pre;}\n\
+             tr.diff{background:#fff3b0;}\n\
+             td.off{color:#888;}\n\
+             </style>\n</head><body>\n",
+        );
+        html.push_str(&format!(
+            "<h1>{} vs {}</h1>\n",
+            escape_binary_html(&self.left_name),
+            escape_binary_html(&self.right_name)
+        ));
+        html.push_str(&format!(
+            "<p>left {} bytes, right {} bytes; {} differing byte(s)",
+            self.left_len,
+            self.right_len,
+            self.differences.len()
+        ));
+        if !self.metadata_differences.is_empty() {
+            let parts: Vec<&str> = self
+                .metadata_differences
+                .iter()
+                .map(|d| d.as_str())
+                .collect();
+            html.push_str(&format!("; metadata differs: {}", parts.join(", ")));
+        }
+        html.push_str(".</p>\n");
+        if !self.content_compared {
+            html.push_str("<p>(metadata-only comparison)</p>\n");
+        }
+        html.push_str(
+            "<table>\n<thead><tr><th>offset</th><th>left (hex)</th><th>left (ascii)</th>\
+             <th>right (hex)</th><th>right (ascii)</th></tr></thead>\n<tbody>\n",
+        );
+        for row in &self.rows {
+            let class = if row.has_difference {
+                " class=\"diff\""
+            } else {
+                ""
+            };
+            html.push_str(&format!(
+                "<tr{class}><td class=\"off\">{:08x}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                row.offset,
+                escape_binary_html(&row.left_hex),
+                escape_binary_html(&row.left_ascii),
+                escape_binary_html(&row.right_hex),
+                escape_binary_html(&row.right_ascii),
+            ));
+        }
+        html.push_str("</tbody></table>\n</body></html>\n");
+        html
     }
 
     pub fn search_bytes(&self, pattern: &[u8], from_offset: usize) -> Vec<SearchMatch> {
@@ -343,20 +413,21 @@ impl BinaryCompareResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinaryMetadataCompare {
     pub left: BinaryFileMetadata,
     pub right: BinaryFileMetadata,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinaryFileMetadata {
     pub len: u64,
     pub modified: Option<SystemTime>,
     pub readonly: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BinaryMetadataDifference {
     Size,
     Modified,
@@ -373,7 +444,7 @@ impl BinaryMetadataDifference {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByteDiff {
     pub offset: usize,
     pub left: Option<u8>,
@@ -527,6 +598,14 @@ fn content_differences(
 
     let rows = generate_hex_rows(left, right, bytes_per_row);
     (differences, rows)
+}
+
+fn escape_binary_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 pub fn generate_hex_rows(left: &[u8], right: &[u8], bytes_per_row: usize) -> Vec<HexRow> {

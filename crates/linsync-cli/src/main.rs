@@ -639,6 +639,26 @@ fn compare_binary_command(
 ) -> Result<ExitCode, String> {
     let result = compare_binary_files(left, right, &compare_args.binary_options)
         .map_err(|err| err.to_string())?;
+
+    if let Some(path) = &compare_args.save_result {
+        let result_json = serde_json::to_value(&result).map_err(|err| err.to_string())?;
+        let envelope = serde_json::json!({
+            "schema_version": 1,
+            "kind": "binary",
+            "result": result_json,
+        });
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&envelope).map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| {
+            format!(
+                "cannot write --save-result file '{}': {err}",
+                path.display()
+            )
+        })?;
+    }
+
     let differences = result.differences.len();
 
     match compare_args.output {
@@ -3321,9 +3341,15 @@ fn report_command(args: &[String]) -> Result<ExitCode, String> {
                     .map_err(|err| format!("invalid saved table result: {err}"))?;
                 (result.to_html_report(), result.is_equal())
             }
+            Some("binary") => {
+                let result: linsync_core::BinaryCompareResult =
+                    serde_json::from_value(result_value)
+                        .map_err(|err| format!("invalid saved binary result: {err}"))?;
+                (result.to_html_report(), result.is_equal())
+            }
             other => {
                 return Err(format!(
-                    "report --from-json: unsupported result kind {other:?} (expected text, folder, or table)"
+                    "report --from-json: unsupported result kind {other:?} (expected text, folder, table, or binary)"
                 ));
             }
         };
@@ -6371,7 +6397,7 @@ Compare two archive files by extracting them (via tar / unzip subprocesses) and 
 Clear LinSync cache directories. Currently the only supported scope is webcompare (the webpage compare HTTP fetch cache under $XDG_CACHE_HOME/linsync/webcompare).
 .TP
 .B compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] [--save-result FILE] LEFT RIGHT
-Compare two files and exit with 0 for equal files or 1 for differences. The --type auto default routes Folder/Binary/Table/Text; --type image and --type document must be selected explicitly because auto-detection does not route to those engines. --profile seeds every per-mode option from a built-in id (default, strict-bytes, ignore-formatting, code-review, prose-review, folder-sync-preview, webpage-source-safe), a saved user profile id, or a path to a profile JSON file; explicit CLI flags override the profile values regardless of argument order. --prediffer PLUGIN_ID (repeatable; also settable per profile as text.prediffer_plugins) routes enabled, installed prediffer plugins to normalize each side before diffing. Multiple ids form an ordered chain — each stage normalizes the previous stage's output. Ids that are missing, the wrong class, or disabled are skipped with a note and the comparison proceeds without them. --save-result FILE (text compares) writes the full result as versioned JSON so "report --from-json FILE" can re-render it later without recomparing.
+Compare two files and exit with 0 for equal files or 1 for differences. The --type auto default routes Folder/Binary/Table/Text; --type image and --type document must be selected explicitly because auto-detection does not route to those engines. --profile seeds every per-mode option from a built-in id (default, strict-bytes, ignore-formatting, code-review, prose-review, folder-sync-preview, webpage-source-safe), a saved user profile id, or a path to a profile JSON file; explicit CLI flags override the profile values regardless of argument order. --prediffer PLUGIN_ID (repeatable; also settable per profile as text.prediffer_plugins) routes enabled, installed prediffer plugins to normalize each side before diffing. Multiple ids form an ordered chain — each stage normalizes the previous stage's output. Ids that are missing, the wrong class, or disabled are skipped with a note and the comparison proceeds without them. --save-result FILE (text/folder/table/binary compares) writes the full result as versioned JSON so "report --from-json FILE" can re-render it later without recomparing.
 .TP
 .B compare3 [--markers|--json] LEFT BASE RIGHT
 Compare left and right against a base file and optionally print conflict markers or JSON.
@@ -6404,7 +6430,7 @@ Manage discovered plugins. list shows installed plugins with enabled state; insp
 Manage compare profiles — named bundles of per-mode comparison options. Built-in profiles ship with the binary; user profiles live under $XDG_CONFIG_HOME/linsync/profiles/. Use --profile NAME-OR-PATH on a compare command to source options from a profile; CLI flags override profile values.
 .TP
 .B report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports] [--relative-paths] [--from-json FILE]
-Generate an HTML file or folder comparison report with optional text context, folder columns, tree state, or nested file reports. --relative-paths labels the compared paths relative to the current directory (when they live under it) so the report carries no absolute, machine-specific paths. --from-json FILE re-renders a text result previously saved with "compare --save-result" instead of comparing afresh (requires --output).
+Generate an HTML file or folder comparison report with optional text context, folder columns, tree state, or nested file reports. --relative-paths labels the compared paths relative to the current directory (when they live under it) so the report carries no absolute, machine-specific paths. --from-json FILE re-renders a text/folder/table/binary result previously saved with "compare --save-result" instead of comparing afresh (requires --output).
 .TP
 .B project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR | list [DIR] [--json]>
 Operate on a project file (a named bundle of saved comparisons). validate loads and schema-checks it; show lists its comparisons; run executes each one (auto-detecting folder / text / binary / table like the compare command, with default options) and exits 0 when all are equal, 1 when some differ, or 2 on error, for CI use; report writes an HTML report per comparison (text or folder) into DIR with the same exit codes; list shows the *.linsync-project files in DIR (default the current directory) with their name and comparison count.

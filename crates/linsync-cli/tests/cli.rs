@@ -2968,3 +2968,45 @@ fn table_save_result_then_report_from_json_renders_table() {
     );
     assert!(report.contains("carol"), "the added row is present");
 }
+
+#[test]
+fn binary_save_result_then_report_from_json_renders_hex() {
+    let temp = TempFixture::new();
+    fs::write(temp.path.join("a.bin"), [0u8, 1, 2, 3, b'A', b'B']).unwrap();
+    fs::write(temp.path.join("b.bin"), [0u8, 1, 255, 3, b'A', b'B']).unwrap();
+    let a = temp.path.join("a.bin");
+    let b = temp.path.join("b.bin");
+    let json = temp.path.join("bin.json");
+    let html = temp.path.join("r.html");
+
+    let save = run(&[
+        "compare",
+        "--type",
+        "binary",
+        "--save-result",
+        json.to_str().unwrap(),
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+    ]);
+    assert_eq!(save.status.code(), Some(1));
+    // Raw byte buffers are not serialized into the report JSON.
+    assert!(
+        !fs::read_to_string(&json).unwrap().contains("left_data"),
+        "raw buffers must be skipped from saved result"
+    );
+
+    let from = run(&[
+        "report",
+        "--from-json",
+        json.to_str().unwrap(),
+        "--output",
+        html.to_str().unwrap(),
+    ]);
+    assert_eq!(from.status.code(), Some(1));
+    let report = fs::read_to_string(&html).unwrap();
+    assert!(report.contains("<table>"), "renders a hex table");
+    assert!(
+        report.contains("class=\"diff\""),
+        "a differing hex row is highlighted"
+    );
+}
