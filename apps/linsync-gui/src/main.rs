@@ -271,6 +271,8 @@ struct GuiLineRow {
 struct GuiFolderEntry {
     path: String,
     is_dir: bool,
+    /// Entry kind for type filtering: "file" / "directory" / "symlink" / "special".
+    entry_type: String,
     state: String,
     left_size: Option<u64>,
     right_size: Option<u64>,
@@ -1845,6 +1847,7 @@ fn folder_entries_for_gui(entries: &[FolderEntryDiff]) -> Vec<GuiFolderEntry> {
             GuiFolderEntry {
                 path: entry.relative_path.display().to_string(),
                 is_dir: entry.is_dir,
+                entry_type: entry.entry_type.as_str().to_owned(),
                 state: gui_folder_state(entry.state).to_owned(),
                 left_size: entry.left_size,
                 right_size: entry.right_size,
@@ -6765,11 +6768,17 @@ mod tests {
         .expect("utf-8 response");
         let body = json_response_body(&resp);
         let tab = &body["session"]["tabs"][0];
-        assert!(
-            tab["folder_entries"]
-                .as_array()
-                .is_some_and(|v| !v.is_empty())
-        );
+        let entries = tab["folder_entries"].as_array();
+        assert!(entries.is_some_and(|v| !v.is_empty()));
+        // The QML type-filter reads `entry.entryType`; every entry must carry it
+        // so the client-side filter can categorize file/directory/symlink.
+        for entry in entries.unwrap() {
+            let ty = entry["entryType"].as_str();
+            assert!(
+                matches!(ty, Some("file" | "directory" | "symlink" | "special")),
+                "folder entry should expose a recognized entryType, got {ty:?}: {entry}"
+            );
+        }
         assert!(
             tab.get("left_rows").is_none() && tab.get("right_rows").is_none(),
             "folder response should not duplicate virtual table data into text rows: {body}"

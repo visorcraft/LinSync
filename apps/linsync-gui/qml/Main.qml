@@ -74,6 +74,10 @@ Kirigami.ApplicationWindow {
     property bool canUndo: false
     property bool canRedo: false
     property string folderFilter: ""
+    // Free-text search over the relative path, and an entry-type filter
+    // ("" = all, else "file"/"directory"/"symlink"/"special").
+    property string folderSearch: ""
+    property string folderTypeFilter: ""
     property var unfilteredLeftRows: []
     property var unfilteredRightRows: []
     property var folderEntries: []
@@ -81,6 +85,8 @@ Kirigami.ApplicationWindow {
     property string folderSortColumn: ""
     property bool folderSortAscending: true
     onFolderFilterChanged: root.applyFolderFilter()
+    onFolderSearchChanged: root.rebuildFolderView()
+    onFolderTypeFilterChanged: root.rebuildFolderView()
     onFolderSortColumnChanged: root.applyFolderSort()
     onFolderSortAscendingChanged: root.applyFolderSort()
     property int pendingCloseTabId: 0
@@ -1748,17 +1754,32 @@ Kirigami.ApplicationWindow {
     }
 
     function folderEntryMatchesFilter(entry) {
-        if (root.folderFilter === "")
-            return true
         const state = entry && entry.state ? String(entry.state) : ""
-        if (root.folderFilter === "changed")
-            return state === "left_only" || state === "right_only" || state === "changed"
-        if (root.folderFilter === "left_only")
-            return state === "left_only"
-        if (root.folderFilter === "right_only")
-            return state === "right_only"
-        if (root.folderFilter === "diff")
-            return state === "left_only" || state === "right_only" || state === "changed"
+        // State filter.
+        if (root.folderFilter === "changed" || root.folderFilter === "diff") {
+            if (!(state === "left_only" || state === "right_only" || state === "changed"))
+                return false
+        } else if (root.folderFilter === "left_only") {
+            if (state !== "left_only")
+                return false
+        } else if (root.folderFilter === "right_only") {
+            if (state !== "right_only")
+                return false
+        }
+        // Free-text search over the relative path (case-insensitive).
+        if (root.folderSearch !== "") {
+            const path = entry && entry.path ? String(entry.path).toLowerCase() : ""
+            if (path.indexOf(root.folderSearch.toLowerCase()) === -1)
+                return false
+        }
+        // Entry-type filter (file / directory / symlink / special).
+        if (root.folderTypeFilter !== "") {
+            const ty = entry && entry.entryType
+                ? String(entry.entryType)
+                : (entry && entry.isDir ? "directory" : "file")
+            if (ty !== root.folderTypeFilter)
+                return false
+        }
         return true
     }
 
@@ -3831,6 +3852,53 @@ Kirigami.ApplicationWindow {
                         flat: true
                         highlighted: root.folderFilter === "diff"
                         onClicked: root.folderFilter = root.folderFilter === "diff" ? "" : "diff"
+                    }
+
+                    Kirigami.Separator { Layout.fillHeight: true }
+
+                    AppTextField {
+                        id: folderSearchField
+                        implicitHeight: 32
+                        Layout.preferredWidth: 200
+                        text: root.folderSearch
+                        placeholderText: qsTr("Search paths…")
+                        color: root.activeText
+                        placeholderTextColor: root.activeDisabledText
+                        background: Rectangle {
+                            color: root.activeBg
+                            border.color: root.separatorColor
+                            border.width: 1
+                            radius: 4
+                        }
+                        Accessible.name: qsTr("Search folder entries by path")
+                        onTextChanged: root.folderSearch = text
+                    }
+
+                    Controls.Label {
+                        text: qsTr("Type:")
+                        color: root.activeText
+                        opacity: 0.7
+                    }
+
+                    AppButton {
+                        text: qsTr("Files")
+                        flat: true
+                        highlighted: root.folderTypeFilter === "file"
+                        onClicked: root.folderTypeFilter = root.folderTypeFilter === "file" ? "" : "file"
+                    }
+
+                    AppButton {
+                        text: qsTr("Folders")
+                        flat: true
+                        highlighted: root.folderTypeFilter === "directory"
+                        onClicked: root.folderTypeFilter = root.folderTypeFilter === "directory" ? "" : "directory"
+                    }
+
+                    AppButton {
+                        text: qsTr("Symlinks")
+                        flat: true
+                        highlighted: root.folderTypeFilter === "symlink"
+                        onClicked: root.folderTypeFilter = root.folderTypeFilter === "symlink" ? "" : "symlink"
                     }
 
                     Kirigami.Separator { Layout.fillHeight: true }
