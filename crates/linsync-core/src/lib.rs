@@ -40,7 +40,7 @@ pub use folder::{
     FolderOperationPlan, FolderOperationStatus, FolderOperationWarning, FolderOperationWarningKind,
     FolderQuery, FolderQueryGroup, FolderQueryPage, FolderSortKey, FolderTypeFilter, HashAlgorithm,
     SymlinkPolicy, assess_operation_risks, compare_folders, compare_folders_with_progress,
-    execute_folder_operation_plan, plan_folder_operation,
+    compare_virtual_trees, execute_folder_operation_plan, plan_folder_operation,
 };
 #[cfg(feature = "image-compare")]
 pub use image::{

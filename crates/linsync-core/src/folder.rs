@@ -1399,6 +1399,126 @@ fn execute_create_missing(op: &FolderOperation) -> Result<String, String> {
         .map_err(|err| format!("create folder failed: {err}"))
 }
 
+fn virtual_node_type(kind: &str) -> FolderEntryType {
+    match kind {
+        "file" => FolderEntryType::File,
+        "dir" | "directory" => FolderEntryType::Directory,
+        "symlink" | "link" => FolderEntryType::Symlink,
+        _ => FolderEntryType::Special,
+    }
+}
+
+/// Build a [`FolderEntryDiff`] for a path present on one or both sides of a
+/// virtual-tree comparison.
+fn virtual_entry_diff(
+    rel: &str,
+    left: Option<&crate::plugin::VirtualNode>,
+    right: Option<&crate::plugin::VirtualNode>,
+) -> FolderEntryDiff {
+    let relative_path = PathBuf::from(rel);
+    let name = relative_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| rel.to_owned());
+    let extension = relative_path
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned());
+    let node = left.or(right).expect("at least one side is present");
+    let entry_type = virtual_node_type(&node.kind);
+    let state = match (left, right) {
+        (Some(_), None) => FolderEntryState::LeftOnly,
+        (None, Some(_)) => FolderEntryState::RightOnly,
+        (Some(l), Some(r)) => {
+            // Directories carry no content; presence on both sides is equal.
+            let equal = if l.kind != r.kind {
+                false
+            } else if entry_type == FolderEntryType::Directory {
+                true
+            } else if let (Some(lh), Some(rh)) = (&l.sha256, &r.sha256) {
+                lh == rh
+            } else {
+                l.size == r.size
+            };
+            if equal {
+                FolderEntryState::Identical
+            } else {
+                FolderEntryState::Different
+            }
+        }
+        (None, None) => unreachable!("a path is only listed when one side has it"),
+    };
+    FolderEntryDiff {
+        relative_path,
+        name,
+        extension,
+        state,
+        left_size: left.and_then(|n| n.size),
+        right_size: right.and_then(|n| n.size),
+        left_modified: None,
+        right_modified: None,
+        entry_type,
+        effective_method: None,
+        method_note: None,
+        is_dir: entry_type == FolderEntryType::Directory,
+        error: None,
+        left_permissions: None,
+        right_permissions: None,
+        left_owner: None,
+        right_owner: None,
+        left_group: None,
+        right_group: None,
+        left_hash: left.and_then(|n| n.sha256.clone()),
+        right_hash: right.and_then(|n| n.sha256.clone()),
+    }
+}
+
+/// Compare two virtual folder trees (e.g. produced by an `unpack_folder`
+/// plugin) into a [`FolderCompareResult`], so the standard folder query and
+/// rendering paths apply to plugin-virtualized archives. Equality uses the
+/// SHA-256 when both sides provide one, else the size; directories match on
+/// presence. Entries are sorted by relative path.
+pub fn compare_virtual_trees(
+    left: &[crate::plugin::VirtualNode],
+    right: &[crate::plugin::VirtualNode],
+) -> FolderCompareResult {
+    let left_map: BTreeMap<&str, &crate::plugin::VirtualNode> =
+        left.iter().map(|n| (n.path.as_str(), n)).collect();
+    let right_map: BTreeMap<&str, &crate::plugin::VirtualNode> =
+        right.iter().map(|n| (n.path.as_str(), n)).collect();
+    let mut paths: BTreeSet<&str> = BTreeSet::new();
+    paths.extend(left_map.keys().copied());
+    paths.extend(right_map.keys().copied());
+
+    let mut entries = Vec::with_capacity(paths.len());
+    let mut summary = FolderCompareSummary::default();
+    for rel in paths {
+        let entry =
+            virtual_entry_diff(rel, left_map.get(rel).copied(), right_map.get(rel).copied());
+        match entry.state {
+            FolderEntryState::Identical => summary.identical_count += 1,
+            FolderEntryState::Different => summary.different_count += 1,
+            FolderEntryState::LeftOnly => {
+                summary.left_only_count += 1;
+                summary.one_sided_count += 1;
+            }
+            FolderEntryState::RightOnly => {
+                summary.right_only_count += 1;
+                summary.one_sided_count += 1;
+            }
+            _ => {}
+        }
+        summary.compared_count += 1;
+        entries.push(entry);
+    }
+
+    FolderCompareResult {
+        left_root: PathBuf::from("<virtual:left>"),
+        right_root: PathBuf::from("<virtual:right>"),
+        entries,
+        summary,
+    }
+}
+
 pub fn compare_folders(
     left: &Path,
     right: &Path,
@@ -3924,5 +4044,58 @@ mod tests {
         assert_eq!(page.groups[0].entries.len(), 1);
         assert_eq!(page.groups[1].label, "file");
         assert_eq!(page.groups[1].entries.len(), 2);
+    }
+
+    #[test]
+    fn compare_virtual_trees_classifies_by_hash_and_presence() {
+        use crate::plugin::VirtualNode;
+        let vn = |path: &str, kind: &str, sha: Option<&str>| VirtualNode {
+            path: path.to_string(),
+            kind: kind.to_string(),
+            size: None,
+            sha256: sha.map(|s| s.to_string()),
+        };
+        let left = vec![
+            vn("same.txt", "file", Some("aaa")),
+            vn("changed.txt", "file", Some("bbb")),
+            vn("only-left.txt", "file", Some("ccc")),
+            vn("dir", "dir", None),
+        ];
+        let right = vec![
+            vn("same.txt", "file", Some("aaa")),
+            vn("changed.txt", "file", Some("zzz")),
+            vn("only-right.txt", "file", Some("ddd")),
+            vn("dir", "dir", None),
+        ];
+        let result = compare_virtual_trees(&left, &right);
+        let state = |p: &str| {
+            result
+                .entries
+                .iter()
+                .find(|e| e.relative_path == Path::new(p))
+                .unwrap_or_else(|| panic!("missing {p}"))
+                .state
+        };
+        assert_eq!(state("same.txt"), FolderEntryState::Identical);
+        assert_eq!(state("changed.txt"), FolderEntryState::Different);
+        assert_eq!(state("only-left.txt"), FolderEntryState::LeftOnly);
+        assert_eq!(state("only-right.txt"), FolderEntryState::RightOnly);
+        assert_eq!(
+            state("dir"),
+            FolderEntryState::Identical,
+            "dirs match on presence"
+        );
+        assert_eq!(result.summary.identical_count, 2);
+        assert_eq!(result.summary.different_count, 1);
+        assert_eq!(result.summary.left_only_count, 1);
+        assert_eq!(result.summary.right_only_count, 1);
+        assert_eq!(result.summary.one_sided_count, 2);
+
+        // The standard folder query API works on the virtualized result.
+        let page = result.query(&FolderQuery {
+            state: FolderEntryFilter::Differences,
+            ..FolderQuery::default()
+        });
+        assert_eq!(page.total_matched, 3, "Different + LeftOnly + RightOnly");
     }
 }
