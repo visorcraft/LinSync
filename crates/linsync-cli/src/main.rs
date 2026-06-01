@@ -3223,7 +3223,7 @@ fn report_command(args: &[String]) -> Result<ExitCode, String> {
     let report_args = split_report_args(args)?;
     if report_args.paths.len() != 2 {
         return Err(
-            "usage: linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]"
+            "usage: linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports] [--relative-paths]"
                 .to_owned(),
         );
     }
@@ -3239,8 +3239,14 @@ fn report_command(args: &[String]) -> Result<ExitCode, String> {
             return Err("report paths must both be files or both be directories".to_owned());
         }
 
-        let result = compare_folders(&left, &right, &FolderCompareOptions::default())
+        let mut result = compare_folders(&left, &right, &FolderCompareOptions::default())
             .map_err(|err| err.to_string())?;
+        if report_args.relative_paths {
+            // Per-entry paths are already relative; relabel the roots so the
+            // report carries no absolute, machine-specific paths.
+            result.left_root = PathBuf::from(display_path_relative_to_cwd(&left));
+            result.right_root = PathBuf::from(display_path_relative_to_cwd(&right));
+        }
         fs::write(
             output,
             folder_html_report(
@@ -3259,12 +3265,16 @@ fn report_command(args: &[String]) -> Result<ExitCode, String> {
         });
     }
 
-    let result = compare_text_files(
+    let mut result = compare_text_files(
         left.as_path(),
         right.as_path(),
         &TextCompareOptions::default(),
     )
     .map_err(|err| err.to_string())?;
+    if report_args.relative_paths {
+        result.left_name = display_path_relative_to_cwd(&left);
+        result.right_name = display_path_relative_to_cwd(&right);
+    }
     fs::write(
         output,
         result.to_html_report_with_context(report_args.context),
@@ -5421,6 +5431,7 @@ struct ReportArgs {
     columns: Vec<FolderReportColumn>,
     tree_state: ReportTreeState,
     nested_file_reports: bool,
+    relative_paths: bool,
     paths: Vec<String>,
 }
 
@@ -5430,6 +5441,7 @@ fn split_report_args(args: &[String]) -> Result<ReportArgs, String> {
     let mut columns = FolderReportColumn::default_columns();
     let mut tree_state = ReportTreeState::Expanded;
     let mut nested_file_reports = false;
+    let mut relative_paths = false;
     let mut paths = Vec::new();
     let mut index = 0;
 
@@ -5471,6 +5483,10 @@ fn split_report_args(args: &[String]) -> Result<ReportArgs, String> {
                 nested_file_reports = true;
                 index += 1;
             }
+            "--relative-paths" => {
+                relative_paths = true;
+                index += 1;
+            }
             value => {
                 paths.push(value.to_owned());
                 index += 1;
@@ -5484,8 +5500,21 @@ fn split_report_args(args: &[String]) -> Result<ReportArgs, String> {
         columns,
         tree_state,
         nested_file_reports,
+        relative_paths,
         paths,
     })
+}
+
+/// Display `path` relative to the current directory when it lives under it,
+/// else unchanged. Used by `report --relative-paths` so reports don't embed
+/// absolute, machine-specific paths.
+fn display_path_relative_to_cwd(path: &Path) -> String {
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(relative) = path.strip_prefix(&cwd)
+    {
+        return relative.display().to_string();
+    }
+    path.display().to_string()
 }
 
 fn parse_compare_method(value: &str) -> Result<CompareMethod, String> {
@@ -6237,8 +6266,8 @@ Manage discovered plugins. list shows installed plugins with enabled state; insp
 .B profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
 Manage compare profiles — named bundles of per-mode comparison options. Built-in profiles ship with the binary; user profiles live under $XDG_CONFIG_HOME/linsync/profiles/. Use --profile NAME-OR-PATH on a compare command to source options from a profile; CLI flags override profile values.
 .TP
-.B report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]
-Generate an HTML file or folder comparison report with optional text context, folder columns, tree state, or nested file reports.
+.B report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports] [--relative-paths]
+Generate an HTML file or folder comparison report with optional text context, folder columns, tree state, or nested file reports. --relative-paths labels the compared paths relative to the current directory (when they live under it) so the report carries no absolute, machine-specific paths.
 .TP
 .B project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR | list [DIR] [--json]>
 Operate on a project file (a named bundle of saved comparisons). validate loads and schema-checks it; show lists its comparisons; run executes each one (auto-detecting folder / text / binary / table like the compare command, with default options) and exits 0 when all are equal, 1 when some differ, or 2 on error, for CI use; report writes an HTML report per comparison (text or folder) into DIR with the same exit codes; list shows the *.linsync-project files in DIR (default the current directory) with their name and comparison count.
@@ -6310,7 +6339,7 @@ USAGE:
     linsync-cli profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
     linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR | list [DIR] [--json]>
     linsync-cli reveal [--wait] PATH...
-    linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]
+    linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports] [--relative-paths]
     linsync-cli session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] [--profile ID] | list [--json] | show [INDEX] [--json] | clear>
     linsync-cli self-compare [--json] FILE
     linsync-cli table [--header] [--delimiter CHAR|--tsv] [--table-quote CHAR] [--table-escape CHAR] [--table-comment PREFIX] [--table-skip-blank BOOL] [--numeric-tolerance FLOAT] [--json|--count|--quiet] LEFT RIGHT

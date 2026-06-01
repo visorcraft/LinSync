@@ -2770,3 +2770,56 @@ fn session_save_records_profile() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["profile"], "code-review");
 }
+
+#[test]
+fn report_relative_paths_strips_absolute_prefix() {
+    let temp = TempFixture::new();
+    fs::write(temp.path.join("a.txt"), "one\ntwo\n").unwrap();
+    fs::write(temp.path.join("b.txt"), "one\nTWO\n").unwrap();
+    let abs_a = temp.path.join("a.txt");
+    let abs_b = temp.path.join("b.txt");
+    let out_file = temp.path.join("report.html");
+
+    // Run with the working directory set to the fixture so absolute inputs
+    // under it relativize to bare file names.
+    let output = Command::new(bin())
+        .current_dir(&temp.path)
+        .args([
+            "report",
+            abs_a.to_str().unwrap(),
+            abs_b.to_str().unwrap(),
+            "--output",
+            out_file.to_str().unwrap(),
+            "--relative-paths",
+        ])
+        .output()
+        .expect("run linsync-cli");
+    // Files differ, so report exits 1.
+    assert_eq!(output.status.code(), Some(1));
+    let html = fs::read_to_string(&out_file).unwrap();
+    assert!(html.contains("a.txt"), "report should name the file");
+    assert!(
+        !html.contains(temp.path.to_str().unwrap()),
+        "report must not embed the absolute fixture path:\n{html}"
+    );
+
+    // Without --relative-paths the absolute path is present.
+    let out_file2 = temp.path.join("report-abs.html");
+    let output = Command::new(bin())
+        .current_dir(&temp.path)
+        .args([
+            "report",
+            abs_a.to_str().unwrap(),
+            abs_b.to_str().unwrap(),
+            "--output",
+            out_file2.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run linsync-cli");
+    assert_eq!(output.status.code(), Some(1));
+    let html = fs::read_to_string(&out_file2).unwrap();
+    assert!(
+        html.contains(temp.path.to_str().unwrap()),
+        "default report keeps the absolute path"
+    );
+}
