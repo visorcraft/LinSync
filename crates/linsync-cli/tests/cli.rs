@@ -2470,3 +2470,85 @@ impl Drop for TempFixture {
         let _ = fs::remove_dir_all(&self.path);
     }
 }
+
+#[test]
+fn session_save_list_show_clear_roundtrip() {
+    let temp = TempFixture::new();
+    let data = temp.path.join("data");
+    let config = temp.path.join("config");
+    let envs: &[(&str, &Path)] = &[
+        ("XDG_DATA_HOME", data.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
+        ("HOME", temp.path.as_path()),
+    ];
+
+    // Empty to start.
+    let out = run_with_env(&["session", "list", "--json"], envs);
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["sessions"].as_array().unwrap().len(), 0);
+
+    // Save two sessions; the newest is first.
+    assert!(
+        run_with_env(
+            &[
+                "session",
+                "save",
+                "/tmp/a.txt",
+                "/tmp/b.txt",
+                "--title",
+                "first"
+            ],
+            envs
+        )
+        .status
+        .success()
+    );
+    assert!(
+        run_with_env(
+            &[
+                "session",
+                "save",
+                "/tmp/c.txt",
+                "/tmp/d.txt",
+                "--view",
+                "folder"
+            ],
+            envs
+        )
+        .status
+        .success()
+    );
+
+    let out = run_with_env(&["session", "list", "--json"], envs);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let sessions = json["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[0]["left"], "/tmp/c.txt");
+    assert_eq!(sessions[0]["view"], "folder");
+    assert_eq!(sessions[1]["title"], "first");
+
+    // show by index.
+    let out = run_with_env(&["session", "show", "1", "--json"], envs);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["title"], "first");
+    assert_eq!(json["right"], "/tmp/b.txt");
+
+    // The GUI-shared recent-sessions file is written where the GUI restores from.
+    assert!(
+        data.join("linsync/recent-sessions.json").exists(),
+        "recent-sessions.json should be written for GUI restore"
+    );
+
+    // clear empties the history.
+    assert!(run_with_env(&["session", "clear"], envs).status.success());
+    let out = run_with_env(&["session", "list", "--json"], envs);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["sessions"].as_array().unwrap().len(), 0);
+
+    // Out-of-range show is a usage error.
+    assert_eq!(
+        run_with_env(&["session", "show", "5"], envs).status.code(),
+        Some(2)
+    );
+}

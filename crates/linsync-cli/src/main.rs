@@ -6,20 +6,21 @@ use std::process::{Command, ExitCode};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use linsync_core::{
-    AppPaths, BinaryCompareOptions, CompareMethod, CompareProfile, DiffAlgorithm, DiffBlockKind,
-    DiffLineKind, FileFilter, FilterMatchOptions, FilterParseErrorKind, FilterStore,
-    FolderCompareOptions, FolderCompareResult, FolderEntryDiff, FolderEntryFilter,
-    FolderEntryState, FolderGrouping, FolderQuery, FolderSortKey, FolderTypeFilter, HashAlgorithm,
-    InlineGranularity, MergeChoice, MoveDirection, PluginExecutionOptions, PluginInputDescriptor,
-    ProfileId, ProfileStore, ProfileStoreError, SymlinkPolicy, TableCellState, TableCompareOptions,
-    TextBookmark, TextCompareOptions, TextDocument, TextFindOptions, TextInputEncoding,
-    TextRenderMode, TextSubstitution, TextSyntaxMode, ThreeWayConflict, ThreeWayMergeState,
-    active_sandbox_status, assess_operation_risks, builtin_profiles, builtin_text_regex_rule_sets,
-    clear_plugin_option, compare_binary_files, compare_folders, compare_table_files, compare_text,
-    compare_text_files, compare_text_files_with_prediffer_chain, discover_installed_plugins,
-    find_builtin, is_likely_binary, load_plugin_enabled_map, load_plugin_options, merge_three_way,
-    parse_conflict_markers, plan_folder_operation, probe_plugin, resolve_enabled_prediffers,
-    set_plugin_enabled, set_plugin_option,
+    AppPaths, BinaryCompareOptions, CompareMethod, CompareOptions, CompareProfile, CompareSession,
+    CompareViewMode, DiffAlgorithm, DiffBlockKind, DiffLineKind, FileFilter, FilterMatchOptions,
+    FilterParseErrorKind, FilterStore, FolderCompareOptions, FolderCompareResult, FolderEntryDiff,
+    FolderEntryFilter, FolderEntryState, FolderGrouping, FolderQuery, FolderSortKey,
+    FolderTypeFilter, HashAlgorithm, InlineGranularity, MergeChoice, MoveDirection,
+    PluginExecutionOptions, PluginInputDescriptor, ProfileId, ProfileStore, ProfileStoreError,
+    RecentSessionStore, SessionFile, SettingsStore, SymlinkPolicy, TableCellState,
+    TableCompareOptions, TextBookmark, TextCompareOptions, TextDocument, TextFindOptions,
+    TextInputEncoding, TextRenderMode, TextSubstitution, TextSyntaxMode, ThreeWayConflict,
+    ThreeWayMergeState, active_sandbox_status, assess_operation_risks, builtin_profiles,
+    builtin_text_regex_rule_sets, clear_plugin_option, compare_binary_files, compare_folders,
+    compare_table_files, compare_text, compare_text_files, compare_text_files_with_prediffer_chain,
+    discover_installed_plugins, find_builtin, is_likely_binary, load_plugin_enabled_map,
+    load_plugin_options, merge_three_way, parse_conflict_markers, plan_folder_operation,
+    probe_plugin, resolve_enabled_prediffers, set_plugin_enabled, set_plugin_option,
 };
 
 fn main() -> ExitCode {
@@ -56,6 +57,7 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
         "plugin" | "plugins" => plugin_command(&args[1..]),
         "reveal" => reveal_command(&args[1..]),
         "report" => report_command(&args[1..]),
+        "session" | "sessions" => session_command(&args[1..]),
         "self-compare" => self_compare_command(&args[1..]),
         "table" => table_command(&args[1..]),
         "cache" => cache_command(&args[1..]),
@@ -91,6 +93,7 @@ const CLI_COMMANDS: &[&str] = &[
     "profile",
     "reveal",
     "report",
+    "session",
     "self-compare",
     "table",
     "webpage",
@@ -3134,6 +3137,202 @@ fn report_command(args: &[String]) -> Result<ExitCode, String> {
     })
 }
 
+const SESSION_HISTORY_FALLBACK_LIMIT: usize = 20;
+
+/// Match the GUI's history depth so CLI saves and GUI saves truncate alike.
+fn session_history_limit(paths: &AppPaths) -> usize {
+    SettingsStore::new(paths.settings_file())
+        .load_or_default()
+        .map(|settings| settings.recent_limit)
+        .unwrap_or(SESSION_HISTORY_FALLBACK_LIMIT)
+}
+
+fn parse_compare_view(value: &str) -> Result<CompareViewMode, String> {
+    Ok(match value {
+        "text" => CompareViewMode::Text,
+        "folder" => CompareViewMode::Folder,
+        "binary" => CompareViewMode::Binary,
+        "table" => CompareViewMode::Table,
+        "image" => CompareViewMode::Image,
+        "document" => CompareViewMode::Document,
+        "archive" => CompareViewMode::Archive,
+        "webpage" => CompareViewMode::Webpage,
+        other => {
+            return Err(format!(
+                "unknown --view '{other}': expected text|folder|binary|table|image|document|archive|webpage"
+            ));
+        }
+    })
+}
+
+fn compare_view_str(view: CompareViewMode) -> String {
+    format!("{view:?}").to_lowercase()
+}
+
+/// `session <save | list | show | clear>` — manage the recent-session history
+/// shared with the GUI (`recent-sessions.json`). A saved session is restored by
+/// the GUI on next launch when "open last session" is enabled.
+fn session_command(args: &[String]) -> Result<ExitCode, String> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        eprintln!(
+            "usage: linsync-cli session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] | list [--json] | show [INDEX] [--json] | clear>"
+        );
+        return Ok(ExitCode::from(2));
+    };
+    let paths = AppPaths::from_env();
+    let store =
+        RecentSessionStore::new(paths.recent_sessions_file(), session_history_limit(&paths));
+    let rest = &args[1..];
+    match subcommand {
+        "save" => session_save(&store, rest),
+        "list" => session_list(&store, rest),
+        "show" => session_show(&store, rest),
+        "clear" => {
+            store
+                .save(&linsync_core::RecentSessions::default())
+                .map_err(|err| err.to_string())?;
+            println!("cleared session history");
+            Ok(ExitCode::SUCCESS)
+        }
+        other => Err(format!(
+            "unknown session subcommand '{other}'; expected save, list, show, or clear"
+        )),
+    }
+}
+
+fn session_save(store: &RecentSessionStore, args: &[String]) -> Result<ExitCode, String> {
+    let mut positionals = Vec::new();
+    let mut base = None;
+    let mut title = None;
+    let mut view = CompareViewMode::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--base" => {
+                base = Some(PathBuf::from(
+                    args.get(index + 1).ok_or("--base requires a path")?,
+                ));
+                index += 2;
+            }
+            "--title" => {
+                title = Some(
+                    args.get(index + 1)
+                        .ok_or("--title requires a value")?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--view" => {
+                view = parse_compare_view(args.get(index + 1).ok_or("--view requires a value")?)?;
+                index += 2;
+            }
+            other if other.starts_with("--") => {
+                return Err(format!("unknown session save flag '{other}'"));
+            }
+            other => {
+                positionals.push(other.to_owned());
+                index += 1;
+            }
+        }
+    }
+    if positionals.len() != 2 {
+        return Err(
+            "usage: linsync-cli session save LEFT RIGHT [--base BASE] [--title T] [--view MODE]"
+                .to_owned(),
+        );
+    }
+    let title = title.unwrap_or_else(|| format!("{} vs {}", positionals[0], positionals[1]));
+    let mut session = SessionFile::new(CompareSession {
+        title: title.clone(),
+        left: PathBuf::from(&positionals[0]),
+        base,
+        right: PathBuf::from(&positionals[1]),
+        options: CompareOptions::default(),
+    });
+    session.selected_view = view;
+    let recent = store.add(session).map_err(|err| err.to_string())?;
+    println!(
+        "saved session '{title}' ({} in history)",
+        recent.sessions.len()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn session_list(store: &RecentSessionStore, args: &[String]) -> Result<ExitCode, String> {
+    let as_json = args.iter().any(|arg| arg == "--json");
+    let recent = store.load_or_default().map_err(|err| err.to_string())?;
+    if as_json {
+        let items: Vec<serde_json::Value> = recent
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(i, sf)| session_json(i, sf))
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "sessions": items }))
+                .map_err(|err| err.to_string())?
+        );
+    } else if recent.sessions.is_empty() {
+        println!("No saved sessions.");
+    } else {
+        for (i, sf) in recent.sessions.iter().enumerate() {
+            println!(
+                "{i}\t{}\t{}\t{} | {}",
+                compare_view_str(sf.selected_view),
+                sf.session.title,
+                sf.session.left.display(),
+                sf.session.right.display(),
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn session_show(store: &RecentSessionStore, args: &[String]) -> Result<ExitCode, String> {
+    let as_json = args.iter().any(|arg| arg == "--json");
+    let index = match args.iter().find(|arg| !arg.starts_with("--")) {
+        Some(raw) => raw
+            .parse::<usize>()
+            .map_err(|_| format!("invalid session index '{raw}'"))?,
+        None => 0,
+    };
+    let recent = store.load_or_default().map_err(|err| err.to_string())?;
+    let sf = recent.sessions.get(index).ok_or_else(|| {
+        format!(
+            "no session at index {index} ({} in history)",
+            recent.sessions.len()
+        )
+    })?;
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&session_json(index, sf)).map_err(|err| err.to_string())?
+        );
+    } else {
+        println!("index: {index}");
+        println!("title: {}", sf.session.title);
+        println!("view:  {}", compare_view_str(sf.selected_view));
+        println!("left:  {}", sf.session.left.display());
+        if let Some(base) = &sf.session.base {
+            println!("base:  {}", base.display());
+        }
+        println!("right: {}", sf.session.right.display());
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn session_json(index: usize, sf: &SessionFile) -> serde_json::Value {
+    serde_json::json!({
+        "index": index,
+        "title": sf.session.title,
+        "view": compare_view_str(sf.selected_view),
+        "left": sf.session.left.display().to_string(),
+        "right": sf.session.right.display().to_string(),
+        "base": sf.session.base.as_ref().map(|b| b.display().to_string()),
+    })
+}
+
 fn table_command(args: &[String]) -> Result<ExitCode, String> {
     let mut delimiter = ',';
     let mut has_header = false;
@@ -5509,6 +5708,9 @@ Generate an HTML file or folder comparison report with optional text context, fo
 .B reveal [--wait] PATH...
 Reveal files or folders through org.freedesktop.FileManager1.ShowItems, falling back to xdg-open for the containing folder.
 .TP
+.B session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] | list [--json] | show [INDEX] [--json] | clear>
+Manage the recent-session history shared with the GUI ($XDG_DATA_HOME/linsync/recent-sessions.json). save records a compare (left/right, optional base, title, and view mode) at the front of the history; list shows the saved sessions newest-first with their index; show prints one (INDEX defaults to 0, the most recent); clear empties the history. A saved session is restored by the GUI on next launch when "open last session" is enabled.
+.TP
 .B self-compare [--json] FILE
 Compare a file against a temporary cached copy.
 .TP
@@ -5570,6 +5772,7 @@ USAGE:
     linsync-cli profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
     linsync-cli reveal [--wait] PATH...
     linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]
+    linsync-cli session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] | list [--json] | show [INDEX] [--json] | clear>
     linsync-cli self-compare [--json] FILE
     linsync-cli table [--header] [--delimiter CHAR|--tsv] [--table-quote CHAR] [--table-escape CHAR] [--table-comment PREFIX] [--table-skip-blank BOOL] [--numeric-tolerance FLOAT] [--json|--count|--quiet] LEFT RIGHT
     linsync-cli webpage --sub-mode html|text|tree|rendered|screenshot --accept-network-fetch [--depth N] [--timeout SECS] [--max-requests N] LEFT_URL RIGHT_URL
