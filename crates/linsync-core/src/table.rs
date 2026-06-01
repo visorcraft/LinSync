@@ -22,15 +22,15 @@ pub struct TableCompareOptions {
     pub skip_blank_rows: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub numeric_tolerance: Option<f64>,
-    /// Per-column comparison rules (case-folding, whitespace trimming, and a
-    /// per-column numeric-tolerance override). Columns without a rule use the
-    /// global settings.
+    /// Per-column comparison rules (case-folding, whitespace trimming, a
+    /// per-column numeric-tolerance override, and regex normalization). Columns
+    /// without a rule use the global settings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub column_rules: Vec<TableColumnRule>,
 }
 
 /// A normalization/tolerance rule applied to one column before comparison.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TableColumnRule {
     /// Zero-based column index this rule applies to.
     pub column: usize,
@@ -43,6 +43,15 @@ pub struct TableColumnRule {
     /// Numeric tolerance for this column, overriding the table-wide value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub numeric_tolerance: Option<f64>,
+    /// Regex applied to each cell in this column before comparison; every match
+    /// is replaced with `normalize_replacement`. Applied before trim/case so a
+    /// pattern can strip volatile substrings (timestamps, ids). Compiled once
+    /// per compare; an invalid pattern fails the comparison with an error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalize_pattern: Option<String>,
+    /// Replacement text for `normalize_pattern` matches (default empty: delete).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub normalize_replacement: String,
 }
 
 impl Default for TableCompareOptions {
@@ -67,31 +76,49 @@ impl Default for TableCompareOptions {
 /// into a single cell-equality decision. Built once per compare.
 struct CellComparer<'a> {
     global_tolerance: Option<f64>,
-    rules: std::collections::HashMap<usize, &'a TableColumnRule>,
+    rules: HashMap<usize, &'a TableColumnRule>,
+    /// Compiled per-column normalization regexes, keyed by column index.
+    regexes: HashMap<usize, regex::Regex>,
 }
 
 impl<'a> CellComparer<'a> {
-    fn new(options: &'a TableCompareOptions) -> Self {
-        let rules = options
+    fn new(options: &'a TableCompareOptions) -> Result<Self, TableParseError> {
+        let rules: HashMap<usize, &'a TableColumnRule> = options
             .column_rules
             .iter()
             .map(|rule| (rule.column, rule))
             .collect();
-        Self {
+        let mut regexes = HashMap::new();
+        for rule in &options.column_rules {
+            if let Some(pattern) = &rule.normalize_pattern {
+                let compiled = regex::Regex::new(pattern).map_err(|err| TableParseError {
+                    message: format!("invalid normalize regex for column {}: {err}", rule.column),
+                })?;
+                regexes.insert(rule.column, compiled);
+            }
+        }
+        Ok(Self {
             global_tolerance: options.numeric_tolerance,
             rules,
-        }
+            regexes,
+        })
     }
 
     /// Whether two cells in `column` are equal under this column's rule and the
-    /// effective numeric tolerance.
+    /// effective numeric tolerance. Normalization order: regex replace → trim →
+    /// case-fold.
     fn equal(&self, column: usize, left: &str, right: &str) -> bool {
         let rule = self.rules.get(&column).copied();
+        let regex = self.regexes.get(&column);
         let normalize = |value: &str| {
+            let replaced = match (regex, rule) {
+                (Some(re), Some(r)) => re.replace_all(value, r.normalize_replacement.as_str()),
+                _ => std::borrow::Cow::Borrowed(value),
+            };
             let trimmed = if rule.is_some_and(|r| r.trim) {
-                value.trim()
+                replaced.trim()
             } else {
-                value
+                replaced.as_ref()
             };
             if rule.is_some_and(|r| r.case_insensitive) {
                 trimmed.to_lowercase()
@@ -388,7 +415,7 @@ pub fn compare_tables(
 
     let ignore_set: std::collections::HashSet<usize> =
         options.ignore_columns.iter().copied().collect();
-    let comparer = CellComparer::new(options);
+    let comparer = CellComparer::new(options)?;
 
     if !options.key_columns.is_empty() {
         return Ok(compare_by_key(
@@ -1209,7 +1236,7 @@ mod tests {
                 column: 0,
                 case_insensitive: true,
                 trim: true,
-                numeric_tolerance: None,
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1243,9 +1270,8 @@ mod tests {
             has_header: false,
             column_rules: vec![TableColumnRule {
                 column: 0,
-                case_insensitive: false,
-                trim: false,
                 numeric_tolerance: Some(0.5),
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1256,6 +1282,52 @@ mod tests {
             cells[1].state,
             TableCellState::Changed,
             "col 1 no tolerance"
+        );
+    }
+
+    #[test]
+    fn column_rule_regex_normalizes_before_comparison() {
+        // Column 0 carries a volatile "[12:00:00] " timestamp prefix that should
+        // be stripped before comparing; column 1 is a genuine change.
+        let opts = TableCompareOptions {
+            has_header: false,
+            column_rules: vec![TableColumnRule {
+                column: 0,
+                normalize_pattern: Some(r"^\[\d{2}:\d{2}:\d{2}\]\s*".to_string()),
+                // normalize_replacement defaults to "" (delete the match).
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let result = compare_tables(
+            "left",
+            "[12:00:00] login,1\n",
+            "right",
+            "[09:30:15] login,2\n",
+            &opts,
+        )
+        .unwrap();
+        assert_eq!(result.rows[0].cells[0].state, TableCellState::Equal);
+        assert_eq!(result.rows[0].cells[1].state, TableCellState::Changed);
+        assert_eq!(result.changed_cells, 1);
+    }
+
+    #[test]
+    fn column_rule_invalid_regex_is_reported() {
+        let opts = TableCompareOptions {
+            has_header: false,
+            column_rules: vec![TableColumnRule {
+                column: 0,
+                normalize_pattern: Some("(unclosed".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let err = compare_tables("left", "a\n", "right", "a\n", &opts).unwrap_err();
+        assert!(
+            err.message.contains("invalid normalize regex for column 0"),
+            "got: {}",
+            err.message
         );
     }
 
