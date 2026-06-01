@@ -85,8 +85,9 @@ Candidates:
 - Full legacy filter expression grammar and migration diagnostics.
 - Plugin sandboxing decisions for Flatpak portals, Bubblewrap, distributor trust,
   or explicit user trust.
-- Localization breadth, AT-SPI coverage, and performance/memory budgets for
-  very large files and folder trees.
+- Localization breadth, AT-SPI coverage, and the per-mode performance/memory
+  budgets in `docs/performance-budgets.md` for very large files and folder
+  trees.
 
 Exit criteria:
 
