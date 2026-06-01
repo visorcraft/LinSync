@@ -77,10 +77,123 @@ pub enum PluginOptionKind {
     Enum,
 }
 
+/// Why a plugin option value failed validation against its manifest schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginOptionError {
+    /// The key is not declared in the plugin's `options_schema`.
+    UnknownOption { key: String },
+    /// The value's JSON type does not match the declared option kind.
+    TypeMismatch {
+        key: String,
+        expected: PluginOptionKind,
+        got: &'static str,
+    },
+    /// An `Enum` option received a string outside its declared `choices`.
+    NotAChoice {
+        key: String,
+        value: String,
+        choices: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for PluginOptionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownOption { key } => {
+                write!(
+                    f,
+                    "unknown plugin option '{key}' (not in the manifest schema)"
+                )
+            }
+            Self::TypeMismatch { key, expected, got } => write!(
+                f,
+                "plugin option '{key}' expects a {expected:?} value, got {got}"
+            ),
+            Self::NotAChoice {
+                key,
+                value,
+                choices,
+            } => write!(
+                f,
+                "plugin option '{key}' value '{value}' is not one of: {}",
+                choices.join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PluginOptionError {}
+
+/// JSON type name used in [`PluginOptionError::TypeMismatch`] messages.
+fn json_type_name(value: &serde_json::Value) -> &'static str {
+    use serde_json::Value;
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+impl PluginOption {
+    /// Validate a candidate JSON value against this option's declared kind and
+    /// (for `Enum`) its `choices`.
+    pub fn validate_value(&self, value: &serde_json::Value) -> Result<(), PluginOptionError> {
+        let mismatch = || PluginOptionError::TypeMismatch {
+            key: self.key.clone(),
+            expected: self.kind,
+            got: json_type_name(value),
+        };
+        match self.kind {
+            PluginOptionKind::String => value.is_string().then_some(()).ok_or_else(mismatch),
+            PluginOptionKind::Bool => value.is_boolean().then_some(()).ok_or_else(mismatch),
+            // JSON has no integer type; accept whole numbers, reject fractions.
+            PluginOptionKind::Int => (value.is_i64() || value.is_u64())
+                .then_some(())
+                .ok_or_else(mismatch),
+            PluginOptionKind::Enum => match value.as_str() {
+                Some(s) if self.choices.iter().any(|c| c == s) => Ok(()),
+                Some(s) => Err(PluginOptionError::NotAChoice {
+                    key: self.key.clone(),
+                    value: s.to_owned(),
+                    choices: self.choices.clone(),
+                }),
+                None => Err(mismatch()),
+            },
+        }
+    }
+}
+
 impl PluginManifest {
     pub fn from_manifest_file(path: &Path) -> Result<Self, PluginError> {
         let text = fs::read_to_string(path)?;
         Ok(serde_json::from_str::<Self>(&text)?)
+    }
+
+    /// Validate a `key -> value` option map against this manifest's
+    /// `options_schema`. Every key must be declared and every value must match
+    /// its declared kind/choices. Returns the first violation, so callers can
+    /// reject an invalid option before persisting or invoking the plugin.
+    pub fn validate_options(
+        &self,
+        values: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), PluginOptionError> {
+        for (key, value) in values {
+            match self.options_schema.iter().find(|opt| &opt.key == key) {
+                Some(option) => option.validate_value(value)?,
+                None => {
+                    return Err(PluginOptionError::UnknownOption { key: key.clone() });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Find a declared option by key.
+    pub fn option(&self, key: &str) -> Option<&PluginOption> {
+        self.options_schema.iter().find(|opt| opt.key == key)
     }
 
     pub fn validate(&self, plugin_dir: &Path) -> Result<(), PluginError> {
@@ -624,6 +737,129 @@ pub fn plugin_discovery_roots(paths: &AppPaths) -> Vec<PathBuf> {
 
 pub fn discover_installed_plugins(paths: &AppPaths) -> PluginDiscovery {
     discover_plugins(&plugin_discovery_roots(paths))
+}
+
+/// Error from the plugin option/enabled persistence store.
+#[derive(Debug)]
+pub enum PluginStoreError {
+    /// Filesystem error reading/writing the state files.
+    Io(io::Error),
+    /// The plugin id is not a safe filename component.
+    InvalidId(String),
+    /// No discovered plugin has this id (so its option schema is unknown).
+    UnknownPlugin(String),
+    /// The option value failed validation against the manifest schema.
+    Invalid(PluginOptionError),
+}
+
+impl std::fmt::Display for PluginStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "{e}"),
+            Self::InvalidId(id) => write!(f, "invalid plugin id '{id}'"),
+            Self::UnknownPlugin(id) => write!(f, "no installed plugin with id '{id}'"),
+            Self::Invalid(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for PluginStoreError {}
+
+impl From<io::Error> for PluginStoreError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+/// Load the persisted enabled/disabled state for all plugins (empty when the
+/// file is absent or unreadable).
+pub fn load_plugin_enabled_map(paths: &AppPaths) -> std::collections::HashMap<String, bool> {
+    let Ok(text) = fs::read_to_string(paths.plugins_enabled_file()) else {
+        return std::collections::HashMap::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+/// Set a single plugin's enabled state (load → modify → write).
+pub fn set_plugin_enabled(paths: &AppPaths, plugin_id: &str, enabled: bool) -> io::Result<()> {
+    let mut map = load_plugin_enabled_map(paths);
+    map.insert(plugin_id.to_owned(), enabled);
+    let file = paths.plugins_enabled_file();
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let text = serde_json::to_string_pretty(&map)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    fs::write(file, text)
+}
+
+/// Load the per-plugin option map (empty when none/unreadable).
+pub fn load_plugin_options(
+    paths: &AppPaths,
+    plugin_id: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let Ok(text) = fs::read_to_string(paths.plugin_options_file(plugin_id)) else {
+        return serde_json::Map::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+/// Persist the full option map for a plugin.
+pub fn save_plugin_options(
+    paths: &AppPaths,
+    plugin_id: &str,
+    options: &serde_json::Map<String, serde_json::Value>,
+) -> io::Result<()> {
+    fs::create_dir_all(paths.plugin_options_dir())?;
+    let text = serde_json::to_string_pretty(options)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    fs::write(paths.plugin_options_file(plugin_id), text)
+}
+
+/// Set one option for an installed plugin, validating it against the plugin's
+/// manifest `options_schema` before persisting. Returns the updated map.
+pub fn set_plugin_option(
+    paths: &AppPaths,
+    plugin_id: &str,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<serde_json::Map<String, serde_json::Value>, PluginStoreError> {
+    if !is_stable_plugin_id(plugin_id) {
+        return Err(PluginStoreError::InvalidId(plugin_id.to_owned()));
+    }
+    let discovery = discover_installed_plugins(paths);
+    let plugin = discovery
+        .plugins
+        .iter()
+        .find(|p| p.manifest.id == plugin_id)
+        .ok_or_else(|| PluginStoreError::UnknownPlugin(plugin_id.to_owned()))?;
+
+    let mut single = serde_json::Map::new();
+    single.insert(key.to_owned(), value.clone());
+    plugin
+        .manifest
+        .validate_options(&single)
+        .map_err(PluginStoreError::Invalid)?;
+
+    let mut map = load_plugin_options(paths, plugin_id);
+    map.insert(key.to_owned(), value);
+    save_plugin_options(paths, plugin_id, &map)?;
+    Ok(map)
+}
+
+/// Remove one persisted option key (no-op if absent). Returns the updated map.
+pub fn clear_plugin_option(
+    paths: &AppPaths,
+    plugin_id: &str,
+    key: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>, PluginStoreError> {
+    if !is_stable_plugin_id(plugin_id) {
+        return Err(PluginStoreError::InvalidId(plugin_id.to_owned()));
+    }
+    let mut map = load_plugin_options(paths, plugin_id);
+    map.remove(key);
+    save_plugin_options(paths, plugin_id, &map)?;
+    Ok(map)
 }
 
 pub fn run_plugin_helper(
@@ -1348,9 +1584,17 @@ fn validate_entry_path(plugin_dir: &Path, entry: &str) -> Result<(), PluginError
     Ok(())
 }
 
-fn is_stable_plugin_id(id: &str) -> bool {
-    id.chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+/// Whether a plugin id is safe to use as a single filename component (the
+/// per-plugin options file is `<plugin-options-dir>/{id}.json`). Rejects path
+/// separators and the `.`/`..` traversal components; allows ASCII alphanumerics
+/// plus `. _ -`.
+pub fn is_stable_plugin_id(id: &str) -> bool {
+    !id.is_empty()
+        && id != "."
+        && id != ".."
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
 fn invalid_manifest(plugin_dir: &Path, message: impl Into<String>) -> PluginError {
@@ -1479,6 +1723,100 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn option(key: &str, kind: PluginOptionKind, choices: &[&str]) -> PluginOption {
+        PluginOption {
+            key: key.to_owned(),
+            label: key.to_owned(),
+            kind,
+            default: None,
+            choices: choices.iter().map(|c| (*c).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn plugin_option_validates_value_by_kind() {
+        use serde_json::json;
+        assert!(
+            option("s", PluginOptionKind::String, &[])
+                .validate_value(&json!("hi"))
+                .is_ok()
+        );
+        assert!(
+            option("b", PluginOptionKind::Bool, &[])
+                .validate_value(&json!(true))
+                .is_ok()
+        );
+        assert!(
+            option("i", PluginOptionKind::Int, &[])
+                .validate_value(&json!(7))
+                .is_ok()
+        );
+
+        // Type mismatches are rejected.
+        assert!(matches!(
+            option("s", PluginOptionKind::String, &[]).validate_value(&json!(7)),
+            Err(PluginOptionError::TypeMismatch { got: "number", .. })
+        ));
+        assert!(matches!(
+            option("i", PluginOptionKind::Int, &[]).validate_value(&json!(1.5)),
+            Err(PluginOptionError::TypeMismatch { .. })
+        ));
+        assert!(matches!(
+            option("b", PluginOptionKind::Bool, &[]).validate_value(&json!("true")),
+            Err(PluginOptionError::TypeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn plugin_option_enum_checks_choices() {
+        use serde_json::json;
+        let lang = option("lang", PluginOptionKind::Enum, &["eng", "fra"]);
+        assert!(lang.validate_value(&json!("eng")).is_ok());
+        assert!(matches!(
+            lang.validate_value(&json!("deu")),
+            Err(PluginOptionError::NotAChoice { .. })
+        ));
+        assert!(matches!(
+            lang.validate_value(&json!(1)),
+            Err(PluginOptionError::TypeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn manifest_validate_options_rejects_unknown_and_invalid() {
+        use serde_json::json;
+        let mut manifest = sample_manifest("example.normalizer");
+        manifest.options_schema = vec![
+            option("strip_comments", PluginOptionKind::Bool, &[]),
+            option("language", PluginOptionKind::Enum, &["eng", "fra"]),
+        ];
+
+        let mut ok = serde_json::Map::new();
+        ok.insert("strip_comments".into(), json!(true));
+        ok.insert("language".into(), json!("fra"));
+        assert!(manifest.validate_options(&ok).is_ok());
+
+        let mut unknown = serde_json::Map::new();
+        unknown.insert("nope".into(), json!(1));
+        assert!(matches!(
+            manifest.validate_options(&unknown),
+            Err(PluginOptionError::UnknownOption { key }) if key == "nope"
+        ));
+
+        let mut bad = serde_json::Map::new();
+        bad.insert("language".into(), json!("klingon"));
+        assert!(matches!(
+            manifest.validate_options(&bad),
+            Err(PluginOptionError::NotAChoice { .. })
+        ));
+
+        assert_eq!(
+            manifest.option("language").unwrap().kind,
+            PluginOptionKind::Enum
+        );
+        assert!(manifest.option("missing").is_none());
+    }
 
     #[test]
     fn validates_manifest_and_entry_path() {
@@ -1616,6 +1954,77 @@ mod tests {
         assert_eq!(discovery.plugins.len(), 1);
         assert_eq!(discovery.plugins[0].manifest.id, "example.installed");
         assert_eq!(discovery.plugins[0].root, plugin_dir);
+    }
+
+    #[test]
+    fn plugin_store_persists_enabled_and_validated_options() {
+        use serde_json::json;
+        let fixture = TempFixture::new();
+        let paths = AppPaths::from_base_dirs(
+            fixture.path.join("config"),
+            fixture.path.join("data"),
+            fixture.path.join("cache"),
+            fixture.path.join("state"),
+        );
+        let plugin_dir = paths.user_plugins_dir().join("normalizer");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        write_helper(&plugin_dir, "normalize-text", "#!/bin/sh\n");
+        let mut manifest = sample_manifest("example.installed");
+        manifest.options_schema = vec![
+            option("strip_comments", PluginOptionKind::Bool, &[]),
+            option("language", PluginOptionKind::Enum, &["eng", "fra"]),
+        ];
+        write_manifest(&plugin_dir, &manifest);
+
+        // Enabled-state round-trip.
+        set_plugin_enabled(&paths, "example.installed", false).unwrap();
+        assert_eq!(
+            load_plugin_enabled_map(&paths).get("example.installed"),
+            Some(&false)
+        );
+
+        // A valid option is validated and persisted.
+        set_plugin_option(&paths, "example.installed", "language", json!("fra")).unwrap();
+        assert_eq!(
+            load_plugin_options(&paths, "example.installed").get("language"),
+            Some(&json!("fra"))
+        );
+
+        // Invalid value, unknown key, and unknown plugin are all rejected,
+        // and nothing partial is written.
+        assert!(matches!(
+            set_plugin_option(&paths, "example.installed", "language", json!("klingon")),
+            Err(PluginStoreError::Invalid(
+                PluginOptionError::NotAChoice { .. }
+            ))
+        ));
+        assert!(matches!(
+            set_plugin_option(&paths, "example.installed", "nope", json!(1)),
+            Err(PluginStoreError::Invalid(
+                PluginOptionError::UnknownOption { .. }
+            ))
+        ));
+        assert!(matches!(
+            set_plugin_option(&paths, "ghost.plugin", "language", json!("eng")),
+            Err(PluginStoreError::UnknownPlugin(_))
+        ));
+        assert!(matches!(
+            set_plugin_option(&paths, "../escape", "language", json!("eng")),
+            Err(PluginStoreError::InvalidId(_))
+        ));
+        // The earlier valid write survived the rejected attempts.
+        assert_eq!(
+            load_plugin_options(&paths, "example.installed").get("language"),
+            Some(&json!("fra"))
+        );
+
+        // Clearing removes the key.
+        clear_plugin_option(&paths, "example.installed", "language").unwrap();
+        assert!(
+            load_plugin_options(&paths, "example.installed")
+                .get("language")
+                .is_none()
+        );
     }
 
     #[test]
