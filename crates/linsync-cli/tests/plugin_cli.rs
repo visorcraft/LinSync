@@ -466,8 +466,8 @@ fn compare_prediffer_chain_applies_all_stages_in_order() {
 /// Install a folder-virtualizer plugin whose helper emits a one-file virtual
 /// tree whose sha256 is the source file's content, so two archives with equal
 /// content compare equal and differing content compares different.
-fn install_virtualizer_plugin(home: &Path) -> &'static str {
-    let plugin_dir = home.join("data/linsync/plugins/virt");
+fn install_virtualizer_plugin(home: &Path, id: &str, dir: &str, extension: &str) {
+    let plugin_dir = home.join(format!("data/linsync/plugins/{dir}"));
     fs::create_dir_all(&plugin_dir).unwrap();
     let script = "#!/bin/sh\n\
         request=$(cat)\n\
@@ -483,29 +483,31 @@ fn install_virtualizer_plugin(home: &Path) -> &'static str {
         perms.set_mode(0o755);
         fs::set_permissions(&helper, perms).unwrap();
     }
-    let manifest = r#"{
+    let manifest = format!(
+        r#"{{
       "schema_version": 1,
-      "id": "test.virt",
+      "id": "{id}",
       "name": "Virtualizer Fixture",
       "version": "1.0.0",
       "license": "GPL-3.0-only",
       "entry": ["./helper.sh"],
       "classes": ["folder_virtualizer"],
-      "mime_types": ["application/zip"],
-      "extensions": ["zip"],
+      "mime_types": ["application/octet-stream"],
+      "extensions": ["{extension}"],
       "capabilities": [],
       "deterministic": true,
-      "sandbox": { "network": false, "writes_input": false, "requires_home_access": false },
+      "sandbox": {{ "network": false, "writes_input": false, "requires_home_access": false }},
       "options_schema": []
-    }"#;
+    }}"#
+    );
     fs::write(plugin_dir.join("linsync-plugin.json"), manifest).unwrap();
-    "test.virt"
 }
 
 #[test]
 fn archive_unpacker_compares_virtual_trees() {
     let home = temp_home("archive-virt");
-    let id = install_virtualizer_plugin(&home);
+    install_virtualizer_plugin(&home, "test.virt", "virt", "zip");
+    let id = "test.virt";
     let a = home.join("a.zip");
     let b = home.join("b.zip");
     let c = home.join("c.zip");
@@ -537,4 +539,33 @@ fn archive_unpacker_compares_virtual_trees() {
     // Unknown plugin id → error exit 2.
     let unknown = run_isolated_unsandboxed(&home, &["archive", "--unpacker", "nope", a, b]);
     assert_eq!(unknown.status.code(), Some(2));
+}
+
+#[test]
+fn archive_auto_routes_unsupported_extension_to_virtualizer() {
+    let home = temp_home("archive-auto");
+    // The built-in extractor has no idea about ".7z"; a virtualizer declares it.
+    install_virtualizer_plugin(&home, "test.sevenz", "sevenz", "7z");
+    let a = home.join("a.7z");
+    let b = home.join("b.7z");
+    fs::write(&a, "SAME").unwrap();
+    fs::write(&b, "SAME").unwrap();
+    let (a, b) = (a.to_str().unwrap(), b.to_str().unwrap());
+
+    // No --unpacker: the unsupported extension auto-routes to the virtualizer,
+    // and equal content compares equal (exit 0).
+    let out = run_isolated_unsandboxed(&home, &["archive", a, b]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // With the plugin disabled, there is no fallback: the built-in extractor
+    // rejects the unsupported extension (exit 2).
+    run_isolated(&home, &["plugin", "disable", "test.sevenz"]);
+    let out = run_isolated_unsandboxed(&home, &["archive", a, b]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unsupported archive extension"));
 }

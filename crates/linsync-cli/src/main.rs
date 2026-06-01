@@ -21,7 +21,8 @@ use linsync_core::{
     compare_text_files_with_prediffer_chain, compare_virtual_trees, discover_installed_plugins,
     find_builtin, is_likely_binary, load_plugin_enabled_map, load_plugin_options, merge_three_way,
     parse_conflict_markers, plan_folder_operation, probe_plugin, resolve_enabled_prediffers,
-    run_unpack_folder_plugin, set_plugin_enabled, set_plugin_option,
+    resolve_enabled_virtualizer_for_extension, run_unpack_folder_plugin, set_plugin_enabled,
+    set_plugin_option,
 };
 
 fn main() -> ExitCode {
@@ -1305,6 +1306,20 @@ fn archive_command(args: &[String]) -> Result<ExitCode, String> {
         return archive_compare_via_plugin(&id, &paths[0], &paths[1], json);
     }
 
+    // Auto-route to a folder-virtualizer plugin for extensions the built-in
+    // extractor cannot read, when one is installed + enabled and declares the
+    // extension. Supported built-in formats always use the built-in path.
+    if !builtin_archive_supported(&paths[0]) {
+        let ext = Path::new(&paths[0])
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if let Some(plugin) = resolve_enabled_virtualizer_for_extension(&AppPaths::from_env(), ext)
+        {
+            return archive_compare_via_plugin(&plugin.manifest.id, &paths[0], &paths[1], json);
+        }
+    }
+
     let cache_root = AppPaths::from_env().comparison_cache_dir();
     fs::create_dir_all(&cache_root).map_err(|err| format!("cannot prepare cache dir: {err}"))?;
 
@@ -1355,6 +1370,20 @@ fn archive_command(args: &[String]) -> Result<ExitCode, String> {
         ExitCode::SUCCESS
     };
     Ok(code)
+}
+
+/// Archive name suffixes the built-in tar/unzip extractor handles.
+const BUILTIN_ARCHIVE_SUFFIXES: &[&str] = &[
+    ".zip", ".jar", ".war", ".apk", ".ipa", ".tar", ".tgz", ".tar.gz", ".tbz2", ".tar.bz2", ".txz",
+    ".tar.xz", ".tzst", ".tar.zst",
+];
+
+/// Whether the built-in extractor recognizes this archive name's extension.
+fn builtin_archive_supported(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    BUILTIN_ARCHIVE_SUFFIXES
+        .iter()
+        .any(|suffix| lower.ends_with(suffix))
 }
 
 /// Compare two archives by routing each through a folder-virtualizer / unpacker

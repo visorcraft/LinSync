@@ -827,6 +827,36 @@ pub fn resolve_enabled_prediffers(
         .collect()
 }
 
+/// Resolve the first enabled, installed unpacker / folder-virtualizer plugin
+/// that declares `extension` (compared case-insensitively, leading dot
+/// optional), for routing an archive the built-in extractor cannot read.
+pub fn resolve_enabled_virtualizer_for_extension(
+    paths: &AppPaths,
+    extension: &str,
+) -> Option<DiscoveredPlugin> {
+    let wanted = extension.trim_start_matches('.').to_ascii_lowercase();
+    if wanted.is_empty() {
+        return None;
+    }
+    let discovery = discover_installed_plugins(paths);
+    let enabled = load_plugin_enabled_map(paths);
+    discovery
+        .plugins
+        .iter()
+        .find(|plugin| {
+            let classes = &plugin.manifest.classes;
+            (classes.contains(&PluginClass::FolderVirtualizer)
+                || classes.contains(&PluginClass::Unpacker))
+                && enabled.get(&plugin.manifest.id).copied().unwrap_or(true)
+                && plugin
+                    .manifest
+                    .extensions
+                    .iter()
+                    .any(|ext| ext.trim_start_matches('.').to_ascii_lowercase() == wanted)
+        })
+        .cloned()
+}
+
 /// Apply an ordered chain of prediffers to a single input, threading each
 /// stage's text output into the next via a private temp file, and return the
 /// final normalized text.
