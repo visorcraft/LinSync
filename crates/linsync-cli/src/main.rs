@@ -3147,14 +3147,18 @@ fn report_command(args: &[String]) -> Result<ExitCode, String> {
 fn project_command(args: &[String]) -> Result<ExitCode, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         eprintln!(
-            "usage: linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR>"
+            "usage: linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR | list [DIR] [--json]>"
         );
         return Ok(ExitCode::from(2));
     };
     let rest = &args[1..];
-    // `report` takes a value-bearing `--output`, so it parses its own args.
+    // `report` takes a value-bearing `--output`, and `list` takes a DIR rather
+    // than a project file, so they parse their own args.
     if subcommand == "report" {
         return project_report(rest);
+    }
+    if subcommand == "list" {
+        return project_list(rest);
     }
     let as_json = rest.iter().any(|arg| arg == "--json");
     let path = rest
@@ -3207,7 +3211,7 @@ fn project_command(args: &[String]) -> Result<ExitCode, String> {
         }
         "run" => project_run(&project, as_json),
         other => Err(format!(
-            "unknown project subcommand '{other}'; expected validate, show, run, or report"
+            "unknown project subcommand '{other}'; expected validate, show, run, report, or list"
         )),
     }
 }
@@ -3290,6 +3294,67 @@ fn project_report(args: &[String]) -> Result<ExitCode, String> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// `project list [DIR] [--json]` — list `*.linsync-project` files in DIR
+/// (default `.`) with their name and comparison count.
+fn project_list(args: &[String]) -> Result<ExitCode, String> {
+    let as_json = args.iter().any(|arg| arg == "--json");
+    let dir = args
+        .iter()
+        .find(|arg| !arg.starts_with("--"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let read = fs::read_dir(&dir)
+        .map_err(|err| format!("cannot read directory '{}': {err}", dir.display()))?;
+    let mut paths: Vec<PathBuf> = read
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("linsync-project"))
+        .collect();
+    paths.sort();
+
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    for path in &paths {
+        match ProjectFileStore::new(path.clone()).load() {
+            Ok(project) => {
+                if as_json {
+                    items.push(serde_json::json!({
+                        "path": path.display().to_string(),
+                        "name": project.name,
+                        "comparisons": project.sessions.len(),
+                    }));
+                } else {
+                    println!(
+                        "{}\t{}\t{} comparison{}",
+                        path.display(),
+                        project.name,
+                        project.sessions.len(),
+                        if project.sessions.len() == 1 { "" } else { "s" }
+                    );
+                }
+            }
+            Err(err) => {
+                if as_json {
+                    items.push(serde_json::json!({
+                        "path": path.display().to_string(),
+                        "error": err.to_string(),
+                    }));
+                } else {
+                    eprintln!("warning: {}: {err}", path.display());
+                }
+            }
+        }
+    }
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "projects": items }))
+                .map_err(|err| err.to_string())?
+        );
+    } else if paths.is_empty() {
+        println!("No project files in {}.", dir.display());
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Lower-case, dash-separated filename slug from a session title.
@@ -5980,8 +6045,8 @@ Manage compare profiles — named bundles of per-mode comparison options. Built-
 .B report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]
 Generate an HTML file or folder comparison report with optional text context, folder columns, tree state, or nested file reports.
 .TP
-.B project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR>
-Operate on a project file (a named bundle of saved comparisons). validate loads and schema-checks it; show lists its comparisons; run executes each one (auto-detecting folder / text / binary / table like the compare command, with default options) and exits 0 when all are equal, 1 when some differ, or 2 on error, for CI use; report writes an HTML report per comparison (text or folder) into DIR with the same exit codes.
+.B project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR | list [DIR] [--json]>
+Operate on a project file (a named bundle of saved comparisons). validate loads and schema-checks it; show lists its comparisons; run executes each one (auto-detecting folder / text / binary / table like the compare command, with default options) and exits 0 when all are equal, 1 when some differ, or 2 on error, for CI use; report writes an HTML report per comparison (text or folder) into DIR with the same exit codes; list shows the *.linsync-project files in DIR (default the current directory) with their name and comparison count.
 .TP
 .B reveal [--wait] PATH...
 Reveal files or folders through org.freedesktop.FileManager1.ShowItems, falling back to xdg-open for the containing folder.
@@ -6048,7 +6113,7 @@ USAGE:
     linsync-cli patch LEFT RIGHT [--format unified|context|normal] [--context LINES] [--preview|--output FILE]
     linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
     linsync-cli profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
-    linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR>
+    linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR | list [DIR] [--json]>
     linsync-cli reveal [--wait] PATH...
     linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]
     linsync-cli session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] | list [--json] | show [INDEX] [--json] | clear>

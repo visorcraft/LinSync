@@ -2670,3 +2670,35 @@ fn project_report_writes_html_per_comparison() {
     let out = run(&["project", "report", project.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn project_list_finds_project_files_in_dir() {
+    let temp = TempFixture::new();
+    fs::write(
+        temp.path.join("alpha.linsync-project"),
+        r#"{"schema_version":1,"name":"alpha","sessions":[{"schema_version":1,"session":{"title":"x","left":"/a","right":"/b","options":{}}}]}"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path.join("beta.linsync-project"),
+        r#"{"schema_version":1,"name":"beta","sessions":[]}"#,
+    )
+    .unwrap();
+    // A non-project file is ignored.
+    fs::write(temp.path.join("notes.txt"), "ignore me").unwrap();
+
+    let out = run(&["project", "list", temp.path.to_str().unwrap(), "--json"]);
+    assert!(out.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let projects = value["projects"].as_array().unwrap();
+    assert_eq!(
+        projects.len(),
+        2,
+        "should find exactly the two project files"
+    );
+    // Sorted by path: alpha before beta.
+    assert_eq!(projects[0]["name"], "alpha");
+    assert_eq!(projects[0]["comparisons"], 1);
+    assert_eq!(projects[1]["name"], "beta");
+    assert_eq!(projects[1]["comparisons"], 0);
+}
