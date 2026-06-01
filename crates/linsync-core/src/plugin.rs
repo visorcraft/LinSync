@@ -1492,6 +1492,39 @@ pub fn run_unpack_folder_plugin(
     Ok(serde_json::from_str(&raw.stdout)?)
 }
 
+/// Compare two archives by unpacking each through a folder-virtualizer /
+/// unpacker plugin (`unpack_folder`) and comparing the resulting virtual trees.
+///
+/// The plugin-based archive comparison lives in core so the CLI and GUI share a
+/// single implementation; built-in `tar`/`unzip` extraction remains a
+/// client-side fallback for formats/environments without a plugin. A plugin
+/// that reports `ok: false` surfaces as [`PluginError::PluginResponseError`].
+pub fn compare_archives_with_unpacker(
+    plugin_dir: &Path,
+    manifest: &PluginManifest,
+    left_archive: &str,
+    right_archive: &str,
+    options: &PluginExecutionOptions,
+) -> Result<crate::folder::FolderCompareResult, PluginError> {
+    let unpack = |archive: &str| -> Result<Vec<VirtualNode>, PluginError> {
+        let response = run_unpack_folder_plugin(plugin_dir, manifest, archive, options)?;
+        if response.ok {
+            Ok(response.tree)
+        } else {
+            Err(PluginError::PluginResponseError {
+                code: "unpack_failed".to_owned(),
+                message: response
+                    .error
+                    .unwrap_or_else(|| format!("plugin failed to unpack '{archive}'")),
+                diagnostics: Vec::new(),
+            })
+        }
+    };
+    let left = unpack(left_archive)?;
+    let right = unpack(right_archive)?;
+    Ok(crate::folder::compare_virtual_trees(&left, &right))
+}
+
 /// The outcome of a plugin `probe` diagnostic: the helper's exit status (or a
 /// timeout), captured stdout/stderr, and the parsed protocol response when the
 /// helper emitted valid JSON. Execution-level failures (non-zero exit, timeout)
@@ -2623,6 +2656,59 @@ JSON
         assert_eq!(result.role, "source");
         assert_eq!(result.text, "extracted text");
         assert_eq!(result.encoding.as_deref(), Some("utf-8"));
+    }
+
+    #[test]
+    fn compare_archives_with_unpacker_compares_virtual_trees() {
+        let fixture = TempFixture::new();
+        let plugin_dir = fixture.path.join("plugins/virt");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        // Emit a one-file virtual tree whose sha256 is the source's content,
+        // so archives with equal content compare equal.
+        write_helper(
+            &plugin_dir,
+            "unpack.sh",
+            r#"#!/bin/sh
+request=$(cat)
+source=$(printf '%s' "$request" | sed -n 's/.*"source":"\([^"]*\)".*/\1/p')
+content=$(cat "$source")
+printf '{"ok":true,"tree":[{"path":"entry.txt","kind":"file","sha256":"%s"}]}\n' "$content"
+"#,
+        );
+        let mut manifest = sample_manifest("example.virt");
+        manifest.entry = vec!["unpack.sh".to_owned()];
+        manifest.classes = vec![PluginClass::FolderVirtualizer];
+
+        let a = fixture.path.join("a.zip");
+        let b = fixture.path.join("b.zip");
+        let c = fixture.path.join("c.zip");
+        fs::write(&a, "AAA").unwrap();
+        fs::write(&b, "AAA").unwrap();
+        fs::write(&c, "BBB").unwrap();
+        let opts = PluginExecutionOptions::default();
+
+        let equal = compare_archives_with_unpacker(
+            &plugin_dir,
+            &manifest,
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            &opts,
+        )
+        .unwrap();
+        assert!(equal.is_equal(), "equal content -> equal trees");
+
+        let different = compare_archives_with_unpacker(
+            &plugin_dir,
+            &manifest,
+            a.to_str().unwrap(),
+            c.to_str().unwrap(),
+            &opts,
+        )
+        .unwrap();
+        assert!(
+            !different.is_equal(),
+            "differing content -> different trees"
+        );
     }
 
     #[test]

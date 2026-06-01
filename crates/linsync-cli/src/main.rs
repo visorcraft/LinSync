@@ -17,12 +17,12 @@ use linsync_core::{
     TextDocument, TextFindOptions, TextInputEncoding, TextRenderMode, TextSubstitution,
     TextSyntaxMode, ThreeWayConflict, ThreeWayMergeState, active_sandbox_status,
     assess_operation_risks, builtin_profiles, builtin_text_regex_rule_sets, clear_plugin_option,
-    compare_binary_files, compare_folders, compare_table_files, compare_text, compare_text_files,
-    compare_text_files_with_prediffer_chain, compare_virtual_trees, discover_installed_plugins,
-    find_builtin, is_likely_binary, load_plugin_enabled_map, load_plugin_options, merge_three_way,
-    parse_conflict_markers, plan_folder_operation, probe_plugin, resolve_enabled_prediffers,
-    resolve_enabled_virtualizer_for_extension, run_unpack_folder_plugin, set_plugin_enabled,
-    set_plugin_option,
+    compare_archives_with_unpacker, compare_binary_files, compare_folders, compare_table_files,
+    compare_text, compare_text_files, compare_text_files_with_prediffer_chain,
+    discover_installed_plugins, find_builtin, is_likely_binary, load_plugin_enabled_map,
+    load_plugin_options, merge_three_way, parse_conflict_markers, plan_folder_operation,
+    probe_plugin, resolve_enabled_prediffers, resolve_enabled_virtualizer_for_extension,
+    set_plugin_enabled, set_plugin_option,
 };
 
 fn main() -> ExitCode {
@@ -1496,22 +1496,15 @@ fn archive_compare_via_plugin(
     }
 
     let options = PluginExecutionOptions::default();
-    let unpack = |archive: &str, side: &str| -> Result<Vec<linsync_core::VirtualNode>, String> {
-        let response = run_unpack_folder_plugin(&plugin.root, &plugin.manifest, archive, &options)
-            .map_err(|err| format!("{side} unpack failed: {err}"))?;
-        if !response.ok {
-            return Err(format!(
-                "{side} unpack failed: {}",
-                response
-                    .error
-                    .unwrap_or_else(|| "plugin reported failure".to_owned())
-            ));
-        }
-        Ok(response.tree)
-    };
-    let left_tree = unpack(left_archive, "left")?;
-    let right_tree = unpack(right_archive, "right")?;
-    let result = compare_virtual_trees(&left_tree, &right_tree);
+    // Core owns the plugin-based archive comparison; the CLI just renders it.
+    let result = compare_archives_with_unpacker(
+        &plugin.root,
+        &plugin.manifest,
+        left_archive,
+        right_archive,
+        &options,
+    )
+    .map_err(|err| err.to_string())?;
     let summary = &result.summary;
     // The unpacker helper ran under the sandbox; surface its confinement so a
     // degraded run is visible rather than silent.
@@ -1519,8 +1512,8 @@ fn archive_compare_via_plugin(
 
     if json {
         let body = serde_json::json!({
-            "left": { "archive": left_archive, "unpacker": id, "entries": left_tree.len() },
-            "right": { "archive": right_archive, "unpacker": id, "entries": right_tree.len() },
+            "left": { "archive": left_archive, "unpacker": id },
+            "right": { "archive": right_archive, "unpacker": id },
             "equal": result.is_equal(),
             "sandbox": { "label": sandbox.label, "confined": sandbox.confined },
             "summary": {
