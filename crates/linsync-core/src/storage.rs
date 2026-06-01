@@ -511,6 +511,11 @@ pub struct SessionFile {
     pub selected_view: CompareViewMode,
     #[serde(default)]
     pub filter_names: Vec<String>,
+    /// Compare profile id (built-in or user) this entry was created with, if
+    /// any. Clients (e.g. the CLI `project run`/`report`) resolve and apply it
+    /// to drive the comparison; `None` means use default options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     #[serde(default)]
     pub layout: SessionLayout,
     /// Unknown keys preserved across a load→save round-trip (forward-compat).
@@ -525,6 +530,7 @@ impl SessionFile {
             session,
             selected_view: CompareViewMode::default(),
             filter_names: Vec::new(),
+            profile: None,
             layout: SessionLayout::default(),
             extra: serde_json::Map::new(),
         }

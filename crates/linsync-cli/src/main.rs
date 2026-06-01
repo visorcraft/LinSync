@@ -3256,8 +3256,18 @@ fn project_report(args: &[String]) -> Result<ExitCode, String> {
     for (index, sf) in project.sessions.iter().enumerate() {
         let (left, right) = (&sf.session.left, &sf.session.right);
         let file = output.join(format!("{index:02}-{}.html", slugify(&sf.session.title)));
+        let profile = match resolve_session_profile(sf) {
+            Ok(profile) => profile,
+            Err(err) => {
+                any_err = true;
+                eprintln!("error: comparison {index} ({}): {err}", sf.session.title);
+                continue;
+            }
+        };
         let rendered = if left.is_dir() && right.is_dir() {
-            compare_folders(left, right, &FolderCompareOptions::default())
+            let default_folder = FolderCompareOptions::default();
+            let opts = profile.as_ref().map_or(&default_folder, |p| &p.folder);
+            compare_folders(left, right, opts)
                 .map_err(|err| err.to_string())
                 .map(|result| {
                     if !result.is_equal() {
@@ -3266,7 +3276,9 @@ fn project_report(args: &[String]) -> Result<ExitCode, String> {
                     folder_html_report(&result, &[], ReportTreeState::Expanded, false, None)
                 })
         } else {
-            compare_text_files(left, right, &TextCompareOptions::default())
+            let default_text = TextCompareOptions::default();
+            let opts = profile.as_ref().map_or(&default_text, |p| &p.text);
+            compare_text_files(left, right, opts)
                 .map_err(|err| err.to_string())
                 .map(|result| {
                     if !result.is_equal() {
@@ -3380,45 +3392,71 @@ fn slugify(title: &str) -> String {
 /// Run every comparison in a project. Directories compare as folders, otherwise
 /// using the same auto-detection as `compare` (folder / text / binary / table,
 /// default options). Exit 0 = all equal, 1 = some differ, 2 = error.
-fn run_project_comparison(left: &Path, right: &Path) -> Result<(&'static str, bool), String> {
+fn run_project_comparison(
+    left: &Path,
+    right: &Path,
+    profile: Option<&CompareProfile>,
+) -> Result<(&'static str, bool), String> {
+    // Detect the mode from content (default options); a profile then supplies
+    // the per-mode options for the chosen engine.
     let kind = detect_compare_type(left, right, &TextCompareOptions::default(), false)?;
     let (mode, equal) = match kind {
-        CompareType::Folder => (
-            "folder",
-            compare_folders(left, right, &FolderCompareOptions::default())
-                .map_err(|err| err.to_string())?
-                .is_equal(),
-        ),
+        CompareType::Folder => {
+            let default_folder = FolderCompareOptions::default();
+            let opts = profile.map_or(&default_folder, |p| &p.folder);
+            (
+                "folder",
+                compare_folders(left, right, opts)
+                    .map_err(|err| err.to_string())?
+                    .is_equal(),
+            )
+        }
         CompareType::Binary | CompareType::Hex => {
-            let result = compare_binary_files(
-                left,
-                right,
-                &BinaryCompareOptions {
+            let opts = profile
+                .map(|p| p.binary.clone())
+                .unwrap_or(BinaryCompareOptions {
                     bytes_per_row: 16,
                     compare_content: true,
                     compare_metadata: true,
-                },
-            )
-            .map_err(|err| err.to_string())?;
+                });
+            let result = compare_binary_files(left, right, &opts).map_err(|err| err.to_string())?;
             (
                 "binary",
                 result.differences.is_empty() && result.metadata_differences.is_empty(),
             )
         }
-        CompareType::Table => (
-            "table",
-            compare_table_files(left, right, &TableCompareOptions::default())
-                .map_err(|err| err.to_string())?
-                .is_equal(),
-        ),
-        _ => (
-            "text",
-            compare_text_files(left, right, &TextCompareOptions::default())
-                .map_err(|err| err.to_string())?
-                .is_equal(),
-        ),
+        CompareType::Table => {
+            let default_table = TableCompareOptions::default();
+            let opts = profile.map_or(&default_table, |p| &p.table);
+            (
+                "table",
+                compare_table_files(left, right, opts)
+                    .map_err(|err| err.to_string())?
+                    .is_equal(),
+            )
+        }
+        _ => {
+            let default_text = TextCompareOptions::default();
+            let opts = profile.map_or(&default_text, |p| &p.text);
+            (
+                "text",
+                compare_text_files(left, right, opts)
+                    .map_err(|err| err.to_string())?
+                    .is_equal(),
+            )
+        }
     };
     Ok((mode, equal))
+}
+
+/// Resolve a session entry's optional profile id to a `CompareProfile`.
+fn resolve_session_profile(sf: &SessionFile) -> Result<Option<CompareProfile>, String> {
+    match &sf.profile {
+        Some(id) => resolve_profile_arg(id)
+            .map(Some)
+            .map_err(|err| format!("profile '{id}': {err}")),
+        None => Ok(None),
+    }
 }
 
 fn project_run(project: &linsync_core::ProjectFile, as_json: bool) -> Result<ExitCode, String> {
@@ -3427,7 +3465,9 @@ fn project_run(project: &linsync_core::ProjectFile, as_json: bool) -> Result<Exi
     let mut items: Vec<serde_json::Value> = Vec::new();
     for (index, sf) in project.sessions.iter().enumerate() {
         let (left, right) = (&sf.session.left, &sf.session.right);
-        let (status, mode, detail) = match run_project_comparison(left, right) {
+        let outcome = resolve_session_profile(sf)
+            .and_then(|profile| run_project_comparison(left, right, profile.as_ref()));
+        let (status, mode, detail) = match outcome {
             Ok((mode, true)) => ("equal", mode, None),
             Ok((mode, false)) => ("different", mode, None),
             Err(err) => ("error", "", Some(err)),
@@ -3442,6 +3482,7 @@ fn project_run(project: &linsync_core::ProjectFile, as_json: bool) -> Result<Exi
                 "index": index,
                 "title": sf.session.title,
                 "mode": mode,
+                "profile": sf.profile,
                 "left": left.display().to_string(),
                 "right": right.display().to_string(),
                 "status": status,
@@ -3449,8 +3490,13 @@ fn project_run(project: &linsync_core::ProjectFile, as_json: bool) -> Result<Exi
             }));
         } else {
             let suffix = detail.map(|d| format!(" ({d})")).unwrap_or_default();
+            let profile_note = sf
+                .profile
+                .as_deref()
+                .map(|p| format!(" [{p}]"))
+                .unwrap_or_default();
             println!(
-                "{index}\t{status}\t{mode}\t{}\t{} | {}{suffix}",
+                "{index}\t{status}\t{mode}{profile_note}\t{}\t{} | {}{suffix}",
                 sf.session.title,
                 left.display(),
                 right.display(),
@@ -3515,7 +3561,7 @@ fn compare_view_str(view: CompareViewMode) -> String {
 fn session_command(args: &[String]) -> Result<ExitCode, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         eprintln!(
-            "usage: linsync-cli session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] | list [--json] | show [INDEX] [--json] | clear>"
+            "usage: linsync-cli session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] [--profile ID] | list [--json] | show [INDEX] [--json] | clear>"
         );
         return Ok(ExitCode::from(2));
     };
@@ -3545,6 +3591,7 @@ fn session_save(store: &RecentSessionStore, args: &[String]) -> Result<ExitCode,
     let mut base = None;
     let mut title = None;
     let mut view = CompareViewMode::default();
+    let mut profile = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -3558,6 +3605,14 @@ fn session_save(store: &RecentSessionStore, args: &[String]) -> Result<ExitCode,
                 title = Some(
                     args.get(index + 1)
                         .ok_or("--title requires a value")?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--profile" => {
+                profile = Some(
+                    args.get(index + 1)
+                        .ok_or("--profile requires an id")?
                         .clone(),
                 );
                 index += 2;
@@ -3577,7 +3632,7 @@ fn session_save(store: &RecentSessionStore, args: &[String]) -> Result<ExitCode,
     }
     if positionals.len() != 2 {
         return Err(
-            "usage: linsync-cli session save LEFT RIGHT [--base BASE] [--title T] [--view MODE]"
+            "usage: linsync-cli session save LEFT RIGHT [--base BASE] [--title T] [--view MODE] [--profile ID] [--profile ID]"
                 .to_owned(),
         );
     }
@@ -3590,6 +3645,7 @@ fn session_save(store: &RecentSessionStore, args: &[String]) -> Result<ExitCode,
         options: CompareOptions::default(),
     });
     session.selected_view = view;
+    session.profile = profile;
     let recent = store.add(session).map_err(|err| err.to_string())?;
     println!(
         "saved session '{title}' ({} in history)",
@@ -3667,6 +3723,7 @@ fn session_json(index: usize, sf: &SessionFile) -> serde_json::Value {
         "index": index,
         "title": sf.session.title,
         "view": compare_view_str(sf.selected_view),
+        "profile": sf.profile,
         "left": sf.session.left.display().to_string(),
         "right": sf.session.right.display().to_string(),
         "base": sf.session.base.as_ref().map(|b| b.display().to_string()),
@@ -6051,8 +6108,8 @@ Operate on a project file (a named bundle of saved comparisons). validate loads 
 .B reveal [--wait] PATH...
 Reveal files or folders through org.freedesktop.FileManager1.ShowItems, falling back to xdg-open for the containing folder.
 .TP
-.B session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] | list [--json] | show [INDEX] [--json] | clear>
-Manage the recent-session history shared with the GUI ($XDG_DATA_HOME/linsync/recent-sessions.json). save records a compare (left/right, optional base, title, and view mode) at the front of the history; list shows the saved sessions newest-first with their index; show prints one (INDEX defaults to 0, the most recent); clear empties the history. A saved session is restored by the GUI on next launch when "open last session" is enabled.
+.B session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] [--profile ID] | list [--json] | show [INDEX] [--json] | clear>
+Manage the recent-session history shared with the GUI ($XDG_DATA_HOME/linsync/recent-sessions.json). save records a compare (left/right, optional base, title, view mode, and a compare profile id) at the front of the history; list shows the saved sessions newest-first with their index; show prints one (INDEX defaults to 0, the most recent); clear empties the history. A saved session is restored by the GUI on next launch when "open last session" is enabled.
 .TP
 .B self-compare [--json] FILE
 Compare a file against a temporary cached copy.
@@ -6116,7 +6173,7 @@ USAGE:
     linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR | list [DIR] [--json]>
     linsync-cli reveal [--wait] PATH...
     linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]
-    linsync-cli session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] | list [--json] | show [INDEX] [--json] | clear>
+    linsync-cli session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] [--profile ID] | list [--json] | show [INDEX] [--json] | clear>
     linsync-cli self-compare [--json] FILE
     linsync-cli table [--header] [--delimiter CHAR|--tsv] [--table-quote CHAR] [--table-escape CHAR] [--table-comment PREFIX] [--table-skip-blank BOOL] [--numeric-tolerance FLOAT] [--json|--count|--quiet] LEFT RIGHT
     linsync-cli webpage --sub-mode html|text|tree|rendered|screenshot --accept-network-fetch [--depth N] [--timeout SECS] [--max-requests N] LEFT_URL RIGHT_URL

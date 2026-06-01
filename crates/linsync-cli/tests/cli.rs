@@ -2702,3 +2702,71 @@ fn project_list_finds_project_files_in_dir() {
     assert_eq!(projects[1]["name"], "beta");
     assert_eq!(projects[1]["comparisons"], 0);
 }
+
+#[test]
+fn project_run_applies_per_session_profile() {
+    let temp = TempFixture::new();
+    // The two files differ only by internal whitespace.
+    fs::write(temp.path.join("a.txt"), "hello world\n").unwrap();
+    fs::write(temp.path.join("b.txt"), "hello    world\n").unwrap();
+    let (a, b) = (temp.path.join("a.txt"), temp.path.join("b.txt"));
+    let project = temp.path.join("p.linsync-project");
+    // Entry 0 uses the built-in ignore-formatting profile; entry 1 uses defaults.
+    let json = format!(
+        r#"{{"schema_version":1,"name":"prof","sessions":[
+            {{"schema_version":1,"profile":"ignore-formatting","session":{{"title":"ws","left":"{}","right":"{}","options":{{}}}}}},
+            {{"schema_version":1,"session":{{"title":"ws-default","left":"{}","right":"{}","options":{{}}}}}}
+        ]}}"#,
+        a.display(),
+        b.display(),
+        a.display(),
+        b.display()
+    );
+    fs::write(&project, json).unwrap();
+
+    let out = run(&["project", "run", project.to_str().unwrap(), "--json"]);
+    // One comparison differs (the default one), so the aggregate exit is 1.
+    assert_eq!(out.status.code(), Some(1));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let comparisons = value["comparisons"].as_array().unwrap();
+    assert_eq!(
+        comparisons[0]["status"], "equal",
+        "ignore-formatting hides whitespace diff"
+    );
+    assert_eq!(comparisons[0]["profile"], "ignore-formatting");
+    assert_eq!(
+        comparisons[1]["status"], "different",
+        "default options see the diff"
+    );
+    assert!(comparisons[1]["profile"].is_null());
+}
+
+#[test]
+fn session_save_records_profile() {
+    let temp = TempFixture::new();
+    let data = temp.path.join("data");
+    let config = temp.path.join("config");
+    let envs: &[(&str, &Path)] = &[
+        ("XDG_DATA_HOME", data.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
+        ("HOME", temp.path.as_path()),
+    ];
+    assert!(
+        run_with_env(
+            &[
+                "session",
+                "save",
+                "/tmp/a",
+                "/tmp/b",
+                "--profile",
+                "code-review"
+            ],
+            envs
+        )
+        .status
+        .success()
+    );
+    let out = run_with_env(&["session", "show", "0", "--json"], envs);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["profile"], "code-review");
+}
