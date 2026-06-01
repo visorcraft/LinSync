@@ -30,6 +30,10 @@ pub struct FolderCompareOptions {
     pub hash_algorithm: HashAlgorithm,
     pub compare_permissions: bool,
     pub compare_ownership: bool,
+    /// Treat two otherwise-equal files as different when their extended
+    /// attributes (xattrs) differ. Linux only; a no-op elsewhere.
+    #[serde(default)]
+    pub compare_xattrs: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +82,7 @@ impl Default for FolderCompareOptions {
             hash_algorithm: HashAlgorithm::default(),
             compare_permissions: false,
             compare_ownership: false,
+            compare_xattrs: false,
         }
     }
 }
@@ -1938,6 +1943,83 @@ fn entries_match(
         return Ok(false);
     }
 
+    if options.compare_xattrs
+        && !file_xattrs_match(
+            &left_root.join(relative_path),
+            &right_root.join(relative_path),
+        )?
+    {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+/// Read a file's extended attributes into a sorted name→value map, not
+/// following symlinks. Linux only; other platforms report no xattrs.
+#[cfg(target_os = "linux")]
+fn read_xattrs(path: &Path) -> io::Result<BTreeMap<Vec<u8>, Vec<u8>>> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL byte"))?;
+
+    // List attribute names (NUL-separated). Query the size first, then read.
+    let names = unsafe {
+        let len = libc::llistxattr(c_path.as_ptr(), std::ptr::null_mut(), 0);
+        if len < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if len == 0 {
+            return Ok(BTreeMap::new());
+        }
+        let mut buf = vec![0u8; len as usize];
+        let got = libc::llistxattr(
+            c_path.as_ptr(),
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+        );
+        if got < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        buf.truncate(got as usize);
+        buf
+    };
+
+    let mut map = BTreeMap::new();
+    for name in names.split(|&b| b == 0).filter(|n| !n.is_empty()) {
+        let c_name = std::ffi::CString::new(name)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "xattr name contains NUL"))?;
+        let value = unsafe {
+            let len = libc::lgetxattr(c_path.as_ptr(), c_name.as_ptr(), std::ptr::null_mut(), 0);
+            if len < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut buf = vec![0u8; len as usize];
+            let got = libc::lgetxattr(
+                c_path.as_ptr(),
+                c_name.as_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+            );
+            if got < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            buf.truncate(got as usize);
+            buf
+        };
+        map.insert(name.to_vec(), value);
+    }
+    Ok(map)
+}
+
+/// Whether two files carry identical extended attributes.
+#[cfg(target_os = "linux")]
+fn file_xattrs_match(left: &Path, right: &Path) -> io::Result<bool> {
+    Ok(read_xattrs(left)? == read_xattrs(right)?)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn file_xattrs_match(_left: &Path, _right: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
@@ -4098,5 +4180,66 @@ mod tests {
             ..FolderQuery::default()
         });
         assert_eq!(page.total_matched, 3, "Different + LeftOnly + RightOnly");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_test_xattr(path: &Path, name: &[u8], value: &[u8]) -> std::io::Result<()> {
+        use std::os::unix::ffi::OsStrExt;
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        let c_name = std::ffi::CString::new(name).unwrap();
+        let rc = unsafe {
+            libc::lsetxattr(
+                c_path.as_ptr(),
+                c_name.as_ptr(),
+                value.as_ptr() as *const libc::c_void,
+                value.len(),
+                0,
+            )
+        };
+        if rc < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compare_xattrs_detects_attribute_only_differences() {
+        let fixture = TempFixture::new();
+        let left = fixture.path.join("l");
+        let right = fixture.path.join("r");
+        fs::create_dir_all(&left).unwrap();
+        fs::create_dir_all(&right).unwrap();
+        fs::write(left.join("f.txt"), "same").unwrap();
+        fs::write(right.join("f.txt"), "same").unwrap();
+
+        // Set a user xattr on the left file only; skip when the filesystem
+        // (e.g. some CI overlays) does not support extended attributes.
+        if set_test_xattr(&left.join("f.txt"), b"user.linsync_test", b"v").is_err() {
+            eprintln!("xattrs unsupported on this filesystem; skipping");
+            return;
+        }
+
+        let base = FolderCompareOptions::default();
+        let plain = compare_folders(&left, &right, &base).unwrap();
+        assert!(
+            plain.is_equal(),
+            "identical content compares equal without xattr mode"
+        );
+
+        let with_xattr = compare_folders(
+            &left,
+            &right,
+            &FolderCompareOptions {
+                compare_xattrs: true,
+                ..base
+            },
+        )
+        .unwrap();
+        assert!(
+            !with_xattr.is_equal(),
+            "an xattr-only difference is detected with compare_xattrs"
+        );
     }
 }

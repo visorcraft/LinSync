@@ -178,6 +178,7 @@ const FOLDER_FLAGS: &[&str] = &[
     "--hash-algorithm",
     "--compare-permissions",
     "--compare-ownership",
+    "--compare-xattrs",
     "--json",
     "--csv",
     "--count",
@@ -2383,7 +2384,7 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
 
     if folder_args.paths.len() != 2 {
         return Err(
-            "usage: linsync-cli folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--types LIST] [--search SUBSTR] [--sort KEY] [--desc] [--group-by GROUP] [--offset N] [--limit N] [--json|--csv|--count|--quiet] LEFT RIGHT"
+            "usage: linsync-cli folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--compare-xattrs] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--types LIST] [--search SUBSTR] [--sort KEY] [--desc] [--group-by GROUP] [--offset N] [--limit N] [--json|--csv|--count|--quiet] LEFT RIGHT"
                 .to_owned(),
         );
     }
@@ -5203,6 +5204,7 @@ struct FolderArgs {
     hash_algorithm: HashAlgorithm,
     compare_permissions: bool,
     compare_ownership: bool,
+    compare_xattrs: bool,
     output: FolderOutput,
     dry_run: bool,
     paths: Vec<String>,
@@ -5223,6 +5225,7 @@ impl FolderArgs {
             hash_algorithm: self.hash_algorithm,
             compare_permissions: self.compare_permissions,
             compare_ownership: self.compare_ownership,
+            compare_xattrs: self.compare_xattrs,
         }
     }
 
@@ -5278,6 +5281,7 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
     let mut hash_algorithm = HashAlgorithm::default();
     let mut compare_permissions = false;
     let mut compare_ownership = false;
+    let mut compare_xattrs = false;
     let mut output_mode = OutputMode::Text;
     let mut csv = false;
     let mut dry_run = false;
@@ -5307,6 +5311,7 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
             hash_algorithm = profile.folder.hash_algorithm;
             compare_permissions = profile.folder.compare_permissions;
             compare_ownership = profile.folder.compare_ownership;
+            compare_xattrs = profile.folder.compare_xattrs;
             effective_profile = Some(profile.id.to_string());
             profile_seek += 2;
             continue;
@@ -5526,6 +5531,10 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
                 compare_ownership = true;
                 index += 1;
             }
+            "--compare-xattrs" => {
+                compare_xattrs = true;
+                index += 1;
+            }
             value => {
                 paths.push(value.to_owned());
                 index += 1;
@@ -5561,6 +5570,7 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
         hash_algorithm,
         compare_permissions,
         compare_ownership,
+        compare_xattrs,
         output,
         dry_run,
         paths,
@@ -5953,6 +5963,7 @@ fn folder_options_metadata_json(
         "hash_algorithm": hash_algorithm_cli_value(options.hash_algorithm),
         "compare_permissions": options.compare_permissions,
         "compare_ownership": options.compare_ownership,
+        "compare_xattrs": options.compare_xattrs,
         "include_skipped": options.include_skipped,
         "state_filter": folder_entry_filter_value(state_filter),
         "filter_match_options": options.filter_match_options,
@@ -6408,7 +6419,7 @@ Inspect a Git-style conflict-marker file and report conflict sections.
 .B filter <validate RULE | validate-file PATH | list | migrate INPUT [--out OUTPUT | --in-place]>
 Manage named filters and validate filter expressions. `validate` checks a single filter rule grammar; `validate-file` checks a filter file; `list` reports stored named filters; `migrate` converts a legacy .flt file to the LinSync filter grammar, writing to --out, in-place with --in-place, or stdout by default.
 .TP
-.B folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--types LIST] [--search SUBSTR] [--sort KEY] [--desc] [--group-by GROUP] [--offset N] [--limit N] [--json|--csv|--count|--quiet] LEFT RIGHT
+.B folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--compare-xattrs] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--types LIST] [--search SUBSTR] [--sort KEY] [--desc] [--group-by GROUP] [--offset N] [--limit N] [--json|--csv|--count|--quiet] LEFT RIGHT
 Compare two folders and summarize identical, different, left-only, and right-only entries. --profile seeds folder options from a compare profile, and --json includes the effective profile, filters, and folder options used for the run. The result view is driven by the core query API: --state filters by comparison state, --types restricts to a comma-separated set of entry types (file,dir,symlink,special), --search keeps entries whose relative path contains a case-insensitive substring, --sort (name|path|state|type|size|modified) with --desc orders the rows, --group-by (none|state|type|directory) buckets them, and --offset/--limit paginate. JSON and text output report filtered (total matches), returned, offset, and has_more.
 .TP
 .B hex [--width BYTES] [--metadata-only] [--json|--count|--quiet] LEFT RIGHT
@@ -6491,7 +6502,7 @@ USAGE:
     linsync-cli conflict [--json] FILE
     linsync-cli completions SHELL
     linsync-cli filter <validate RULE | validate-file PATH | list | migrate INPUT [--out OUTPUT | --in-place]>
-    linsync-cli folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--types LIST] [--search SUBSTR] [--sort KEY] [--desc] [--group-by GROUP] [--offset N] [--limit N] [--json|--csv|--count|--quiet] LEFT RIGHT
+    linsync-cli folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--compare-xattrs] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--types LIST] [--search SUBSTR] [--sort KEY] [--desc] [--group-by GROUP] [--offset N] [--limit N] [--json|--csv|--count|--quiet] LEFT RIGHT
     linsync-cli hex [--width BYTES] [--metadata-only] [--json|--count|--quiet] LEFT RIGHT
     linsync-cli launch [--wait] [--] [ARGS...]
     linsync-cli man [--output FILE]
