@@ -1340,8 +1340,23 @@ fn reset_gui_settings_json(paths: &AppPaths) -> Result<String, String> {
 }
 
 fn record_recent_context(paths: &AppPaths, context: &GuiLaunchContext) {
+    // Privacy control: when the user has turned off persisting recent paths,
+    // remember nothing about what was compared — neither the recent-paths list
+    // nor the recent-session history (both store the compared paths).
+    if !recent_persistence_enabled(paths) {
+        return;
+    }
     record_recent_paths(paths, context);
     record_recent_session(paths, context);
+}
+
+/// Whether the user permits persisting comparison history (recent paths and
+/// sessions). Defaults to enabled when the setting cannot be read.
+fn recent_persistence_enabled(paths: &AppPaths) -> bool {
+    SettingsStore::new(paths.settings_file())
+        .load_or_default()
+        .map(|settings| settings.persist_recent_paths)
+        .unwrap_or(true)
 }
 
 fn record_recent_paths(paths: &AppPaths, context: &GuiLaunchContext) {
@@ -7101,6 +7116,70 @@ mod tests {
             .load_or_default()
             .expect("recent sessions should load");
         assert!(recent_sessions.sessions.is_empty());
+    }
+
+    #[test]
+    fn persist_recent_paths_setting_gates_history() {
+        let paths = test_app_paths("recent-privacy");
+        let _ = fs::remove_dir_all(
+            env::temp_dir().join(format!("linsync-gui-test-recent-privacy-{}", process::id())),
+        );
+        let files = test_file_root("recent-privacy-files");
+        let left = files.join("a.txt");
+        let right = files.join("b.txt");
+        fs::write(&left, "one\n").unwrap();
+        fs::write(&right, "two\n").unwrap();
+        let context = build_context_for_paths(&left, &right);
+        assert!(
+            context.active_tab().unwrap().validation.compatible,
+            "two real text files should validate as comparable"
+        );
+        let store = SettingsStore::new(paths.settings_file());
+
+        // Privacy ON (persist disabled): recording is a no-op.
+        let mut settings = Settings {
+            persist_recent_paths: false,
+            ..Settings::default()
+        };
+        store.save(&settings).unwrap();
+        record_recent_context(&paths, &context);
+        assert!(
+            RecentPathStore::new(paths.recent_paths_file(), 20)
+                .load_or_default()
+                .unwrap()
+                .paths
+                .is_empty(),
+            "no recent paths should be stored when persistence is off"
+        );
+        assert!(
+            RecentSessionStore::new(paths.recent_sessions_file(), 20)
+                .load_or_default()
+                .unwrap()
+                .sessions
+                .is_empty(),
+            "no recent session should be stored when persistence is off"
+        );
+
+        // Privacy OFF (persist enabled): the comparison is remembered.
+        settings.persist_recent_paths = true;
+        store.save(&settings).unwrap();
+        record_recent_context(&paths, &context);
+        assert!(
+            !RecentPathStore::new(paths.recent_paths_file(), 20)
+                .load_or_default()
+                .unwrap()
+                .paths
+                .is_empty(),
+            "recent paths should be stored once persistence is on"
+        );
+        assert!(
+            !RecentSessionStore::new(paths.recent_sessions_file(), 20)
+                .load_or_default()
+                .unwrap()
+                .sessions
+                .is_empty(),
+            "a recent session should be stored once persistence is on"
+        );
     }
 
     #[cfg(unix)]
