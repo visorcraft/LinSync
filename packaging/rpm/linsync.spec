@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.7.1
+Version:        1.8.0
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -108,6 +108,26 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Mon Jun 01 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.8.0-1
+- Correctness, security, and robustness hardening release.
+- Folder sync: fix delete operations, which previously always failed without
+  removing or trashing anything.
+- Three-way merge: resolve from structured conflict regions instead of
+  re-parsing marker text (file content that looks like a conflict marker no
+  longer corrupts the result), preserve CRLF/CR line endings on save, and
+  write output atomically (temp+rename, O_NOFOLLOW).
+- Plugin sandbox: grant helpers read-only access to $HOME, apply fd/proc
+  rlimits on the bubblewrap fallback, and block the full set of
+  credential-changing syscalls.
+- Image compare: bound decoder memory and dimensions (decompression-bomb
+  guard) and fix an overlay-buffer integer overflow.
+- Settings and sessions preserve unknown JSON keys across load/save.
+- OCR language selection now reaches the extractor plugin.
+- Further fixes across table, filter, trash, webpage, CLI argument parsing,
+  and the GUI bridge (comma-containing folder paths, merge conflict count,
+  plugin options dialog, perceptual deltaE scaling, and plugin-id
+  path-traversal hardening).
+
 * Fri May 29 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.7.1-1
 - Rename application id io.visorcraft.LinSync -> com.visorcraft.LinSync to
   match the visorcraft.com domain (desktop, metainfo, MIME, icons, D-Bus /

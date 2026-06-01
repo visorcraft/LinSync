@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.8.0" date="2026-06-01">
+      <description>
+        <p>Correctness, security, and robustness hardening release. Fixes folder delete operations (which previously always failed); makes three-way merge resolve from structured conflict regions instead of re-parsing marker text (content that looks like a conflict marker no longer corrupts the result), preserve CRLF/CR line endings on save, and write atomically. The plugin sandbox now grants helpers read-only access to $HOME, applies file-descriptor and process limits on the bubblewrap fallback, and blocks the full set of credential-changing syscalls. Image compare bounds decoder memory and dimensions to defeat decompression bombs and fixes an overlay-buffer integer overflow. Settings and sessions preserve unknown JSON keys across load and save, OCR language selection now reaches the extractor plugin, and there are further fixes across table, filter, trash, webpage, the CLI, and the GUI bridge.</p>
+      </description>
+    </release>
     <release version="1.7.1" date="2026-05-29">
       <description>
         <p>Renamed the application id from io.visorcraft.LinSync to com.visorcraft.LinSync to match the visorcraft.com domain. This updates the desktop entry, AppStream component id, MIME registration, icons, D-Bus and Wayland app id, and plugin ids; it also fixes stray visorcraft.io references (the security contact email and the Qt organization domain).</p>

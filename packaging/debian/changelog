@@ -1,3 +1,26 @@
+linsync (1.8.0-1) unstable; urgency=medium
+
+  * Correctness, security, and robustness hardening release.
+  * Folder sync: fix delete operations, which previously always failed
+    without removing or trashing anything.
+  * Three-way merge: resolve from structured conflict regions instead of
+    re-parsing marker text (content that looks like a conflict marker no
+    longer corrupts the result), preserve CRLF/CR line endings on save, and
+    write output atomically (temp+rename, O_NOFOLLOW).
+  * Plugin sandbox: grant helpers read-only access to $HOME, apply fd/proc
+    rlimits on the bubblewrap fallback, and block the full set of
+    credential-changing syscalls.
+  * Image compare: bound decoder memory and dimensions (decompression-bomb
+    guard) and fix an overlay-buffer integer overflow.
+  * Settings and sessions preserve unknown JSON keys across load/save.
+  * OCR language selection now reaches the extractor plugin.
+  * Further fixes across table, filter, trash, webpage, CLI argument parsing,
+    and the GUI bridge (comma-containing folder paths, merge conflict count,
+    plugin options dialog, perceptual deltaE scaling, and plugin-id
+    path-traversal hardening).
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Mon, 01 Jun 2026 12:00:00 -0500
+
 linsync (1.7.1-1) unstable; urgency=medium
 
   * Rename the application id io.visorcraft.LinSync -> com.visorcraft.LinSync
