@@ -223,6 +223,10 @@ mod degraded_tests {
     fn skip_env_disables_sandbox() {
         // SAFETY: set_var is unsafe in multi-threaded tests. This test is
         // designed to run in isolation or with --test-threads=1.
+        // Restore (not blindly remove) the prior value: when the whole suite
+        // runs with LINSYNC_SANDBOX_SKIP=1 (the documented CI mode), unsetting
+        // it here would race sibling tests into a real-sandbox path.
+        let prev = std::env::var_os("LINSYNC_SANDBOX_SKIP");
         unsafe { std::env::set_var("LINSYNC_SANDBOX_SKIP", "1") };
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("data.txt");
@@ -235,7 +239,12 @@ mod degraded_tests {
 
         let mut child = SandboxedCommand::new(cmd, policy).spawn().unwrap();
         let status = child.wait().unwrap();
-        unsafe { std::env::remove_var("LINSYNC_SANDBOX_SKIP") };
+        unsafe {
+            match prev {
+                Some(value) => std::env::set_var("LINSYNC_SANDBOX_SKIP", value),
+                None => std::env::remove_var("LINSYNC_SANDBOX_SKIP"),
+            }
+        }
         assert!(status.success(), "unsandboxed cat should succeed");
     }
 }

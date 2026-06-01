@@ -76,6 +76,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+        env:
+          # The Landlock/seccomp enforcement tests assert kernel behavior that
+          # shared GitHub runners do not reliably provide: Landlock reports
+          # ABI >= 1 (so detection succeeds and `restrict_self()` returns Ok),
+          # but the filesystem read-restriction is a no-op in the runner
+          # environment, so `cat_denied_outside_allowed_path` flakes. Per the
+          # contract documented in crates/linsync-sandbox/tests/
+          # sandbox_integration.rs, the standard CI job runs with
+          # LINSYNC_SANDBOX_SKIP=1; real enforcement is exercised on dev kernels
+          # via a plain local `cargo test`, where Landlock enforces correctly.
+          LINSYNC_SANDBOX_SKIP: "1"
 
   build:
     name: build + smoke GUI (Arch)
