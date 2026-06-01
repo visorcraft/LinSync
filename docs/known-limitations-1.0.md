@@ -25,17 +25,11 @@ but several pieces are still summary-only or stubbed. See
 
 ### Image compare
 
-- The image **diff overlay** that the GUI requests via
-  `/compare/image?overlay=true` is currently a *transparent* placeholder
-  PNG (`apps/linsync-gui/src/lib.rs::build_overlay_png`). The pixel-diff
-  result data is accurate (changed-pixel count, bbox, perceptual ΔE),
-  but the overlay image itself does not visualize the differences yet.
-- The **Save overlay** button in `ImageComparePage.qml` is disabled in
-  this release with a tooltip pointing at PLAN.md Phase 5. The bridge
-  has no `/overlay/save` handler yet; even if it did, the overlay PNG
-  is a placeholder until the previous bullet is resolved.
-- Dimension mismatch is reported as a hard error rather than padded to a
-  common canvas with metadata.
+- Image comparison is based on decoded RGBA8 samples. ICC profile
+  conversion, HDR/high-bit-depth fidelity, and animation timeline
+  comparison are not implemented. Exact and tolerance modes include the
+  alpha channel; perceptual mode currently compares RGB only. See
+  `docs/image-compare-design.md` for the detailed limitation contract.
 
 ### Document compare
 

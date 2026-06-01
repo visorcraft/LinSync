@@ -1,26 +1,32 @@
 # Image Compare Design
 
-> Status: design — implementation pending follow-up plan.
+> Status: implemented with remaining limitations tracked in `PLAN.md` Phase 5.
 
 ## Goals
 
 - Add an `image` compare mode to `linsync-core` backed entirely by pure-Rust image processing.
-- Surface the mode through the CLI (`--mode image`) and a dedicated GUI page.
-- Support PNG, JPEG, WebP, AVIF, and TIFF with streaming decode for large files.
+- Surface the mode through the CLI (`compare --type image`) and a dedicated GUI
+  page.
+- Support PNG, JPEG, WebP, and TIFF by default, with AVIF available when the
+  `image-avif` cargo feature is enabled.
 - Three tolerance levels: exact pixel, per-channel tolerance, and perceptual deltaE (CIEDE2000).
 
 ## Non-goals
 
 - RAW camera formats (CR2, NEF, ARW, DNG, etc.).
-- Animated GIF or APNG diffing.
-- Color-profile management beyond sRGB.
-- Exporting diff overlays as a separate image file.
+- Frame-by-frame animated image diffing.
+- ICC color-profile conversion, HDR validation, or color management beyond the
+  decoded 8-bit RGBA sample values.
+- Editing source images or writing visual changes back into either input file.
 
 ## Compare modes
 
 ### Exact pixel
 
-Pixel equality is a bitwise match on every channel after decoding both images to RGBA8. Dimensions must match; a mismatch in size is a fatal difference (exit 2). Reports a count of differing pixels and their bounding box.
+Pixel equality is a bitwise match on every channel after decoding both images to
+RGBA8. Images with different dimensions are padded to a common transparent
+canvas, reported as unequal, and include `padded: true` in the result metadata.
+Reports a count of differing pixels, bounding box, and connected diff regions.
 
 ### Tolerance pixel
 
@@ -49,24 +55,67 @@ ImageMagick would only be reconsidered if performance benchmarks show pure-Rust 
 | PNG    | `image` (built-in) | MIT    | Yes           |
 | JPEG   | `image` + `jpeg-decoder` | MIT | Yes        |
 | WebP   | `image` feature `webp` | MIT | Yes         |
-| AVIF   | `image` feature `avif` via `libavif-sys` | MIT + BSD-2-Clause | Yes |
+| AVIF   | Optional `image-avif` feature | MIT + BSD-2-Clause | Yes |
 | TIFF   | `image` feature `tiff` | MIT | Yes          |
 
-Note: `image`'s `avif` feature depends on `libavif-sys` → `dav1d` (BSD-2-Clause) — compliant. Verify at each lockfile update via `just deny`.
+Note: AVIF support is intentionally feature-gated because its dependency graph
+is larger than the default image stack. Verify at each lockfile update via
+`just deny`.
 
 Format detection uses **magic bytes** via `image`'s `ImageReader::open`. Extension-based fallback is an explicit opt-in flag in `ImageCompareOptions` (default false). Magic-bytes-first is the right default: LinSync operates on paths where extensions may be absent or wrong.
 
-## Streaming decode
+## Large-image path
 
-The `image` crate's `ImageDecoder` trait supports row-by-row decode. For files exceeding 100 MB or 16 384 × 16 384 pixels the engine uses a row-stripe strategy: open both decoders, confirm dimensions match from headers only, then decode 64 rows at a time into two reusable stripe buffers, accumulating per-pixel diff counts. The GUI overlay is similarly computed stripe-by-stripe and written to a temp file the QML `Image` element loads from a `file://` URI.
+For files exceeding 100 MB or 16 384 × 16 384 pixels the engine switches to a
+large-image compare path that processes rows in stripes after decoding. The
+current implementation still decodes through `image` into RGBA buffers before
+comparison; true decoder-level streaming remains future work. Mismatched
+dimensions are padded to a common transparent canvas before stripe comparison.
+The GUI overlay is written to a temp file the QML `Image` element loads from a
+`file://` URI.
 
-TIFF, PNG, and JPEG all expose row-level decode. AVIF and WebP decode fully into memory; files in those formats above the threshold emit a warning in the JSON summary but proceed rather than silently OOM. A future streaming path can be added without breaking the API.
+PNG, JPEG, WebP, and TIFF therefore share the same public result shape today.
+AVIF follows the same behavior when the `image-avif` feature is enabled. A
+future decoder-level streaming path can be added without breaking the API.
 
 ## Diff visualization
 
 **Red-overlay with opacity slider.** The diff mask is an RGBA8 buffer where differing pixels are `rgba(255, 40, 40, 200)` and equal pixels are transparent. Three panels side-by-side: left image | right image | right image with diff mask composited at adjustable opacity (0–100% slider).
 
 Animated blink is incompatible with AppStream screenshots. A split-slider requires pixel-perfect registration and fails on dimension mismatches. Red-overlay works for both same-size and mismatched-size images (smaller is padded with transparent pixels), is screenshot-friendly, and is the approach used by pixelmatch, reg-viz, and Kaleidoscope.
+
+The GUI saves the generated temp overlay PNG through
+`/compare/image/save-overlay?path=...`, copying the last generated overlay to a
+user-selected durable path.
+
+## Color, alpha, HDR, and animation limitations
+
+LinSync compares decoded RGBA8 samples, not source color-management metadata.
+That keeps the engine deterministic and pure Rust, but it creates several
+intentional limitations:
+
+- **ICC profiles and wide-gamut color:** ICC profiles are not transformed into a
+  common working color space. Exact and tolerance modes compare the decoded RGBA
+  channel values directly. Perceptual mode treats the decoded RGB channels as
+  sRGB before converting to Lab, so files that rely on embedded display profiles
+  or wide-gamut interpretation can report differences that are not visually
+  representative on a managed display.
+- **HDR and high bit depth:** Inputs are reduced to 8-bit RGBA through the
+  `image` crate before comparison. High-bit-depth PNG/TIFF, HDR transfer
+  functions, and scene-referred values lose precision and tone-mapping context.
+  Image compare is therefore appropriate for release-artifact checks, not for
+  validating HDR mastering or color-pipeline fidelity.
+- **Alpha:** Exact and tolerance modes include alpha as a fourth channel, so
+  transparency changes are differences. Perceptual mode currently ignores alpha
+  and computes CIEDE2000 from RGB only; a pure alpha change with identical RGB
+  samples is not reported in perceptual mode. Dimension padding uses transparent
+  black pixels, so padded extents are visible to exact/tolerance comparisons and
+  may be invisible to perceptual comparison if only alpha differs.
+- **Animated inputs:** LinSync does not perform timeline or frame-by-frame
+  comparison for animated GIF, APNG, animated WebP, or animated AVIF. If the
+  decoder exposes a single still frame, LinSync compares that still image; if
+  not, the input fails as unsupported or undecodable. Use a dedicated animation
+  tool when frame timing, disposal modes, or per-frame changes matter.
 
 ## API surface
 
@@ -92,6 +141,8 @@ pub struct ImageCompareResult {
     pub diff_bbox: Option<(u32, u32, u32, u32)>,
     #[serde(skip)]
     pub overlay: Vec<u8>,  // RGBA8; empty for CLI, populated for GUI
+    pub padded: bool,
+    pub diff_regions: Vec<DiffRegion>,
 }
 
 pub fn compare_images(
@@ -101,21 +152,31 @@ pub fn compare_images(
 ) -> Result<ImageCompareResult, ImageCompareError>;
 ```
 
-`ImageCompareError` covers `DimensionMismatch`, `UnsupportedFormat`, `DecodeError`, and `IoError`.
+`ImageCompareError` covers `DimensionMismatch`, `UnsupportedFormat`,
+`DecodeError`, and `IoError`. Dimension mismatch is retained as an error variant
+for compatibility, but the current compare path pads mismatched dimensions to a
+common canvas and reports the result with `padded: true`.
 
 ## CLI integration
 
-`crates/linsync-cli/src/main.rs` gains a `--mode image` branch. JSON summary is written to stdout; the overlay buffer is suppressed in CLI mode. Exit codes: 0 = equal, 1 = different, 2 = error.
+`crates/linsync-cli/src/main.rs` routes `compare --type image` through the core
+image engine. JSON summary is written to stdout; the overlay buffer is
+suppressed in CLI mode. Exit codes: 0 = equal, 1 = different, 2 = error.
 
 ```
-linsync-cli compare --mode image [--tolerance N] [--delta-e N] a.png b.png
+linsync-cli compare --type image [--tolerance N] [--delta-e N] a.png b.png
 ```
 
 ## GUI integration
 
 New file: `apps/linsync-gui/qml/ImageComparePage.qml`
 
-The page hosts a `RowLayout` with three `Image` elements, an opacity `Slider`, a `ComboBox` for mode (Exact / Tolerance / Perceptual), a threshold `SpinBox`, and a "Run Compare" button. The button calls `sessionBridge.compare_images(left, right, optionsJson)` (cxx-qt path) or `POST /compare/image` (HTTP path). The bridge returns `ImageCompareResult` as JSON; the overlay buffer is written to a temp file and loaded via `file://` URI. The image section activates when both paths are detected as image files (magic-byte check in the bridge) or when the user explicitly selects "Image" in the compare-mode menu.
+The page hosts left, right, and overlay image panes, an opacity `Slider`, a
+`ComboBox` for mode (Exact / Tolerance / Perceptual), threshold `SpinBox`
+controls, zoom/fit/split controls, and a "Run Compare" button. The button calls
+the HTTP bridge with `GET /compare/image?...&overlay=true`; the bridge returns
+`ImageCompareResult` as JSON, writes the overlay buffer to a temp file, and
+returns a `file://` URI that QML loads into the overlay pane.
 
 ## Sandbox interaction
 
@@ -129,16 +190,20 @@ New file: `crates/linsync-core/tests/image_compare.rs`. Cases:
 - 1-pixel edit → `differing_pixels: 1`, non-empty `diff_bbox`.
 - JPEG recompressed pair within tolerance threshold → equal.
 - Gradient pair above deltaE threshold → different; within threshold → equal.
-- Dimension mismatch → `DimensionMismatch` error.
+- Dimension mismatch → `padded: true`, `equal: false`, and diff regions on the
+  common canvas.
 - Unsupported format → `UnsupportedFormat`.
 - Magic-byte detection: PNG file with `.jpg` extension decoded as PNG.
 - Synthesised 200 MB PNG compared against itself → equal without OOM.
-- CLI: `linsync-cli compare --mode image same.png same.png` exits 0, JSON `"equal":true`.
+- CLI: `linsync-cli compare --type image same.png same.png` exits 0, JSON `"equal":true`.
 
 New fixtures: `tests/fixtures/image/{same-a.png, same-b.png, recompressed.jpg, gradient-left.png, gradient-right.png}`.
 
 ## Open issues
 
-1. **AVIF streaming:** `libavif-sys` does not expose row-level decode. Files > 100 MB in AVIF load fully; emit a warning in JSON summary and gate with a pre-decode size check.
-2. **HDR / 16-bit:** The CIEDE2000 path operates on 8-bit samples; 16-bit PNG/TIFF inputs are downsampled. Precision loss must be documented.
-3. **ICC profiles:** Ignored in the initial implementation; a follow-up can feed ICC data into the Lab conversion.
+1. **Decoder-level streaming:** the large-image path processes rows in stripes
+   after decode, but still materializes RGBA buffers first. True decoder-level
+   streaming remains future work, including for AVIF when `image-avif` is
+   enabled.
+2. **ICC/HDR fidelity:** Documented limitation. A follow-up can add explicit ICC
+   conversion, high-bit-depth compare paths, or alpha-aware perceptual metrics.

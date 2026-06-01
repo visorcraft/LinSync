@@ -217,9 +217,12 @@ cargo run -p linsync-cli -- compare --type image --json left.png right.png
 `--type auto` (the default) routes image files to `binary` instead.
 The engine offers three modes: exact, tolerance (per-channel
 threshold), and perceptual (CIEDE2000). Reports pixel deltas and a
-bounding box of the diff region. The GUI Image Compare page surfaces
-the same modes; overlay rendering and save are not yet implemented
-(see known-limitations).
+bounding box of the diff region. Dimension mismatches are padded to a
+common transparent canvas and reported as unequal. The GUI Image
+Compare page surfaces the same modes, loads the supported image format
+list from the running build, renders a red diff overlay with region
+navigation, and can save the generated overlay PNG to a user-selected
+path.
 
 ### Document
 

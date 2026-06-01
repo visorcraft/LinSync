@@ -43,8 +43,9 @@ pub use folder::{
 };
 #[cfg(feature = "image-compare")]
 pub use image::{
-    ImageCompareError, ImageCompareMode, ImageCompareOptions, ImageCompareResult, compare_images,
-    compare_images_streaming, generate_overlay,
+    ImageCompareError, ImageCompareMode, ImageCompareOptions, ImageCompareResult,
+    ImageFormatSupport, compare_images, compare_images_streaming, generate_overlay,
+    supported_image_formats,
 };
 pub use logging::{LoggingError, init_file_logging, install_panic_log_hook};
 pub use merge::{

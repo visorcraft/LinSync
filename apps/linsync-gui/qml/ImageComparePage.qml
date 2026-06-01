@@ -171,21 +171,33 @@ Controls.Pane {
     }
 
     function urlToLocalPath(u) {
-        return u.toString().replace(/^file:\/\//, "");
+        var path = u.toString().replace(/^file:\/\//, "");
+        return decodeURIComponent(path);
     }
+
+    property var imageNameFilters: [qsTr("Images (*.png *.jpg *.jpeg *.webp *.tif *.tiff)"), qsTr("All files (*)")]
+    property string supportedImageFormatsText: qsTr("PNG, JPEG, WebP, TIFF")
 
     FileDialog {
         id: leftFileDialog
         title: qsTr("Select left image")
-        nameFilters: [qsTr("Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff)"), qsTr("All files (*)")]
+        nameFilters: root.imageNameFilters
         onAccepted: root.leftPath = root.urlToLocalPath(selectedFile)
     }
 
     FileDialog {
         id: rightFileDialog
         title: qsTr("Select right image")
-        nameFilters: [qsTr("Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff)"), qsTr("All files (*)")]
+        nameFilters: root.imageNameFilters
         onAccepted: root.rightPath = root.urlToLocalPath(selectedFile)
+    }
+
+    FileDialog {
+        id: saveOverlayDialog
+        title: qsTr("Save diff overlay")
+        fileMode: FileDialog.SaveFile
+        nameFilters: [qsTr("PNG image (*.png)"), qsTr("All files (*)")]
+        onAccepted: root.saveOverlayTo(root.urlToLocalPath(selectedFile))
     }
 
     required property string bridgeUrl
@@ -229,6 +241,24 @@ Controls.Pane {
         xhr.send();
     }
 
+    function refreshImageFormats() {
+        root.bridgeGet("/compare/image/formats", function (ok, payload) {
+            if (!ok || !payload || !payload.formats)
+                return;
+
+            var labels = [];
+            for (var i = 0; i < payload.formats.length; i++) {
+                if (payload.formats[i] && payload.formats[i].name)
+                    labels.push(payload.formats[i].name);
+            }
+            if (labels.length > 0)
+                root.supportedImageFormatsText = labels.join(", ");
+
+            if (payload.extension_globs && payload.extension_globs.length > 0)
+                root.imageNameFilters = [qsTr("Images (%1)").arg(payload.extension_globs.join(" ")), qsTr("All files (*)")];
+        });
+    }
+
     function runCompare() {
         if (root.leftPath === "" || root.rightPath === "") {
             root.statusText = "Both left and right paths are required.";
@@ -263,6 +293,23 @@ Controls.Pane {
         });
     }
 
+    function saveOverlayTo(path) {
+        if (path === "" || root.overlayUri === "") {
+            root.statusText = "No overlay is available to save.";
+            return;
+        }
+
+        root.bridgeGet("/compare/image/save-overlay?path=" + encodeURIComponent(path), function (ok, data) {
+            if (ok && data && data.ok) {
+                root.statusText = qsTr("Saved overlay to %1").arg(data.path || path);
+            } else if (data && data.error) {
+                root.statusText = qsTr("Save overlay failed: %1").arg(data.error);
+            } else {
+                root.statusText = qsTr("Save overlay failed.");
+            }
+        });
+    }
+
     function computeFitZoom() {
         var srcPane = root.splitViewActive ? splitLeftPane : leftImagePane
         var w = srcPane.sourceImageSize.width
@@ -273,6 +320,8 @@ Controls.Pane {
         if (availW <= 0 || availH <= 0) return 1.0
         return Math.min(availW / w, availH / h)
     }
+
+    Component.onCompleted: root.refreshImageFormats()
 
     ColumnLayout {
         anchors.fill: parent
@@ -400,6 +449,15 @@ Controls.Pane {
                 Layout.preferredHeight: 28
             }
 
+            Controls.Label {
+                Layout.maximumWidth: 280
+                text: qsTr("Formats: %1").arg(root.supportedImageFormatsText)
+                color: root.activeDisabledText
+                font.pixelSize: 11
+                elide: Text.ElideRight
+                Accessible.name: qsTr("Supported image formats")
+            }
+
             Item { Layout.fillWidth: true }
         }
 
@@ -449,7 +507,7 @@ Controls.Pane {
                     text: qsTr("Save PNG…")
                     icon.name: "document-save"
                     enabled: root.overlayUri !== ""
-                    onClicked: Qt.openUrlExternally(root.overlayUri)
+                    onClicked: saveOverlayDialog.open()
                     Controls.ToolTip.text: qsTr("Save the overlay PNG to disk")
                     Controls.ToolTip.visible: hovered
                     Accessible.name: qsTr("Save Overlay PNG")

@@ -1,6 +1,6 @@
 use image::{ImageBuffer, Rgba, RgbaImage};
-use linsync::image_compare_bridge_response_with_profile;
 use linsync::test_support::image_compare_test;
+use linsync::{image_compare_bridge_response_with_profile, image_formats_bridge_response};
 use linsync_core::{ImageCompareMode, ImageCompareOptions};
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -76,6 +76,41 @@ fn response_mode_reports_effective_profile_mode_when_query_omits_mode() {
     let (body, _) = image_compare_bridge_response_with_profile(&query, &profile);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["mode"], serde_json::json!("perceptual"));
+}
+
+#[test]
+fn image_formats_response_matches_compiled_decoder_features() {
+    let body = image_formats_bridge_response();
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["schema_version"], serde_json::json!(1));
+
+    let labels: Vec<&str> = v["formats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|format| format["name"].as_str().unwrap())
+        .collect();
+    assert!(labels.contains(&"PNG"));
+    assert!(labels.contains(&"JPEG"));
+    assert!(labels.contains(&"WebP"));
+    assert!(labels.contains(&"TIFF"));
+
+    let globs: Vec<&str> = v["extension_globs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|glob| glob.as_str().unwrap())
+        .collect();
+    assert!(globs.contains(&"*.png"));
+    assert!(globs.contains(&"*.jpg"));
+    assert!(globs.contains(&"*.jpeg"));
+    assert!(globs.contains(&"*.webp"));
+    assert!(globs.contains(&"*.tif"));
+    assert!(globs.contains(&"*.tiff"));
+    assert!(
+        !globs.contains(&"*.bmp") && !globs.contains(&"*.gif"),
+        "the default build does not enable BMP/GIF decoders, so the UI must not advertise them"
+    );
 }
 
 #[test]

@@ -349,6 +349,7 @@ struct GuiBridgeState {
     /// `request_id`. Updated by the compare thread, read by `/progress?id=X`.
     compare_progress: HashMap<String, Arc<Mutex<CompareProgress>>>,
     last_image_result: Option<ImageCompareResult>,
+    last_image_overlay_path: Option<PathBuf>,
 }
 
 struct CompareProgress {
@@ -472,6 +473,7 @@ impl GuiBridgeState {
             compare_cancels: HashMap::new(),
             compare_progress: HashMap::new(),
             last_image_result: None,
+            last_image_overlay_path: None,
         }
     }
 
@@ -3185,8 +3187,17 @@ fn bridge_response_with_token(
             let (mut body, result) =
                 linsync::image_compare_bridge_response_with_profile(query, &profile.image);
             let result_for_tab = result.clone();
+            let overlay_path = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("overlay_path")
+                        .and_then(|uri| uri.as_str())
+                        .and_then(file_uri_to_path)
+                });
             if let Ok(mut s) = state.lock() {
                 s.last_image_result = result;
+                s.last_image_overlay_path = overlay_path;
             }
             if let (Some(result), Some(left), Some(right), Ok(value)) = (
                 result_for_tab,
@@ -3206,6 +3217,13 @@ fn bridge_response_with_token(
             http_response(200, "OK", "application/json", body.into_bytes())
         }
         "/compare/image/regions" => image_regions_bridge_response(state),
+        "/compare/image/save-overlay" => image_save_overlay_bridge_response(query, state),
+        "/compare/image/formats" => http_response(
+            200,
+            "OK",
+            "application/json",
+            linsync::image_formats_bridge_response().into_bytes(),
+        ),
         "/compare/webpage" => {
             let params = query_params(query);
             let profile = match resolve_profile_for_request(paths, &params) {
@@ -5441,6 +5459,67 @@ fn image_regions_bridge_response(state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> 
     let json = serde_json::to_string(&body)
         .unwrap_or_else(|_| r#"{"error":"serialization error"}"#.to_owned());
     http_response(200, "OK", "application/json", json.into_bytes())
+}
+
+fn image_save_overlay_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(path_str) = query_value(&params, "path") else {
+        return bridge_error(400, "Bad Request", "missing path");
+    };
+    let destination = PathBuf::from(path_str);
+    if destination.as_os_str().is_empty() {
+        return bridge_error(400, "Bad Request", "empty path");
+    }
+    if destination.is_dir() {
+        return bridge_error(400, "Bad Request", "path points to a directory");
+    }
+
+    let source = match state.lock() {
+        Ok(s) => s.last_image_overlay_path.clone(),
+        Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
+    };
+    let Some(source) = source else {
+        return bridge_error(404, "Not Found", "no image overlay available");
+    };
+    if !source.exists() {
+        return bridge_error(
+            404,
+            "Not Found",
+            "image overlay artifact is no longer available",
+        );
+    }
+
+    if let Some(parent) = destination.parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(err) = fs::create_dir_all(parent)
+    {
+        return bridge_error(
+            500,
+            "Internal Server Error",
+            &format!("failed to create destination directory: {err}"),
+        );
+    }
+
+    match fs::copy(&source, &destination) {
+        Ok(bytes) => {
+            let body = serde_json::json!({
+                "ok": true,
+                "path": destination.display().to_string(),
+                "bytes": bytes,
+            })
+            .to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
+        }
+        Err(err) => bridge_error(
+            500,
+            "Internal Server Error",
+            &format!("failed to save overlay: {err}"),
+        ),
+    }
+}
+
+fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+    uri.strip_prefix("file://").map(PathBuf::from)
 }
 
 fn binary_interpret_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
@@ -9188,6 +9267,93 @@ mod tests {
         );
         assert_eq!(body["session"]["tabs"][0]["mode"], "Image");
         assert_eq!(body["session"]["tabs"][0]["difference_count"], 1);
+    }
+
+    #[test]
+    fn image_formats_endpoint_reports_supported_decoder_filters() {
+        let paths = test_app_paths("image-formats");
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            "GET /compare/image/formats HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.contains("HTTP/1.1 200"));
+        let body = json_response_body(&resp);
+        let globs: Vec<&str> = body["extension_globs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|glob| glob.as_str().unwrap())
+            .collect();
+        assert!(globs.contains(&"*.png"));
+        assert!(globs.contains(&"*.jpg"));
+        assert!(globs.contains(&"*.jpeg"));
+        assert!(globs.contains(&"*.webp"));
+        assert!(globs.contains(&"*.tif"));
+        assert!(globs.contains(&"*.tiff"));
+        assert!(!globs.contains(&"*.bmp"));
+        assert!(!globs.contains(&"*.gif"));
+    }
+
+    #[test]
+    fn image_save_overlay_endpoint_copies_last_overlay_png() {
+        let root = test_file_root("image-save-overlay");
+        let left = root.join("left.png");
+        let right = root.join("right.png");
+        let saved = root.join("saved-overlay.png");
+        let left_img: image::RgbaImage =
+            image::ImageBuffer::from_fn(4, 4, |_, _| image::Rgba([255, 0, 0, 255]));
+        let right_img: image::RgbaImage =
+            image::ImageBuffer::from_fn(4, 4, |_, _| image::Rgba([0, 0, 255, 255]));
+        left_img.save(&left).unwrap();
+        right_img.save(&right).unwrap();
+
+        let paths = test_app_paths("image-save-overlay");
+        let state = test_bridge_state(None);
+        let compare = String::from_utf8(bridge_response(
+            &format!(
+                "GET /compare/image?left={}&right={}&mode=exact&overlay=true HTTP/1.1\r\n",
+                url_encode(&left),
+                url_encode(&right)
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(compare.contains("HTTP/1.1 200"));
+        let compare_body = json_response_body(&compare);
+        assert!(
+            compare_body["overlay_path"]
+                .as_str()
+                .is_some_and(|uri| uri.starts_with("file://")),
+            "compare should create an overlay artifact: {compare_body}"
+        );
+
+        let save = String::from_utf8(bridge_response(
+            &format!(
+                "GET /compare/image/save-overlay?path={} HTTP/1.1\r\n",
+                url_encode(&saved)
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(save.contains("HTTP/1.1 200"));
+        let save_body = json_response_body(&save);
+        assert_eq!(save_body["ok"], serde_json::json!(true));
+        assert!(saved.exists());
+
+        let overlay = image::open(&saved)
+            .expect("saved overlay should decode")
+            .to_rgba8();
+        assert!(
+            overlay
+                .pixels()
+                .any(|pixel| pixel.0[3] != 0 || pixel.0[0] != 0),
+            "saved overlay should contain visible diff pixels"
+        );
     }
 
     #[test]

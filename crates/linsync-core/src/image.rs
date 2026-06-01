@@ -20,6 +20,32 @@ pub struct DiffRegion {
     pub pixel_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageFormatSupport {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
+impl ImageFormatSupport {
+    fn new(name: &str, extensions: &[&str]) -> Self {
+        Self {
+            name: name.to_owned(),
+            extensions: extensions.iter().map(|ext| (*ext).to_owned()).collect(),
+        }
+    }
+}
+
+pub fn supported_image_formats() -> Vec<ImageFormatSupport> {
+    vec![
+        ImageFormatSupport::new("PNG", &["png"]),
+        ImageFormatSupport::new("JPEG", &["jpg", "jpeg", "jfif"]),
+        ImageFormatSupport::new("WebP", &["webp"]),
+        ImageFormatSupport::new("TIFF", &["tif", "tiff"]),
+        #[cfg(feature = "image-avif")]
+        ImageFormatSupport::new("AVIF", &["avif", "avifs"]),
+    ]
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ImageCompareMode {
@@ -690,6 +716,32 @@ impl ImageCompareResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supported_formats_match_enabled_image_features() {
+        let formats = supported_image_formats();
+        let names: Vec<&str> = formats.iter().map(|format| format.name.as_str()).collect();
+        assert_eq!(names[..4], ["PNG", "JPEG", "WebP", "TIFF"]);
+
+        let extensions: Vec<&str> = formats
+            .iter()
+            .flat_map(|format| format.extensions.iter().map(String::as_str))
+            .collect();
+        assert!(extensions.contains(&"png"));
+        assert!(extensions.contains(&"jpg"));
+        assert!(extensions.contains(&"jpeg"));
+        assert!(extensions.contains(&"webp"));
+        assert!(extensions.contains(&"tif"));
+        assert!(extensions.contains(&"tiff"));
+        assert!(!extensions.contains(&"bmp"));
+        assert!(!extensions.contains(&"gif"));
+
+        #[cfg(feature = "image-avif")]
+        {
+            assert!(names.contains(&"AVIF"));
+            assert!(extensions.contains(&"avif"));
+        }
+    }
 
     #[test]
     fn find_diff_regions_single_block() {

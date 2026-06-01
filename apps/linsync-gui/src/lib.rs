@@ -180,6 +180,25 @@ pub fn image_compare_bridge_response_with_profile(
     (json_with_schema(json), Some(result))
 }
 
+/// Return the image decoder formats compiled into the current build.
+pub fn image_formats_bridge_response() -> String {
+    let formats = linsync_core::supported_image_formats();
+    let extension_globs: Vec<String> = formats
+        .iter()
+        .flat_map(|format| {
+            format
+                .extensions
+                .iter()
+                .map(|extension| format!("*.{extension}"))
+        })
+        .collect();
+
+    json_with_schema(serde_json::json!({
+        "formats": formats,
+        "extension_globs": extension_globs,
+    }))
+}
+
 /// Generate an RGBA8 overlay PNG highlighting differing pixels and return a `file://` URI.
 fn build_overlay_png(
     result: &linsync_core::ImageCompareResult,
