@@ -2593,6 +2593,7 @@ fn project_validate_show_run_with_ci_exit_codes() {
     assert_eq!(value["equal"], serde_json::json!(false));
     let comparisons = value["comparisons"].as_array().unwrap();
     assert_eq!(comparisons[0]["status"], "equal");
+    assert_eq!(comparisons[0]["mode"], "text");
     assert_eq!(comparisons[1]["status"], "different");
 
     // A missing project path is a usage error (exit 2).

@@ -3142,7 +3142,8 @@ fn report_command(args: &[String]) -> Result<ExitCode, String> {
 
 /// `project <validate | show | run> PATH` — operate on a project file: a named
 /// bundle of saved comparisons (`ProjectFile`). `run` executes each comparison
-/// and exits 0 (all equal), 1 (some differ), or 2 (error) for CI use.
+/// (auto-detecting the compare mode like `compare`) and exits 0 (all equal),
+/// 1 (some differ), or 2 (error) for CI use.
 fn project_command(args: &[String]) -> Result<ExitCode, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         eprintln!(
@@ -3208,25 +3209,59 @@ fn project_command(args: &[String]) -> Result<ExitCode, String> {
 }
 
 /// Run every comparison in a project. Directories compare as folders, otherwise
-/// as text (default options). Exit 0 = all equal, 1 = some differ, 2 = error.
+/// using the same auto-detection as `compare` (folder / text / binary / table,
+/// default options). Exit 0 = all equal, 1 = some differ, 2 = error.
+fn run_project_comparison(left: &Path, right: &Path) -> Result<(&'static str, bool), String> {
+    let kind = detect_compare_type(left, right, &TextCompareOptions::default(), false)?;
+    let (mode, equal) = match kind {
+        CompareType::Folder => (
+            "folder",
+            compare_folders(left, right, &FolderCompareOptions::default())
+                .map_err(|err| err.to_string())?
+                .is_equal(),
+        ),
+        CompareType::Binary | CompareType::Hex => {
+            let result = compare_binary_files(
+                left,
+                right,
+                &BinaryCompareOptions {
+                    bytes_per_row: 16,
+                    compare_content: true,
+                    compare_metadata: true,
+                },
+            )
+            .map_err(|err| err.to_string())?;
+            (
+                "binary",
+                result.differences.is_empty() && result.metadata_differences.is_empty(),
+            )
+        }
+        CompareType::Table => (
+            "table",
+            compare_table_files(left, right, &TableCompareOptions::default())
+                .map_err(|err| err.to_string())?
+                .is_equal(),
+        ),
+        _ => (
+            "text",
+            compare_text_files(left, right, &TextCompareOptions::default())
+                .map_err(|err| err.to_string())?
+                .is_equal(),
+        ),
+    };
+    Ok((mode, equal))
+}
+
 fn project_run(project: &linsync_core::ProjectFile, as_json: bool) -> Result<ExitCode, String> {
     let mut any_diff = false;
     let mut any_err = false;
     let mut items: Vec<serde_json::Value> = Vec::new();
     for (index, sf) in project.sessions.iter().enumerate() {
         let (left, right) = (&sf.session.left, &sf.session.right);
-        let (status, detail) = if left.is_dir() && right.is_dir() {
-            match compare_folders(left, right, &FolderCompareOptions::default()) {
-                Ok(result) if result.is_equal() => ("equal", None),
-                Ok(_) => ("different", None),
-                Err(err) => ("error", Some(err.to_string())),
-            }
-        } else {
-            match compare_text_files(left, right, &TextCompareOptions::default()) {
-                Ok(result) if result.is_equal() => ("equal", None),
-                Ok(_) => ("different", None),
-                Err(err) => ("error", Some(err.to_string())),
-            }
+        let (status, mode, detail) = match run_project_comparison(left, right) {
+            Ok((mode, true)) => ("equal", mode, None),
+            Ok((mode, false)) => ("different", mode, None),
+            Err(err) => ("error", "", Some(err)),
         };
         match status {
             "different" => any_diff = true,
@@ -3237,6 +3272,7 @@ fn project_run(project: &linsync_core::ProjectFile, as_json: bool) -> Result<Exi
             items.push(serde_json::json!({
                 "index": index,
                 "title": sf.session.title,
+                "mode": mode,
                 "left": left.display().to_string(),
                 "right": right.display().to_string(),
                 "status": status,
@@ -3245,7 +3281,7 @@ fn project_run(project: &linsync_core::ProjectFile, as_json: bool) -> Result<Exi
         } else {
             let suffix = detail.map(|d| format!(" ({d})")).unwrap_or_default();
             println!(
-                "{index}\t{status}\t{}\t{} | {}{suffix}",
+                "{index}\t{status}\t{mode}\t{}\t{} | {}{suffix}",
                 sf.session.title,
                 left.display(),
                 right.display(),
@@ -5841,7 +5877,7 @@ Manage compare profiles — named bundles of per-mode comparison options. Built-
 Generate an HTML file or folder comparison report with optional text context, folder columns, tree state, or nested file reports.
 .TP
 .B project <validate PATH | show PATH [--json] | run PATH [--json]>
-Operate on a project file (a named bundle of saved comparisons). validate loads and schema-checks it; show lists its comparisons; run executes each one (directories compare as folders, otherwise as text with default options) and exits 0 when all are equal, 1 when some differ, or 2 on error, for CI use.
+Operate on a project file (a named bundle of saved comparisons). validate loads and schema-checks it; show lists its comparisons; run executes each one (auto-detecting folder / text / binary / table like the compare command, with default options) and exits 0 when all are equal, 1 when some differ, or 2 on error, for CI use.
 .TP
 .B reveal [--wait] PATH...
 Reveal files or folders through org.freedesktop.FileManager1.ShowItems, falling back to xdg-open for the containing folder.
