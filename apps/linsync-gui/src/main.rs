@@ -3132,6 +3132,8 @@ fn bridge_response_with_token(
         "/plugins/options/get" => plugins_options_get_bridge_response(query, paths),
         "/plugins/options/set" => plugins_options_set_bridge_response(query, paths),
         "/plugins/diagnostic" => plugins_diagnostic_bridge_response(query, paths),
+        "/plugins/install" => plugins_install_bridge_response(query, paths),
+        "/plugins/remove" => plugins_remove_bridge_response(query, paths),
         "/folder/query" => folder_query_bridge_response(query),
         "/folder/op/plan" => folder_op_plan_bridge_response(query, paths, state),
         "/folder/op/execute" => folder_op_execute_bridge_response(query, paths, state),
@@ -5220,6 +5222,60 @@ fn plugins_diagnostic_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> 
     }
 }
 
+/// Install a plugin from a local directory (`?path=`) into the user plugin
+/// directory. 409 if an id is already installed, 400 on a bad manifest/path.
+fn plugins_install_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
+    use linsync_core::PluginStoreError;
+    let params = query_params(query);
+    let Some(path) = query_value(&params, "path") else {
+        return bridge_error(400, "Bad Request", "missing plugin source path");
+    };
+    match linsync_core::install_plugin(paths, std::path::Path::new(path)) {
+        Ok(installed) => {
+            let body = serde_json::json!({
+                "ok": true,
+                "id": installed.manifest.id,
+                "name": installed.manifest.name,
+                "root": installed.root.to_string_lossy(),
+            })
+            .to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
+        }
+        Err(PluginStoreError::AlreadyInstalled(id)) => bridge_error(
+            409,
+            "Conflict",
+            &format!("a plugin with id '{id}' is already installed"),
+        ),
+        Err(e @ (PluginStoreError::InvalidManifest(_) | PluginStoreError::InvalidId(_))) => {
+            bridge_error(400, "Bad Request", &e.to_string())
+        }
+        Err(e) => bridge_error(500, "Internal Server Error", &e.to_string()),
+    }
+}
+
+/// Remove a user-installed plugin (`?id=`). 404 if not installed in the user
+/// directory; system plugin directories are never touched.
+fn plugins_remove_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
+    use linsync_core::PluginStoreError;
+    let params = query_params(query);
+    let Some(id) = query_value(&params, "id") else {
+        return bridge_error(400, "Bad Request", "missing plugin id");
+    };
+    match linsync_core::remove_plugin(paths, id) {
+        Ok(()) => {
+            let body = serde_json::json!({ "ok": true, "id": id }).to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
+        }
+        Err(PluginStoreError::UnknownPlugin(_)) => {
+            bridge_error(404, "Not Found", "no installed plugin with that id")
+        }
+        Err(PluginStoreError::InvalidId(_)) => {
+            bridge_error(400, "Bad Request", "invalid plugin id")
+        }
+        Err(e) => bridge_error(500, "Internal Server Error", &e.to_string()),
+    }
+}
+
 fn plugins_options_get_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
     let params = query_params(query);
     let Some(id) = query_value(&params, "id") else {
@@ -6918,6 +6974,97 @@ mod tests {
         assert!(
             missing.starts_with("HTTP/1.1 404"),
             "unknown plugin id should 404: {missing}"
+        );
+    }
+
+    #[test]
+    fn plugins_install_and_remove_round_trip() {
+        let paths = test_app_paths("plugins-install");
+        let state = test_bridge_state(None);
+
+        // Stage a valid plugin OUTSIDE the user plugins dir.
+        let source = test_file_root("plugins-install-src").join("staged");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("run.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(
+            source.join("linsync-plugin.json"),
+            r#"{
+              "schema_version": 1,
+              "id": "test.installable",
+              "name": "Installable Fixture",
+              "version": "1.0.0",
+              "license": "GPL-3.0-only",
+              "entry": ["./run.sh"],
+              "classes": ["prediffer"],
+              "mime_types": ["text/plain"],
+              "extensions": ["txt"],
+              "capabilities": [],
+              "deterministic": true,
+              "sandbox": { "network": false, "writes_input": false, "requires_home_access": false },
+              "options_schema": []
+            }"#,
+        )
+        .unwrap();
+
+        // Install via the bridge.
+        let install = String::from_utf8(bridge_response(
+            &format!(
+                "GET /plugins/install?path={} HTTP/1.1\r\n",
+                urlencoding::encode(source.to_str().unwrap())
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        let body = json_response_body(&install);
+        assert_eq!(body["ok"], serde_json::json!(true), "install body: {body}");
+        assert_eq!(body["id"], "test.installable");
+        assert!(
+            paths
+                .user_plugins_dir()
+                .join("test.installable/linsync-plugin.json")
+                .exists()
+        );
+
+        // Re-installing the same id is a 409 Conflict.
+        let dup = String::from_utf8(bridge_response(
+            &format!(
+                "GET /plugins/install?path={} HTTP/1.1\r\n",
+                urlencoding::encode(source.to_str().unwrap())
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(
+            dup.starts_with("HTTP/1.1 409"),
+            "duplicate install should 409: {dup}"
+        );
+
+        // Remove via the bridge.
+        let remove = String::from_utf8(bridge_response(
+            "GET /plugins/remove?id=test.installable HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert_eq!(
+            json_response_body(&remove)["ok"],
+            serde_json::json!(true),
+            "remove body: {remove}"
+        );
+        assert!(!paths.user_plugins_dir().join("test.installable").exists());
+
+        // Removing again is a 404.
+        let gone = String::from_utf8(bridge_response(
+            "GET /plugins/remove?id=test.installable HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(
+            gone.starts_with("HTTP/1.1 404"),
+            "removing absent plugin should 404: {gone}"
         );
     }
 

@@ -19,10 +19,10 @@ use linsync_core::{
     assess_operation_risks, builtin_profiles, builtin_text_regex_rule_sets, clear_plugin_option,
     compare_archives_with_unpacker, compare_binary_files, compare_folders, compare_table_files,
     compare_text, compare_text_files, compare_text_files_with_prediffer_chain,
-    discover_installed_plugins, find_builtin, is_likely_binary, load_plugin_enabled_map,
-    load_plugin_options, merge_three_way, parse_conflict_markers, plan_folder_operation,
-    probe_plugin, resolve_enabled_prediffers, resolve_enabled_virtualizer_for_extension,
-    set_plugin_enabled, set_plugin_option,
+    discover_installed_plugins, find_builtin, install_plugin, is_likely_binary,
+    load_plugin_enabled_map, load_plugin_options, merge_three_way, parse_conflict_markers,
+    plan_folder_operation, probe_plugin, remove_plugin, resolve_enabled_prediffers,
+    resolve_enabled_virtualizer_for_extension, set_plugin_enabled, set_plugin_option,
 };
 
 fn main() -> ExitCode {
@@ -1652,7 +1652,7 @@ fn extract_archive(
 fn plugin_command(args: &[String]) -> Result<ExitCode, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         eprintln!(
-            "usage: linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>"
+            "usage: linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | install PATH | remove ID | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>"
         );
         return Ok(ExitCode::from(2));
     };
@@ -1706,9 +1706,31 @@ fn plugin_command(args: &[String]) -> Result<ExitCode, String> {
             println!("cleared option '{key}' for plugin '{id}'");
             Ok(ExitCode::SUCCESS)
         }
+        "install" => {
+            let Some(source) = first_positional else {
+                return Err("usage: linsync-cli plugin install PATH".to_owned());
+            };
+            let installed = install_plugin(&paths, std::path::Path::new(source))
+                .map_err(|err| err.to_string())?;
+            println!(
+                "installed plugin '{}' ({}) to {}",
+                installed.manifest.id,
+                installed.manifest.name,
+                installed.root.display()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        "remove" | "uninstall" => {
+            let Some(id) = first_positional else {
+                return Err("usage: linsync-cli plugin remove ID".to_owned());
+            };
+            remove_plugin(&paths, id).map_err(|err| err.to_string())?;
+            println!("removed plugin '{id}'");
+            Ok(ExitCode::SUCCESS)
+        }
         "run-diagnostic" | "diagnostic" => plugin_run_diagnostic(&paths, rest),
         other => Err(format!(
-            "unknown plugin subcommand '{other}'; expected list, inspect, validate, enable, disable, set-option, clear-option, or run-diagnostic"
+            "unknown plugin subcommand '{other}'; expected list, inspect, validate, enable, disable, set-option, clear-option, install, remove, or run-diagnostic"
         )),
     }
 }
@@ -6427,8 +6449,8 @@ Open files or folders through the configured external viewer, xdg-open, or a nam
 .B patch LEFT RIGHT [--format unified|context|normal] [--context LINES] [--preview|--output FILE]
 Generate or preview a unified, context, or normal diff from two text files or text-only folder changes.
 .TP
-.B plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
-Manage discovered plugins. list shows installed plugins with enabled state; inspect shows a plugin's manifest, option schema, and current values; validate checks the persisted options against the manifest schema; enable/disable toggle a plugin; set-option validates a value against the schema before persisting it; clear-option removes a stored option; run-diagnostic probes a plugin's helper with an optional sample --input and reports exit/timeout/stdout/stderr, the parsed protocol response, and the active sandbox confinement (exit 0 healthy, 1 unhealthy, 2 transport error). Enabled state lives in $XDG_CONFIG_HOME/linsync/plugins.json and option values under $XDG_CONFIG_HOME/linsync/plugin-options/.
+.B plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | install PATH | remove ID | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
+Manage discovered plugins. list shows installed plugins with enabled state; inspect shows a plugin's manifest, option schema, and current values; validate checks the persisted options against the manifest schema; enable/disable toggle a plugin; set-option validates a value against the schema before persisting it; clear-option removes a stored option; install copies a plugin directory from PATH into $XDG_DATA_HOME/linsync/plugins after validating its manifest (refusing an id that is already installed); remove deletes a user-installed plugin and its persisted options/enabled flag (system plugin directories are never touched); run-diagnostic probes a plugin's helper with an optional sample --input and reports exit/timeout/stdout/stderr, the parsed protocol response, and the active sandbox confinement (exit 0 healthy, 1 unhealthy, 2 transport error). Enabled state lives in $XDG_CONFIG_HOME/linsync/plugins.json and option values under $XDG_CONFIG_HOME/linsync/plugin-options/.
 .TP
 .B profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
 Manage compare profiles — named bundles of per-mode comparison options. Built-in profiles ship with the binary; user profiles live under $XDG_CONFIG_HOME/linsync/profiles/. Use --profile NAME-OR-PATH on a compare command to source options from a profile; CLI flags override profile values.
@@ -6502,7 +6524,7 @@ USAGE:
     linsync-cli mergetool --base BASE --local LOCAL --remote REMOTE --merged MERGED [--auto-resolve left|right|base] [--json]
     linsync-cli open-external [--wait] [--preset PRESET] PATH...
     linsync-cli patch LEFT RIGHT [--format unified|context|normal] [--context LINES] [--preview|--output FILE]
-    linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
+    linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | install PATH | remove ID | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
     linsync-cli profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
     linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR | list [DIR] [--json]>
     linsync-cli reveal [--wait] PATH...
@@ -6526,6 +6548,10 @@ plugin:
     schema; `enable`/`disable ID` toggle a plugin; `set-option ID KEY VALUE`
     validates the value against the schema before persisting it (VALUE is parsed
     as JSON, falling back to a string); `clear-option ID KEY` removes it;
+    `install PATH` copies a plugin directory into $XDG_DATA_HOME/linsync/plugins
+    after validating its manifest (an already-installed id is refused); `remove
+    ID` deletes a user-installed plugin and its stored options/enabled flag
+    (system plugin directories are never touched);
     `run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]` probes the
     helper and reports exit/timeout/stdout/stderr, the parsed response, and the
     active sandbox confinement (exit 0 healthy, 1 unhealthy, 2 transport error).

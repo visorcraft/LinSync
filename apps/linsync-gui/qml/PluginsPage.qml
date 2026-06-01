@@ -27,8 +27,18 @@ Kirigami.ScrollablePage {
     signal refreshRequested()
     // Ask Main.qml to probe a plugin's helper (GET /plugins/diagnostic).
     signal pluginDiagnoseRequested(string id)
+    // Ask Main.qml to pick a plugin directory and install it (POST-like GET
+    // /plugins/install), or remove an installed plugin (/plugins/remove).
+    signal pluginInstallRequested()
+    signal pluginRemoveRequested(string id, string name)
     // Last diagnostic result, shown as a transient line in the header.
     property string lastDiagnostic: ""
+    // Last install/remove outcome, shown as a transient line in the header.
+    property string lastAction: ""
+
+    function showActionResult(message) {
+        page.lastAction = message
+    }
 
     function showDiagnosticResult(id, payload) {
         if (!payload) {
@@ -62,6 +72,8 @@ Kirigami.ScrollablePage {
                 extensions: entry.extensions || [],
                 enabled: !!entry.enabled,
                 builtin: false,
+                discovered: true,
+                has_options: !!entry.has_options,
                 source: entry.source || "user",
                 description: qsTr("Discovered from %1").arg(entry.directory || "")
             })
@@ -392,6 +404,25 @@ Kirigami.ScrollablePage {
                         opacity: 0.75
                         font.pixelSize: 12
                     }
+                    Controls.Label {
+                        visible: page.lastAction.length > 0
+                        text: page.lastAction
+                        opacity: 0.75
+                        font.pixelSize: 12
+                    }
+                }
+
+                Controls.Button {
+                    icon.name: "list-add"
+                    text: qsTr("Install plugin…")
+                    flat: true
+                    enabled: page.bridgeConnected
+                    Controls.ToolTip.text: page.bridgeConnected
+                        ? qsTr("Install a plugin from a local directory into the user plugins folder")
+                        : qsTr("Installing plugins requires a bridge connection")
+                    Controls.ToolTip.visible: hovered
+                    Accessible.description: qsTr("Install a plugin from a local directory")
+                    onClicked: page.pluginInstallRequested()
                 }
 
                 Controls.Button {
@@ -623,6 +654,21 @@ Kirigami.ScrollablePage {
                                 : qsTr("Diagnostics require a bridge connection")
                             Controls.ToolTip.visible: hovered
                             onClicked: page.pluginDiagnoseRequested(modelData.id)
+                        }
+
+                        Controls.Button {
+                            Layout.alignment: Qt.AlignVCenter
+                            text: qsTr("Remove")
+                            flat: true
+                            // Only user-installed (discovered) plugins can be
+                            // removed; system plugins and built-ins cannot.
+                            visible: !!modelData.discovered && modelData.source === "user"
+                            enabled: page.bridgeConnected
+                            Controls.ToolTip.text: page.bridgeConnected
+                                ? qsTr("Uninstall this plugin from the user plugins folder")
+                                : qsTr("Removing plugins requires a bridge connection")
+                            Controls.ToolTip.visible: hovered
+                            onClicked: page.pluginRemoveRequested(modelData.id, modelData.name)
                         }
 
                         Controls.Button {

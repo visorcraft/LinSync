@@ -750,6 +750,10 @@ pub enum PluginStoreError {
     UnknownPlugin(String),
     /// The option value failed validation against the manifest schema.
     Invalid(PluginOptionError),
+    /// The plugin manifest itself is malformed or invalid (install).
+    InvalidManifest(String),
+    /// A plugin with this id is already installed in the user directory.
+    AlreadyInstalled(String),
 }
 
 impl std::fmt::Display for PluginStoreError {
@@ -759,6 +763,10 @@ impl std::fmt::Display for PluginStoreError {
             Self::InvalidId(id) => write!(f, "invalid plugin id '{id}'"),
             Self::UnknownPlugin(id) => write!(f, "no installed plugin with id '{id}'"),
             Self::Invalid(e) => write!(f, "{e}"),
+            Self::InvalidManifest(msg) => write!(f, "invalid plugin manifest: {msg}"),
+            Self::AlreadyInstalled(id) => {
+                write!(f, "a plugin with id '{id}' is already installed")
+            }
         }
     }
 }
@@ -981,6 +989,107 @@ pub fn clear_plugin_option(
     map.remove(key);
     save_plugin_options(paths, plugin_id, &map)?;
     Ok(map)
+}
+
+/// Install a plugin from a local source directory into the user plugin
+/// directory (`$XDG_DATA_HOME/linsync/plugins/<id>`).
+///
+/// The source directory's manifest is loaded and fully validated *before* any
+/// files are copied, so a malformed plugin never lands on disk. The copy
+/// preserves symlinks as symlinks (rather than following them out of the source
+/// tree). An id that collides with an already-installed plugin is rejected with
+/// [`PluginStoreError::AlreadyInstalled`] — callers wanting update semantics
+/// should [`remove_plugin`] first. Returns the freshly discovered plugin from
+/// its installed location.
+pub fn install_plugin(
+    paths: &AppPaths,
+    source_dir: &Path,
+) -> Result<DiscoveredPlugin, PluginStoreError> {
+    let manifest_path = source_dir.join(PLUGIN_MANIFEST_FILE);
+    if !manifest_path.exists() {
+        return Err(PluginStoreError::InvalidManifest(format!(
+            "no {PLUGIN_MANIFEST_FILE} in {}",
+            source_dir.display()
+        )));
+    }
+    // Validate the manifest (id, entry path, option schema) before touching disk.
+    let discovered = load_discovered_plugin(source_dir, &manifest_path)
+        .map_err(|e| PluginStoreError::InvalidManifest(e.to_string()))?;
+    let id = discovered.manifest.id.clone();
+    if !is_stable_plugin_id(&id) {
+        return Err(PluginStoreError::InvalidId(id));
+    }
+
+    let user_dir = paths.user_plugins_dir();
+    let destination = user_dir.join(&id);
+    if destination.exists() {
+        return Err(PluginStoreError::AlreadyInstalled(id));
+    }
+    fs::create_dir_all(&user_dir)?;
+    copy_dir_recursive(source_dir, &destination)?;
+
+    // Re-discover from the installed location so the returned plugin carries the
+    // canonical installed root/manifest paths.
+    let installed_manifest = destination.join(PLUGIN_MANIFEST_FILE);
+    load_discovered_plugin(&destination, &installed_manifest).map_err(|e| {
+        // Roll back a partial copy so a failed install leaves no half-tree behind.
+        let _ = fs::remove_dir_all(&destination);
+        PluginStoreError::InvalidManifest(e.to_string())
+    })
+}
+
+/// Remove a user-installed plugin (and its persisted options + enabled flag).
+///
+/// Only ever touches `$XDG_DATA_HOME/linsync/plugins/<id>`; system plugin
+/// directories (`/usr/share/...`) are never modified. Returns
+/// [`PluginStoreError::UnknownPlugin`] when no plugin with that id is installed
+/// in the user directory.
+pub fn remove_plugin(paths: &AppPaths, plugin_id: &str) -> Result<(), PluginStoreError> {
+    if !is_stable_plugin_id(plugin_id) {
+        return Err(PluginStoreError::InvalidId(plugin_id.to_owned()));
+    }
+    let destination = paths.user_plugins_dir().join(plugin_id);
+    if !destination.is_dir() {
+        return Err(PluginStoreError::UnknownPlugin(plugin_id.to_owned()));
+    }
+    fs::remove_dir_all(&destination)?;
+
+    // Best-effort cleanup of associated state; absence is not an error.
+    let _ = fs::remove_file(paths.plugin_options_file(plugin_id));
+    let mut enabled = load_plugin_enabled_map(paths);
+    if enabled.remove(plugin_id).is_some() {
+        let file = paths.plugins_enabled_file();
+        if let Ok(text) = serde_json::to_string_pretty(&enabled) {
+            let _ = fs::write(file, text);
+        }
+    }
+    Ok(())
+}
+
+/// Recursively copy `src` into `dst`, preserving symlinks as symlinks so the
+/// copy never follows a link out of the source tree.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            let target = fs::read_link(&from)?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &to)?;
+            #[cfg(not(unix))]
+            {
+                let _ = target;
+            }
+        } else if file_type.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn run_plugin_helper(
@@ -2231,6 +2340,83 @@ mod tests {
         assert_eq!(discovery.plugins.len(), 1);
         assert_eq!(discovery.plugins[0].manifest.id, "example.installed");
         assert_eq!(discovery.plugins[0].root, plugin_dir);
+    }
+
+    #[test]
+    fn install_and_remove_plugin_round_trip() {
+        use serde_json::json;
+        let fixture = TempFixture::new();
+        let paths = AppPaths::from_base_dirs(
+            fixture.path.join("config"),
+            fixture.path.join("data"),
+            fixture.path.join("cache"),
+            fixture.path.join("state"),
+        );
+
+        // A valid plugin staged outside the user plugin directory.
+        let source = fixture.path.join("staged");
+        fs::create_dir_all(&source).unwrap();
+        write_helper(&source, "normalize-text", "#!/bin/sh\n");
+        write_manifest(&source, &sample_manifest("example.installable"));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("normalize-text", source.join("alias")).unwrap();
+
+        // Install copies it into the user root and re-discovers it there.
+        let installed = install_plugin(&paths, &source).expect("install succeeds");
+        assert_eq!(installed.manifest.id, "example.installable");
+        assert_eq!(
+            installed.root,
+            paths.user_plugins_dir().join("example.installable")
+        );
+        assert!(
+            discover_installed_plugins(&paths)
+                .plugins
+                .iter()
+                .any(|p| { p.manifest.id == "example.installable" })
+        );
+        // The symlink was preserved as a symlink (not followed/flattened).
+        #[cfg(unix)]
+        assert!(
+            fs::symlink_metadata(installed.root.join("alias"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        // Re-installing the same id is rejected without clobbering.
+        assert!(matches!(
+            install_plugin(&paths, &source),
+            Err(PluginStoreError::AlreadyInstalled(id)) if id == "example.installable"
+        ));
+
+        // Populate associated state, then verify removal cleans it up.
+        set_plugin_enabled(&paths, "example.installable", false).unwrap();
+        let mut opts = serde_json::Map::new();
+        opts.insert("anything".to_owned(), json!(true));
+        save_plugin_options(&paths, "example.installable", &opts).unwrap();
+        assert!(paths.plugin_options_file("example.installable").exists());
+
+        remove_plugin(&paths, "example.installable").expect("remove succeeds");
+        assert!(!installed.root.exists());
+        assert!(!paths.plugin_options_file("example.installable").exists());
+        assert!(
+            !load_plugin_enabled_map(&paths).contains_key("example.installable"),
+            "enabled flag should be cleared on removal"
+        );
+
+        // Removing again reports the plugin is gone.
+        assert!(matches!(
+            remove_plugin(&paths, "example.installable"),
+            Err(PluginStoreError::UnknownPlugin(_))
+        ));
+
+        // A source directory without a manifest is rejected before any copy.
+        let empty = fixture.path.join("not-a-plugin");
+        fs::create_dir_all(&empty).unwrap();
+        assert!(matches!(
+            install_plugin(&paths, &empty),
+            Err(PluginStoreError::InvalidManifest(_))
+        ));
     }
 
     #[test]

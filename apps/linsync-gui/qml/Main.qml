@@ -2098,6 +2098,28 @@ Kirigami.ApplicationWindow {
         onAccepted: root.setBrowsedPath(root.urlToLocalPath(selectedFolder))
     }
 
+    Dialogs.FolderDialog {
+        id: pluginInstallDialog
+
+        title: qsTr("Select a plugin directory to install")
+        onAccepted: {
+            const localPath = root.urlToLocalPath(selectedFolder)
+            root.bridgeGet("/plugins/install?path=" + encodeURIComponent(localPath),
+                function (ok, payload, status) {
+                    if (ok && payload && payload.id) {
+                        pluginsPage.showActionResult(qsTr("Installed %1").arg(payload.id))
+                        root.loadPlugins(function (p) { pluginsPage.applyDiscovery(p) })
+                    } else if (status === 409) {
+                        pluginsPage.showActionResult(qsTr("That plugin is already installed"))
+                    } else if (status === 400) {
+                        pluginsPage.showActionResult(qsTr("Not a valid plugin directory"))
+                    } else {
+                        pluginsPage.showActionResult(qsTr("Plugin install failed"))
+                    }
+                })
+        }
+    }
+
     Dialogs.FileDialog {
         id: migrateFileDialog
 
@@ -4550,6 +4572,20 @@ Kirigami.ApplicationWindow {
                                 pluginsPage.showDiagnosticResult(id, payload)
                             else
                                 pluginsPage.showDiagnosticResult(id, null)
+                        })
+                }
+                onPluginInstallRequested: pluginInstallDialog.open()
+                onPluginRemoveRequested: function(id, name) {
+                    root.bridgeGet("/plugins/remove?id=" + encodeURIComponent(id),
+                        function (ok, payload, status) {
+                            if (ok) {
+                                pluginsPage.showActionResult(qsTr("Removed %1").arg(name))
+                                root.loadPlugins(function (p) { pluginsPage.applyDiscovery(p) })
+                            } else if (status === 404) {
+                                pluginsPage.showActionResult(qsTr("%1 is not installed").arg(name))
+                            } else {
+                                pluginsPage.showActionResult(qsTr("Could not remove %1").arg(name))
+                            }
                         })
                 }
                 onPluginOptionsRequested: function(id, name) {

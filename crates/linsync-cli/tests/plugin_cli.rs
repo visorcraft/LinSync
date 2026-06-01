@@ -572,3 +572,100 @@ fn archive_auto_routes_unsupported_extension_to_virtualizer() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("unsupported archive extension"));
 }
+
+/// Stage a minimal valid plugin directory *outside* the user plugins dir so it
+/// can be installed via `plugin install PATH`.
+fn stage_source_plugin(home: &Path) -> PathBuf {
+    let src = home.join("staged-plugin");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("helper.sh"), "#!/bin/sh\n").unwrap();
+    let manifest = r#"{
+      "schema_version": 1,
+      "id": "test.stageable",
+      "name": "Stageable Fixture",
+      "version": "1.0.0",
+      "license": "GPL-3.0-only",
+      "entry": ["./helper.sh"],
+      "classes": ["prediffer"],
+      "mime_types": ["text/plain"],
+      "extensions": ["txt"],
+      "capabilities": [],
+      "deterministic": true,
+      "sandbox": { "network": false, "writes_input": false, "requires_home_access": false },
+      "options_schema": []
+    }"#;
+    fs::write(src.join("linsync-plugin.json"), manifest).unwrap();
+    src
+}
+
+#[test]
+fn plugin_install_and_remove_round_trip() {
+    let home = temp_home("install");
+    let src = stage_source_plugin(&home);
+    let src_str = src.to_str().unwrap();
+
+    // Not yet visible to discovery.
+    let out = run_isolated(&home, &["plugin", "list", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert!(
+        !json["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == "test.stageable"),
+        "plugin should not exist before install"
+    );
+
+    // Install copies it into the user plugins dir and reports the id.
+    let out = run_isolated(&home, &["plugin", "install", src_str]);
+    assert!(
+        out.status.success(),
+        "install failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout(&out).contains("test.stageable"));
+    assert!(
+        home.join("data/linsync/plugins/test.stageable/linsync-plugin.json")
+            .exists(),
+        "manifest should be copied into the user plugins dir"
+    );
+
+    // Now discoverable.
+    let out = run_isolated(&home, &["plugin", "list", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert!(
+        json["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == "test.stageable"),
+        "plugin should be discovered after install"
+    );
+
+    // Re-installing the same id is rejected (exit 2), without clobbering.
+    let out = run_isolated(&home, &["plugin", "install", src_str]);
+    assert_eq!(out.status.code(), Some(2), "duplicate install should fail");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already installed"));
+
+    // Remove deletes it from the user dir.
+    let out = run_isolated(&home, &["plugin", "remove", "test.stageable"]);
+    assert!(
+        out.status.success(),
+        "remove failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !home.join("data/linsync/plugins/test.stageable").exists(),
+        "plugin dir should be gone after remove"
+    );
+
+    // Removing again reports the plugin is gone (exit 2).
+    let out = run_isolated(&home, &["plugin", "remove", "test.stageable"]);
+    assert_eq!(out.status.code(), Some(2), "removing absent plugin fails");
+
+    // Installing a path with no manifest is rejected.
+    let empty = home.join("empty-dir");
+    fs::create_dir_all(&empty).unwrap();
+    let out = run_isolated(&home, &["plugin", "install", empty.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2), "install without manifest fails");
+}
