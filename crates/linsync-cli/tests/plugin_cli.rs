@@ -64,6 +64,57 @@ fn install_fixture_plugin(home: &Path) -> &'static str {
     "test.optplugin"
 }
 
+/// Like [`run_isolated`] but also degrades the sandbox so a helper actually
+/// executes deterministically regardless of the host's Landlock/seccomp
+/// support (the same contract CI's test job sets globally).
+fn run_isolated_unsandboxed(home: &Path, args: &[&str]) -> Output {
+    Command::new(bin())
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("HOME", home)
+        .env("LINSYNC_SANDBOX_SKIP", "1")
+        .args(args)
+        .output()
+        .expect("run linsync-cli")
+}
+
+/// Install a plugin whose helper echoes `response` (a probe reply) and exits
+/// with `exit_code`, so `plugin run-diagnostic` can be exercised end to end.
+fn install_probe_plugin(home: &Path, response: &str, exit_code: u8) -> &'static str {
+    let plugin_dir = home.join("data/linsync/plugins/probe");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    let script =
+        format!("#!/bin/sh\nread request\nprintf '%s\\n' '{response}'\nexit {exit_code}\n");
+    let helper = plugin_dir.join("helper.sh");
+    fs::write(&helper, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&helper).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&helper, perms).unwrap();
+    }
+    let manifest = r#"{
+      "schema_version": 1,
+      "id": "test.probe",
+      "name": "Probe Fixture",
+      "version": "1.0.0",
+      "license": "GPL-3.0-only",
+      "entry": ["./helper.sh"],
+      "classes": ["prediffer"],
+      "mime_types": ["text/plain"],
+      "extensions": ["txt"],
+      "capabilities": [],
+      "deterministic": true,
+      "sandbox": { "network": false, "writes_input": false, "requires_home_access": false },
+      "options_schema": []
+    }"#;
+    fs::write(plugin_dir.join("linsync-plugin.json"), manifest).unwrap();
+    "test.probe"
+}
+
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
@@ -193,5 +244,51 @@ fn plugin_inspect_unknown_id_errors() {
     let home = temp_home("unknown");
     let out = run_isolated(&home, &["plugin", "inspect", "does.not.exist"]);
     assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no installed plugin"));
+}
+
+#[test]
+fn plugin_run_diagnostic_reports_healthy_probe() {
+    let home = temp_home("diag-ok");
+    let response = r#"{"protocol_version":1,"request_id":"p","status":"ok","outputs":[],"diagnostics":[{"severity":"info","message":"alive"}]}"#;
+    let id = install_probe_plugin(&home, response, 0);
+
+    let out = run_isolated_unsandboxed(&home, &["plugin", "run-diagnostic", id, "--json"]);
+    assert!(
+        out.status.success(),
+        "expected exit 0, stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(json["healthy"], serde_json::json!(true));
+    assert_eq!(json["exit_code"], serde_json::json!(0));
+    assert_eq!(json["timed_out"], serde_json::json!(false));
+    assert_eq!(json["response"]["status"], serde_json::json!("ok"));
+    assert_eq!(
+        json["response"]["diagnostics"][0]["message"],
+        serde_json::json!("alive")
+    );
+}
+
+#[test]
+fn plugin_run_diagnostic_reports_failing_helper() {
+    let home = temp_home("diag-fail");
+    // Helper writes no valid response and exits non-zero; the diagnostic must
+    // surface that as unhealthy with exit code 1 (problem, not transport error).
+    let id = install_probe_plugin(&home, "not-json", 5);
+
+    let out = run_isolated_unsandboxed(&home, &["plugin", "run-diagnostic", id, "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(json["healthy"], serde_json::json!(false));
+    assert_eq!(json["exit_code"], serde_json::json!(5));
+    assert!(json["response"].is_null());
+}
+
+#[test]
+fn plugin_run_diagnostic_unknown_id_errors() {
+    let home = temp_home("diag-unknown");
+    let out = run_isolated(&home, &["plugin", "run-diagnostic", "does.not.exist"]);
+    assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("no installed plugin"));
 }

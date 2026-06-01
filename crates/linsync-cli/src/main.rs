@@ -10,14 +10,15 @@ use linsync_core::{
     DiffLineKind, FileFilter, FilterMatchOptions, FilterParseErrorKind, FilterStore,
     FolderCompareOptions, FolderCompareResult, FolderEntryDiff, FolderEntryFilter,
     FolderEntryState, FolderGrouping, FolderQuery, FolderSortKey, FolderTypeFilter, HashAlgorithm,
-    InlineGranularity, MergeChoice, MoveDirection, ProfileId, ProfileStore, ProfileStoreError,
-    SymlinkPolicy, TableCellState, TableCompareOptions, TextBookmark, TextCompareOptions,
-    TextDocument, TextFindOptions, TextInputEncoding, TextRenderMode, TextSubstitution,
-    TextSyntaxMode, ThreeWayConflict, ThreeWayMergeState, assess_operation_risks, builtin_profiles,
-    builtin_text_regex_rule_sets, clear_plugin_option, compare_binary_files, compare_folders,
-    compare_table_files, compare_text, compare_text_files, discover_installed_plugins,
-    find_builtin, is_likely_binary, load_plugin_enabled_map, load_plugin_options, merge_three_way,
-    parse_conflict_markers, plan_folder_operation, set_plugin_enabled, set_plugin_option,
+    InlineGranularity, MergeChoice, MoveDirection, PluginExecutionOptions, PluginInputDescriptor,
+    ProfileId, ProfileStore, ProfileStoreError, SymlinkPolicy, TableCellState, TableCompareOptions,
+    TextBookmark, TextCompareOptions, TextDocument, TextFindOptions, TextInputEncoding,
+    TextRenderMode, TextSubstitution, TextSyntaxMode, ThreeWayConflict, ThreeWayMergeState,
+    assess_operation_risks, builtin_profiles, builtin_text_regex_rule_sets, clear_plugin_option,
+    compare_binary_files, compare_folders, compare_table_files, compare_text, compare_text_files,
+    discover_installed_plugins, find_builtin, is_likely_binary, load_plugin_enabled_map,
+    load_plugin_options, merge_three_way, parse_conflict_markers, plan_folder_operation,
+    probe_plugin, set_plugin_enabled, set_plugin_option,
 };
 
 fn main() -> ExitCode {
@@ -1395,7 +1396,7 @@ fn extract_archive(
 fn plugin_command(args: &[String]) -> Result<ExitCode, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         eprintln!(
-            "usage: linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY>"
+            "usage: linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>"
         );
         return Ok(ExitCode::from(2));
     };
@@ -1449,10 +1450,154 @@ fn plugin_command(args: &[String]) -> Result<ExitCode, String> {
             println!("cleared option '{key}' for plugin '{id}'");
             Ok(ExitCode::SUCCESS)
         }
+        "run-diagnostic" | "diagnostic" => plugin_run_diagnostic(&paths, rest),
         other => Err(format!(
-            "unknown plugin subcommand '{other}'; expected list, inspect, validate, enable, disable, set-option, or clear-option"
+            "unknown plugin subcommand '{other}'; expected list, inspect, validate, enable, disable, set-option, clear-option, or run-diagnostic"
         )),
     }
+}
+
+/// `plugin run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]` — probe
+/// a discovered plugin's helper and report exit / timeout / stdout / stderr and
+/// the parsed protocol response. Exit 0 when healthy, 1 when the helper ran but
+/// reported a problem, 2 on a transport/encoding error.
+fn plugin_run_diagnostic(paths: &AppPaths, rest: &[String]) -> Result<ExitCode, String> {
+    const USAGE: &str =
+        "usage: linsync-cli plugin run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]";
+    let mut id: Option<&str> = None;
+    let mut input: Option<&str> = None;
+    let mut timeout_ms: Option<u64> = None;
+    let mut as_json = false;
+    let mut index = 0;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--json" => {
+                as_json = true;
+                index += 1;
+            }
+            "--input" => {
+                input = Some(
+                    rest.get(index + 1)
+                        .ok_or("--input requires a FILE path")?
+                        .as_str(),
+                );
+                index += 2;
+            }
+            "--timeout-ms" => {
+                let raw = rest.get(index + 1).ok_or("--timeout-ms requires a value")?;
+                timeout_ms =
+                    Some(raw.parse::<u64>().map_err(|_| {
+                        format!("invalid --timeout-ms '{raw}': expected an integer")
+                    })?);
+                index += 2;
+            }
+            other if other.starts_with("--") => {
+                return Err(format!("unknown flag '{other}'; {USAGE}"));
+            }
+            other => {
+                if id.is_some() {
+                    return Err(format!(
+                        "plugin run-diagnostic takes a single plugin ID; {USAGE}"
+                    ));
+                }
+                id = Some(other);
+                index += 1;
+            }
+        }
+    }
+    let id = id.ok_or(USAGE)?;
+
+    let discovery = discover_installed_plugins(paths);
+    let plugin = discovery
+        .plugins
+        .iter()
+        .find(|p| p.manifest.id == id)
+        .ok_or_else(|| format!("no installed plugin with id '{id}'"))?;
+
+    let mut inputs = Vec::new();
+    if let Some(path) = input {
+        let path_buf = PathBuf::from(path);
+        if !path_buf.exists() {
+            return Err(format!("--input file '{path}' does not exist"));
+        }
+        let extension = path_buf
+            .extension()
+            .map(|ext| ext.to_string_lossy().into_owned());
+        inputs.push(PluginInputDescriptor {
+            role: "input".to_owned(),
+            path: path_buf,
+            display_name: None,
+            mime_type: None,
+            extension,
+            read_only: true,
+        });
+    }
+
+    let mut options = PluginExecutionOptions::default();
+    if let Some(ms) = timeout_ms {
+        options.timeout = Duration::from_millis(ms);
+    }
+
+    let outcome = probe_plugin(&plugin.root, &plugin.manifest, inputs, &options)
+        .map_err(|err| err.to_string())?;
+
+    if as_json {
+        let response = outcome.response.as_ref().map(|r| {
+            serde_json::json!({
+                "status": format!("{:?}", r.status).to_lowercase(),
+                "diagnostics": r
+                    .diagnostics
+                    .iter()
+                    .map(|d| serde_json::json!({"severity": d.severity, "message": d.message}))
+                    .collect::<Vec<_>>(),
+                "error": r
+                    .error
+                    .as_ref()
+                    .map(|e| serde_json::json!({"code": e.code, "message": e.message})),
+            })
+        });
+        let body = serde_json::json!({
+            "id": id,
+            "healthy": outcome.is_healthy(),
+            "exit_code": outcome.exit_code,
+            "timed_out": outcome.timed_out,
+            "stdout": outcome.stdout,
+            "stderr": outcome.stderr,
+            "response": response,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!("plugin:    {id}");
+        println!("healthy:   {}", outcome.is_healthy());
+        match outcome.exit_code {
+            Some(code) => println!("exit:      {code}"),
+            None => println!("exit:      (none)"),
+        }
+        println!("timed_out: {}", outcome.timed_out);
+        if let Some(response) = &outcome.response {
+            println!("status:    {:?}", response.status);
+            for d in &response.diagnostics {
+                println!("  diagnostic [{}]: {}", d.severity, d.message);
+            }
+            if let Some(err) = &response.error {
+                println!("  error [{}]: {}", err.code, err.message);
+            }
+        } else if !outcome.stdout.trim().is_empty() {
+            println!("stdout:    {}", outcome.stdout.trim());
+        }
+        if !outcome.stderr.trim().is_empty() {
+            println!("stderr:    {}", outcome.stderr.trim());
+        }
+    }
+
+    Ok(if outcome.is_healthy() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 fn plugin_class_names(classes: &[linsync_core::PluginClass]) -> Vec<String> {
@@ -5299,8 +5444,8 @@ Open files or folders through the configured external viewer, xdg-open, or a nam
 .B patch LEFT RIGHT [--format unified|context|normal] [--context LINES] [--preview|--output FILE]
 Generate or preview a unified, context, or normal diff from two text files or text-only folder changes.
 .TP
-.B plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY>
-Manage discovered plugins. list shows installed plugins with enabled state; inspect shows a plugin's manifest, option schema, and current values; validate checks the persisted options against the manifest schema; enable/disable toggle a plugin; set-option validates a value against the schema before persisting it; clear-option removes a stored option. Enabled state lives in $XDG_CONFIG_HOME/linsync/plugins.json and option values under $XDG_CONFIG_HOME/linsync/plugin-options/.
+.B plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
+Manage discovered plugins. list shows installed plugins with enabled state; inspect shows a plugin's manifest, option schema, and current values; validate checks the persisted options against the manifest schema; enable/disable toggle a plugin; set-option validates a value against the schema before persisting it; clear-option removes a stored option; run-diagnostic probes a plugin's helper with an optional sample --input and reports exit/timeout/stdout/stderr plus the parsed protocol response (exit 0 healthy, 1 unhealthy, 2 transport error). Enabled state lives in $XDG_CONFIG_HOME/linsync/plugins.json and option values under $XDG_CONFIG_HOME/linsync/plugin-options/.
 .TP
 .B profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
 Manage compare profiles — named bundles of per-mode comparison options. Built-in profiles ship with the binary; user profiles live under $XDG_CONFIG_HOME/linsync/profiles/. Use --profile NAME-OR-PATH on a compare command to source options from a profile; CLI flags override profile values.
@@ -5368,7 +5513,7 @@ USAGE:
     linsync-cli mergetool --base BASE --local LOCAL --remote REMOTE --merged MERGED [--auto-resolve left|right|base] [--json]
     linsync-cli open-external [--wait] [--preset PRESET] PATH...
     linsync-cli patch LEFT RIGHT [--format unified|context|normal] [--context LINES] [--preview|--output FILE]
-    linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY>
+    linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
     linsync-cli profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
     linsync-cli reveal [--wait] PATH...
     linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]
@@ -5389,7 +5534,10 @@ plugin:
     current values; `validate ID` checks the persisted options against the
     schema; `enable`/`disable ID` toggle a plugin; `set-option ID KEY VALUE`
     validates the value against the schema before persisting it (VALUE is parsed
-    as JSON, falling back to a string); `clear-option ID KEY` removes it.
+    as JSON, falling back to a string); `clear-option ID KEY` removes it;
+    `run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]` probes the
+    helper and reports exit/timeout/stdout/stderr plus the parsed response
+    (exit 0 healthy, 1 unhealthy, 2 transport error).
 
 profile:
     Manage compare profiles — named bundles of per-mode options stored under

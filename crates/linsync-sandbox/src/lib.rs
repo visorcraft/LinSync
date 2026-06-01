@@ -268,14 +268,14 @@ impl SandboxedCommand {
                     tracing::warn!(
                         "LINSYNC_SANDBOX_SKIP set: plugin helper running UNSANDBOXED by request"
                     );
-                    self.inner.spawn().map_err(SandboxError::Os)
+                    spawn_retrying_etxtbsy(&mut self.inner)
                 } else if std::env::var_os("LINSYNC_SANDBOX_ALLOW_UNSANDBOXED").is_some() {
                     // No backend available, but the operator accepted the risk.
                     tracing::warn!(
                         "no sandbox backend available (Landlock < ABI 1 and bwrap not found); \
                          LINSYNC_SANDBOX_ALLOW_UNSANDBOXED set: running helper UNSANDBOXED"
                     );
-                    self.inner.spawn().map_err(SandboxError::Os)
+                    spawn_retrying_etxtbsy(&mut self.inner)
                 } else {
                     // Fail closed: never run an untrusted helper with no confinement.
                     tracing::error!(
@@ -298,8 +298,35 @@ impl SandboxedCommand {
             #[allow(unreachable_patterns)]
             _ => {
                 tracing::warn!("sandbox not supported on this platform; running unsandboxed");
-                self.inner.spawn().map_err(SandboxError::Os)
+                spawn_retrying_etxtbsy(&mut self.inner)
             }
         }
     }
+}
+
+/// Spawn `command`, retrying briefly on `ETXTBSY` (errno 26).
+///
+/// A helper that was just written — a freshly installed/updated plugin, or a
+/// test fixture — can be reported "text file busy" by the kernel when a
+/// concurrent `fork` in another thread momentarily inherited the executable's
+/// still-open write descriptor (the descriptor is closed in the child only at
+/// `exec`). A short bounded retry rides out that window instead of failing the
+/// spawn outright. Non-`ETXTBSY` errors return immediately.
+pub(crate) fn spawn_retrying_etxtbsy(command: &mut Command) -> Result<Child, SandboxError> {
+    let mut last_err = None;
+    for attempt in 0..10u32 {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(err) if err.raw_os_error() == Some(libc::ETXTBSY) => {
+                last_err = Some(err);
+                std::thread::sleep(std::time::Duration::from_millis(
+                    10 * u64::from(attempt + 1),
+                ));
+            }
+            Err(err) => return Err(SandboxError::Os(err)),
+        }
+    }
+    Err(SandboxError::Os(last_err.unwrap_or_else(|| {
+        std::io::Error::other("failed to spawn sandboxed command after ETXTBSY retries")
+    })))
 }

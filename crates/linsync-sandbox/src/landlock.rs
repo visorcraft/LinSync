@@ -128,7 +128,7 @@ pub(crate) fn spawn_with_landlock(
         });
     }
 
-    cmd.spawn().map_err(SandboxError::Os)
+    crate::spawn_retrying_etxtbsy(&mut cmd)
 }
 
 fn set_rlimit(resource: libc::__rlimit_resource_t, value: u64) -> std::io::Result<()> {

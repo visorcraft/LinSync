@@ -1371,6 +1371,95 @@ pub fn run_unpack_folder_plugin(
     Ok(serde_json::from_str(&raw.stdout)?)
 }
 
+/// The outcome of a plugin `probe` diagnostic: the helper's exit status (or a
+/// timeout), captured stdout/stderr, and the parsed protocol response when the
+/// helper emitted valid JSON. Execution-level failures (non-zero exit, timeout)
+/// are folded into the outcome rather than returned as `Err`, so a diagnostic
+/// caller can report them; only request-encoding or transport errors surface
+/// as `Err`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginProbeOutcome {
+    /// Helper exit code; `None` when it timed out (or was killed).
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub stdout: String,
+    pub stderr: String,
+    /// The parsed probe response, when the helper emitted well-formed JSON.
+    pub response: Option<PluginOperationResponse>,
+}
+
+impl PluginProbeOutcome {
+    /// True when the helper exited 0 and returned a well-formed response whose
+    /// status is `Ok`.
+    pub fn is_healthy(&self) -> bool {
+        !self.timed_out
+            && self.exit_code == Some(0)
+            && self
+                .response
+                .as_ref()
+                .is_some_and(|response| response.status == PluginOperationStatus::Ok)
+    }
+}
+
+/// Invoke a plugin's `probe` operation with the given inputs and capture a
+/// diagnostic outcome (exit / timeout / stdout / stderr / parsed response).
+///
+/// Unlike the typed operation runners this does not require the plugin to
+/// declare a particular class, so it works as a generic health check for any
+/// discovered helper.
+pub fn probe_plugin(
+    plugin_dir: &Path,
+    manifest: &PluginManifest,
+    inputs: Vec<PluginInputDescriptor>,
+    execution_options: &PluginExecutionOptions,
+) -> Result<PluginProbeOutcome, PluginError> {
+    let request = PluginOperationRequest {
+        protocol_version: CURRENT_PLUGIN_PROTOCOL_VERSION,
+        operation: PluginOperation::Probe,
+        request_id: plugin_request_id(PluginOperation::Probe),
+        inputs,
+        options: PluginTextOperationOptions::default(),
+    };
+    let request_json = serde_json::to_string(&request)?;
+    match run_plugin_helper(
+        plugin_dir,
+        manifest,
+        &format!("{request_json}\n"),
+        execution_options,
+    ) {
+        Ok(result) => {
+            let response =
+                serde_json::from_str::<PluginOperationResponse>(result.stdout.trim()).ok();
+            Ok(PluginProbeOutcome {
+                exit_code: Some(0),
+                timed_out: false,
+                stdout: result.stdout,
+                stderr: result.stderr,
+                response,
+            })
+        }
+        Err(PluginError::ExecutionFailed {
+            status_code,
+            stdout,
+            stderr,
+        }) => Ok(PluginProbeOutcome {
+            exit_code: status_code,
+            timed_out: false,
+            stdout,
+            stderr,
+            response: None,
+        }),
+        Err(PluginError::TimedOut { stderr, .. }) => Ok(PluginProbeOutcome {
+            exit_code: None,
+            timed_out: true,
+            stdout: String::new(),
+            stderr,
+            response: None,
+        }),
+        Err(other) => Err(other),
+    }
+}
+
 fn run_text_operation(
     operation: PluginOperation,
     required_class: PluginClass,
@@ -2062,6 +2151,70 @@ echo "warning" >&2
             .find_map(|line| line.strip_prefix("temp="))
             .expect("helper reports temp path");
         assert!(!Path::new(temp_path).exists());
+    }
+
+    #[test]
+    fn probe_plugin_reports_healthy_response_and_diagnostics() {
+        let fixture = TempFixture::new();
+        let plugin_dir = fixture.path.join("plugins/probe-ok");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        write_helper(
+            &plugin_dir,
+            "probe.sh",
+            r#"#!/bin/sh
+read request
+echo '{"protocol_version":1,"request_id":"probe","status":"ok","outputs":[],"diagnostics":[{"severity":"info","message":"alive"}]}'
+"#,
+        );
+        let mut manifest = sample_manifest("example.probe-ok");
+        manifest.entry = vec!["probe.sh".to_owned()];
+
+        let outcome = probe_plugin(
+            &plugin_dir,
+            &manifest,
+            Vec::new(),
+            &PluginExecutionOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.exit_code, Some(0));
+        assert!(!outcome.timed_out);
+        assert!(outcome.is_healthy());
+        let response = outcome.response.expect("parsed response");
+        assert_eq!(response.status, PluginOperationStatus::Ok);
+        assert_eq!(response.diagnostics[0].message, "alive");
+    }
+
+    #[test]
+    fn probe_plugin_folds_nonzero_exit_into_outcome() {
+        let fixture = TempFixture::new();
+        let plugin_dir = fixture.path.join("plugins/probe-fail");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        write_helper(
+            &plugin_dir,
+            "probe.sh",
+            r#"#!/bin/sh
+read request
+echo "boom" >&2
+exit 5
+"#,
+        );
+        let mut manifest = sample_manifest("example.probe-fail");
+        manifest.entry = vec!["probe.sh".to_owned()];
+
+        let outcome = probe_plugin(
+            &plugin_dir,
+            &manifest,
+            Vec::new(),
+            &PluginExecutionOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.exit_code, Some(5));
+        assert!(!outcome.timed_out);
+        assert!(!outcome.is_healthy());
+        assert!(outcome.response.is_none());
+        assert!(outcome.stderr.contains("boom"));
     }
 
     #[test]
