@@ -535,6 +535,9 @@ fn archive_unpacker_compares_virtual_trees() {
     let json: serde_json::Value = serde_json::from_str(&stdout(&diff)).unwrap();
     assert_eq!(json["equal"], serde_json::json!(false));
     assert_eq!(json["summary"]["different"], serde_json::json!(1));
+    // The unpacker ran under the sandbox; its confinement is surfaced (here
+    // unconfined, since the test degrades the sandbox).
+    assert_eq!(json["sandbox"]["confined"], serde_json::json!(false));
 
     // Unknown plugin id → error exit 2.
     let unknown = run_isolated_unsandboxed(&home, &["archive", "--unpacker", "nope", a, b]);

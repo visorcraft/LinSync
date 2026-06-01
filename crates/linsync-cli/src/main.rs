@@ -474,8 +474,9 @@ fn run_text_compare(
     }
     let chain_ids: Vec<&str> = chain.iter().map(|p| p.manifest.id.as_str()).collect();
     eprintln!(
-        "info: applying prediffer chain before diffing: {}",
-        chain_ids.join(" -> ")
+        "info: applying prediffer chain before diffing: {} (sandbox: {})",
+        chain_ids.join(" -> "),
+        active_sandbox_status().label
     );
     compare_text_files_with_prediffer_chain(
         left,
@@ -1431,12 +1432,16 @@ fn archive_compare_via_plugin(
     let right_tree = unpack(right_archive, "right")?;
     let result = compare_virtual_trees(&left_tree, &right_tree);
     let summary = &result.summary;
+    // The unpacker helper ran under the sandbox; surface its confinement so a
+    // degraded run is visible rather than silent.
+    let sandbox = active_sandbox_status();
 
     if json {
         let body = serde_json::json!({
             "left": { "archive": left_archive, "unpacker": id, "entries": left_tree.len() },
             "right": { "archive": right_archive, "unpacker": id, "entries": right_tree.len() },
             "equal": result.is_equal(),
+            "sandbox": { "label": sandbox.label, "confined": sandbox.confined },
             "summary": {
                 "compared": summary.compared_count,
                 "identical": summary.identical_count,
@@ -1449,7 +1454,8 @@ fn archive_compare_via_plugin(
         println!("{body}");
     } else {
         println!(
-            "unpacker={id} compared={} identical={} different={} one_sided={} left_only={} right_only={}",
+            "unpacker={id} sandbox={} compared={} identical={} different={} one_sided={} left_only={} right_only={}",
+            sandbox.label,
             summary.compared_count,
             summary.identical_count,
             summary.different_count,
