@@ -2834,34 +2834,50 @@ fn compare_save_result_then_report_from_json_matches_direct() {
     let result_json = temp.path.join("result.json");
     let from_html = temp.path.join("from.html");
     let direct_html = temp.path.join("direct.html");
+    // Private config dir: the save captures the active profile's options into
+    // the JSON, while the direct report re-reads the active profile, so both
+    // invocations must see a *stable* active-profile pointer. Sharing the real
+    // $XDG_CONFIG_HOME lets a parallel profile-mutating test change it between
+    // the two calls and diverge the HTML.
+    let cfg = temp.path.join("xdg-config");
+    let env = [("XDG_CONFIG_HOME", cfg.as_path())];
 
     // Save the full result; the compared files differ, so exit 1.
-    let save = run(&[
-        "compare",
-        "--save-result",
-        result_json.to_str().unwrap(),
-        a.to_str().unwrap(),
-        b.to_str().unwrap(),
-    ]);
+    let save = run_with_env(
+        &[
+            "compare",
+            "--save-result",
+            result_json.to_str().unwrap(),
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+        ],
+        &env,
+    );
     assert_eq!(save.status.code(), Some(1));
     assert!(result_json.exists(), "result JSON should be written");
 
     // Re-render from the saved JSON (no recompare) and directly; the HTML must match.
-    let from = run(&[
-        "report",
-        "--from-json",
-        result_json.to_str().unwrap(),
-        "--output",
-        from_html.to_str().unwrap(),
-    ]);
+    let from = run_with_env(
+        &[
+            "report",
+            "--from-json",
+            result_json.to_str().unwrap(),
+            "--output",
+            from_html.to_str().unwrap(),
+        ],
+        &env,
+    );
     assert_eq!(from.status.code(), Some(1));
-    let direct = run(&[
-        "report",
-        a.to_str().unwrap(),
-        b.to_str().unwrap(),
-        "--output",
-        direct_html.to_str().unwrap(),
-    ]);
+    let direct = run_with_env(
+        &[
+            "report",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            "--output",
+            direct_html.to_str().unwrap(),
+        ],
+        &env,
+    );
     assert_eq!(direct.status.code(), Some(1));
     assert_eq!(
         fs::read_to_string(&from_html).unwrap(),
@@ -2896,33 +2912,46 @@ fn folder_save_result_then_report_from_json_matches_direct() {
     let result_json = temp.path.join("folder.json");
     let from_html = temp.path.join("from.html");
     let direct_html = temp.path.join("direct.html");
+    // Private config dir so the save and the direct report share a stable
+    // active profile (see the text variant above for the race this avoids).
+    let cfg = temp.path.join("xdg-config");
+    let env = [("XDG_CONFIG_HOME", cfg.as_path())];
 
-    let save = run(&[
-        "compare",
-        "--type",
-        "folder",
-        "--save-result",
-        result_json.to_str().unwrap(),
-        left.to_str().unwrap(),
-        right.to_str().unwrap(),
-    ]);
+    let save = run_with_env(
+        &[
+            "compare",
+            "--type",
+            "folder",
+            "--save-result",
+            result_json.to_str().unwrap(),
+            left.to_str().unwrap(),
+            right.to_str().unwrap(),
+        ],
+        &env,
+    );
     assert_eq!(save.status.code(), Some(1));
 
-    let from = run(&[
-        "report",
-        "--from-json",
-        result_json.to_str().unwrap(),
-        "--output",
-        from_html.to_str().unwrap(),
-    ]);
+    let from = run_with_env(
+        &[
+            "report",
+            "--from-json",
+            result_json.to_str().unwrap(),
+            "--output",
+            from_html.to_str().unwrap(),
+        ],
+        &env,
+    );
     assert_eq!(from.status.code(), Some(1));
-    let direct = run(&[
-        "report",
-        left.to_str().unwrap(),
-        right.to_str().unwrap(),
-        "--output",
-        direct_html.to_str().unwrap(),
-    ]);
+    let direct = run_with_env(
+        &[
+            "report",
+            left.to_str().unwrap(),
+            right.to_str().unwrap(),
+            "--output",
+            direct_html.to_str().unwrap(),
+        ],
+        &env,
+    );
     assert_eq!(direct.status.code(), Some(1));
     assert_eq!(
         fs::read_to_string(&from_html).unwrap(),
