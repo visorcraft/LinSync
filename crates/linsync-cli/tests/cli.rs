@@ -2552,3 +2552,74 @@ fn session_save_list_show_clear_roundtrip() {
         Some(2)
     );
 }
+
+#[test]
+fn project_validate_show_run_with_ci_exit_codes() {
+    let temp = TempFixture::new();
+    fs::write(temp.path.join("a.txt"), "same").unwrap();
+    fs::write(temp.path.join("b.txt"), "same").unwrap();
+    fs::write(temp.path.join("c.txt"), "left").unwrap();
+    fs::write(temp.path.join("d.txt"), "right").unwrap();
+    let a = temp.path.join("a.txt");
+    let b = temp.path.join("b.txt");
+    let c = temp.path.join("c.txt");
+    let d = temp.path.join("d.txt");
+    let project = temp.path.join("demo.linsync-project");
+    let json = format!(
+        r#"{{"schema_version":1,"name":"demo","sessions":[
+            {{"schema_version":1,"session":{{"title":"identical","left":"{}","right":"{}","options":{{}}}}}},
+            {{"schema_version":1,"session":{{"title":"changed","left":"{}","right":"{}","options":{{}}}}}}
+        ]}}"#,
+        a.display(),
+        b.display(),
+        c.display(),
+        d.display()
+    );
+    fs::write(&project, json).unwrap();
+    let p = project.to_str().unwrap();
+
+    // validate succeeds.
+    let out = run(&["project", "validate", p]);
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // run exits 1 because one comparison differs.
+    let out = run(&["project", "run", p, "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["equal"], serde_json::json!(false));
+    let comparisons = value["comparisons"].as_array().unwrap();
+    assert_eq!(comparisons[0]["status"], "equal");
+    assert_eq!(comparisons[1]["status"], "different");
+
+    // A missing project path is a usage error (exit 2).
+    let out = run(&[
+        "project",
+        "validate",
+        temp.path.join("missing.json").to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn project_run_all_equal_exits_zero() {
+    let temp = TempFixture::new();
+    fs::write(temp.path.join("a.txt"), "same").unwrap();
+    fs::write(temp.path.join("b.txt"), "same").unwrap();
+    let a = temp.path.join("a.txt");
+    let b = temp.path.join("b.txt");
+    let project = temp.path.join("equal.linsync-project");
+    let json = format!(
+        r#"{{"schema_version":1,"name":"eq","sessions":[
+            {{"schema_version":1,"session":{{"title":"identical","left":"{}","right":"{}","options":{{}}}}}}
+        ]}}"#,
+        a.display(),
+        b.display()
+    );
+    fs::write(&project, json).unwrap();
+    let out = run(&["project", "run", project.to_str().unwrap()]);
+    assert!(out.status.success(), "all-equal project should exit 0");
+}
