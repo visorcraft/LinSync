@@ -462,3 +462,79 @@ fn compare_prediffer_chain_applies_all_stages_in_order() {
         "stderr should report the chain order"
     );
 }
+
+/// Install a folder-virtualizer plugin whose helper emits a one-file virtual
+/// tree whose sha256 is the source file's content, so two archives with equal
+/// content compare equal and differing content compares different.
+fn install_virtualizer_plugin(home: &Path) -> &'static str {
+    let plugin_dir = home.join("data/linsync/plugins/virt");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    let script = "#!/bin/sh\n\
+        request=$(cat)\n\
+        source=$(printf '%s' \"$request\" | sed -n 's/.*\"source\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+        content=$(cat \"$source\")\n\
+        printf '{\"ok\":true,\"tree\":[{\"path\":\"entry.txt\",\"kind\":\"file\",\"sha256\":\"%s\"}]}\\n' \"$content\"\n";
+    let helper = plugin_dir.join("helper.sh");
+    fs::write(&helper, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&helper).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&helper, perms).unwrap();
+    }
+    let manifest = r#"{
+      "schema_version": 1,
+      "id": "test.virt",
+      "name": "Virtualizer Fixture",
+      "version": "1.0.0",
+      "license": "GPL-3.0-only",
+      "entry": ["./helper.sh"],
+      "classes": ["folder_virtualizer"],
+      "mime_types": ["application/zip"],
+      "extensions": ["zip"],
+      "capabilities": [],
+      "deterministic": true,
+      "sandbox": { "network": false, "writes_input": false, "requires_home_access": false },
+      "options_schema": []
+    }"#;
+    fs::write(plugin_dir.join("linsync-plugin.json"), manifest).unwrap();
+    "test.virt"
+}
+
+#[test]
+fn archive_unpacker_compares_virtual_trees() {
+    let home = temp_home("archive-virt");
+    let id = install_virtualizer_plugin(&home);
+    let a = home.join("a.zip");
+    let b = home.join("b.zip");
+    let c = home.join("c.zip");
+    fs::write(&a, "AAA").unwrap();
+    fs::write(&b, "AAA").unwrap(); // same content as a
+    fs::write(&c, "BBB").unwrap(); // different
+    let (a, b, c) = (
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+        c.to_str().unwrap(),
+    );
+
+    // Equal virtual trees → exit 0.
+    let equal = run_isolated_unsandboxed(&home, &["archive", "--unpacker", id, a, b]);
+    assert_eq!(
+        equal.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&equal.stderr)
+    );
+
+    // Differing trees → exit 1, JSON reports the difference.
+    let diff = run_isolated_unsandboxed(&home, &["archive", "--unpacker", id, a, c, "--json"]);
+    assert_eq!(diff.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&diff)).unwrap();
+    assert_eq!(json["equal"], serde_json::json!(false));
+    assert_eq!(json["summary"]["different"], serde_json::json!(1));
+
+    // Unknown plugin id → error exit 2.
+    let unknown = run_isolated_unsandboxed(&home, &["archive", "--unpacker", "nope", a, b]);
+    assert_eq!(unknown.status.code(), Some(2));
+}

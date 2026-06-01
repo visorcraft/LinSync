@@ -18,10 +18,10 @@ use linsync_core::{
     ThreeWayConflict, ThreeWayMergeState, active_sandbox_status, assess_operation_risks,
     builtin_profiles, builtin_text_regex_rule_sets, clear_plugin_option, compare_binary_files,
     compare_folders, compare_table_files, compare_text, compare_text_files,
-    compare_text_files_with_prediffer_chain, discover_installed_plugins, find_builtin,
-    is_likely_binary, load_plugin_enabled_map, load_plugin_options, merge_three_way,
+    compare_text_files_with_prediffer_chain, compare_virtual_trees, discover_installed_plugins,
+    find_builtin, is_likely_binary, load_plugin_enabled_map, load_plugin_options, merge_three_way,
     parse_conflict_markers, plan_folder_operation, probe_plugin, resolve_enabled_prediffers,
-    set_plugin_enabled, set_plugin_option,
+    run_unpack_folder_plugin, set_plugin_enabled, set_plugin_option,
 };
 
 fn main() -> ExitCode {
@@ -1265,21 +1265,44 @@ fn archive_command(args: &[String]) -> Result<ExitCode, String> {
     let mut paths = Vec::new();
     let mut keep_temp = false;
     let mut json = false;
-    for arg in args {
-        match arg.as_str() {
-            "--keep-temp" => keep_temp = true,
-            "--json" => json = true,
+    let mut unpacker = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--keep-temp" => {
+                keep_temp = true;
+                index += 1;
+            }
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--unpacker" => {
+                unpacker = Some(
+                    args.get(index + 1)
+                        .ok_or("--unpacker requires a plugin id")?
+                        .clone(),
+                );
+                index += 2;
+            }
             value if value.starts_with("--") => {
                 return Err(format!("unknown archive flag '{value}'"));
             }
-            value => paths.push(value.to_owned()),
+            value => {
+                paths.push(value.to_owned());
+                index += 1;
+            }
         }
     }
     if paths.len() != 2 {
         return Err(
-            "usage: linsync-cli archive [--keep-temp] [--json] LEFT.{zip|tar|tgz|...} RIGHT.{...}"
+            "usage: linsync-cli archive [--keep-temp] [--json] [--unpacker PLUGIN_ID] LEFT.{zip|tar|tgz|...} RIGHT.{...}"
                 .to_owned(),
         );
+    }
+
+    if let Some(id) = unpacker {
+        return archive_compare_via_plugin(&id, &paths[0], &paths[1], json);
     }
 
     let cache_root = AppPaths::from_env().comparison_cache_dir();
@@ -1332,6 +1355,86 @@ fn archive_command(args: &[String]) -> Result<ExitCode, String> {
         ExitCode::SUCCESS
     };
     Ok(code)
+}
+
+/// Compare two archives by routing each through a folder-virtualizer / unpacker
+/// plugin (`unpack_folder`) and comparing the resulting virtual trees, instead
+/// of the built-in extractor. Useful for formats the built-in cannot read.
+fn archive_compare_via_plugin(
+    id: &str,
+    left_archive: &str,
+    right_archive: &str,
+    json: bool,
+) -> Result<ExitCode, String> {
+    let paths = AppPaths::from_env();
+    let discovery = discover_installed_plugins(&paths);
+    let plugin = discovery
+        .plugins
+        .iter()
+        .find(|p| p.manifest.id == id)
+        .ok_or_else(|| format!("no installed plugin with id '{id}'"))?;
+    if !plugin.manifest.classes.iter().any(|c| {
+        matches!(
+            c,
+            linsync_core::PluginClass::Unpacker | linsync_core::PluginClass::FolderVirtualizer
+        )
+    }) {
+        return Err(format!(
+            "plugin '{id}' does not declare the unpacker or folder_virtualizer class"
+        ));
+    }
+
+    let options = PluginExecutionOptions::default();
+    let unpack = |archive: &str, side: &str| -> Result<Vec<linsync_core::VirtualNode>, String> {
+        let response = run_unpack_folder_plugin(&plugin.root, &plugin.manifest, archive, &options)
+            .map_err(|err| format!("{side} unpack failed: {err}"))?;
+        if !response.ok {
+            return Err(format!(
+                "{side} unpack failed: {}",
+                response
+                    .error
+                    .unwrap_or_else(|| "plugin reported failure".to_owned())
+            ));
+        }
+        Ok(response.tree)
+    };
+    let left_tree = unpack(left_archive, "left")?;
+    let right_tree = unpack(right_archive, "right")?;
+    let result = compare_virtual_trees(&left_tree, &right_tree);
+    let summary = &result.summary;
+
+    if json {
+        let body = serde_json::json!({
+            "left": { "archive": left_archive, "unpacker": id, "entries": left_tree.len() },
+            "right": { "archive": right_archive, "unpacker": id, "entries": right_tree.len() },
+            "equal": result.is_equal(),
+            "summary": {
+                "compared": summary.compared_count,
+                "identical": summary.identical_count,
+                "different": summary.different_count,
+                "one_sided": summary.one_sided_count,
+                "left_only": summary.left_only_count,
+                "right_only": summary.right_only_count,
+            },
+        });
+        println!("{body}");
+    } else {
+        println!(
+            "unpacker={id} compared={} identical={} different={} one_sided={} left_only={} right_only={}",
+            summary.compared_count,
+            summary.identical_count,
+            summary.different_count,
+            summary.one_sided_count,
+            summary.left_only_count,
+            summary.right_only_count,
+        );
+    }
+
+    Ok(if result.is_equal() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 struct ExtractedArchive {
@@ -6060,8 +6163,8 @@ linsync-cli \- command-line file and folder comparison tools
 provides scriptable access to LinSync comparison primitives.
 .SH COMMANDS
 .TP
-.B archive [--keep-temp] [--json] LEFT RIGHT
-Compare two archive files by extracting them (via tar / unzip subprocesses) and running a folder compare on the extracted trees. Supported extensions: .zip, .jar, .war, .apk, .ipa, .tar, .tgz, .tar.gz, .tbz2, .tar.bz2, .txz, .tar.xz, .tzst, .tar.zst.
+.B archive [--keep-temp] [--json] [--unpacker PLUGIN_ID] LEFT RIGHT
+Compare two archive files by extracting them (via tar / unzip subprocesses) and running a folder compare on the extracted trees. Supported extensions: .zip, .jar, .war, .apk, .ipa, .tar, .tgz, .tar.gz, .tbz2, .tar.bz2, .txz, .tar.xz, .tzst, .tar.zst. --unpacker PLUGIN_ID instead routes both archives through an installed unpacker / folder_virtualizer plugin (its unpack_folder operation) and compares the resulting virtual trees by SHA-256/size — useful for formats the built-in extractor cannot read.
 .TP
 .B cache clear [--scope webcompare]
 Clear LinSync cache directories. Currently the only supported scope is webcompare (the webpage compare HTTP fetch cache under $XDG_CACHE_HOME/linsync/webcompare).
@@ -6154,7 +6257,7 @@ fn print_help() {
 linsync-cli {}
 
 USAGE:
-    linsync-cli archive [--keep-temp] [--json] LEFT RIGHT
+    linsync-cli archive [--keep-temp] [--json] [--unpacker PLUGIN_ID] LEFT RIGHT
     linsync-cli cache clear [--scope webcompare]
     linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT
     linsync-cli compare3 [--markers|--json] LEFT BASE RIGHT
