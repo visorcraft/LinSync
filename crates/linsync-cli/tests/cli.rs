@@ -1584,6 +1584,88 @@ fn folders_explain_large_file_method_downgrades() {
 }
 
 #[test]
+fn folders_query_filters_search_sorts_and_paginates() {
+    let temp = TempFixture::new();
+    let left = temp.path.join("left");
+    let right = temp.path.join("right");
+    fs::create_dir_all(left.join("sub")).unwrap();
+    fs::create_dir_all(right.join("sub")).unwrap();
+    fs::write(left.join("a.txt"), "L").unwrap();
+    fs::write(right.join("a.txt"), "R").unwrap();
+    fs::write(left.join("b.txt"), "same").unwrap();
+    fs::write(right.join("b.txt"), "same").unwrap();
+    fs::write(left.join("sub/c.txt"), "L").unwrap();
+    fs::write(right.join("sub/c.txt"), "R").unwrap();
+
+    let l = left.to_str().unwrap();
+    let r = right.to_str().unwrap();
+
+    // --types file drops the directory entry; --types dir keeps only it.
+    let files = run(&["folders", "--recursive", "--types", "file", "--json", l, r]);
+    let files: serde_json::Value = serde_json::from_slice(&files.stdout).unwrap();
+    assert_eq!(files["filtered"], 3);
+    assert!(
+        files["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["type"] == "file")
+    );
+
+    let dirs = run(&["folders", "--recursive", "--types", "dir", "--json", l, r]);
+    let dirs: serde_json::Value = serde_json::from_slice(&dirs.stdout).unwrap();
+    assert_eq!(dirs["filtered"], 1);
+    assert_eq!(dirs["entries"][0]["type"], "directory");
+    assert_eq!(dirs["entries"][0]["path"], "sub");
+
+    // --search matches the relative path case-insensitively.
+    let search = run(&["folders", "--recursive", "--search", "SUB", "--json", l, r]);
+    let search: serde_json::Value = serde_json::from_slice(&search.stdout).unwrap();
+    assert_eq!(search["filtered"], 2);
+    let paths: Vec<&str> = search["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, vec!["sub", "sub/c.txt"]);
+
+    // Pagination over the two differing entries: offset past the first yields
+    // the second, sorted by path, with has_more cleared at the end.
+    let page = run(&[
+        "folders",
+        "--recursive",
+        "--state",
+        "differences",
+        "--sort",
+        "path",
+        "--offset",
+        "1",
+        "--limit",
+        "1",
+        "--json",
+        l,
+        r,
+    ]);
+    let page: serde_json::Value = serde_json::from_slice(&page.stdout).unwrap();
+    assert_eq!(page["filtered"], 2);
+    assert_eq!(page["returned"], 1);
+    assert_eq!(page["offset"], 1);
+    assert_eq!(page["has_more"], false);
+    assert_eq!(page["entries"][0]["path"], "sub/c.txt");
+
+    // Invalid query arguments are usage errors.
+    assert_eq!(
+        run(&["folders", "--sort", "bogus", l, r]).status.code(),
+        Some(2)
+    );
+    assert_eq!(
+        run(&["folders", "--types", "bogus", l, r]).status.code(),
+        Some(2)
+    );
+}
+
+#[test]
 fn folders_support_json_and_csv_output() {
     let temp = TempFixture::new();
     let left = temp.path.join("left");

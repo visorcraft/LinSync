@@ -8,7 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use linsync_core::{
     AppPaths, BinaryCompareOptions, CompareMethod, CompareProfile, DiffAlgorithm, DiffBlockKind,
     DiffLineKind, FileFilter, FilterMatchOptions, FilterParseErrorKind, FilterStore,
-    FolderCompareOptions, FolderCompareResult, FolderEntryFilter, FolderEntryState, HashAlgorithm,
+    FolderCompareOptions, FolderCompareResult, FolderEntryDiff, FolderEntryFilter,
+    FolderEntryState, FolderGrouping, FolderQuery, FolderSortKey, FolderTypeFilter, HashAlgorithm,
     InlineGranularity, MergeChoice, MoveDirection, ProfileId, ProfileStore, ProfileStoreError,
     SymlinkPolicy, TableCellState, TableCompareOptions, TextBookmark, TextCompareOptions,
     TextDocument, TextFindOptions, TextInputEncoding, TextRenderMode, TextSubstitution,
@@ -154,6 +155,13 @@ const FOLDER_FLAGS: &[&str] = &[
     "--case-insensitive-filter",
     "--hide-skipped",
     "--state",
+    "--search",
+    "--sort",
+    "--desc",
+    "--types",
+    "--group-by",
+    "--limit",
+    "--offset",
     "--dry-run",
     "--hash-algorithm",
     "--compare-permissions",
@@ -1962,7 +1970,7 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
 
     if folder_args.paths.len() != 2 {
         return Err(
-            "usage: linsync-cli folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT"
+            "usage: linsync-cli folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--types LIST] [--search SUBSTR] [--sort KEY] [--desc] [--group-by GROUP] [--offset N] [--limit N] [--json|--csv|--count|--quiet] LEFT RIGHT"
                 .to_owned(),
         );
     }
@@ -1977,10 +1985,16 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
 
     let summary = &result.summary;
     let differences = summary.different_count + summary.one_sided_count + summary.errors_count;
-    let entry_filter = folder_args.state_filter.unwrap_or(FolderEntryFilter::All);
-    let filtered_entries = result.filtered_entries(entry_filter);
-    let count = if folder_args.state_filter.is_some() {
-        filtered_entries.len()
+    let query = folder_args.query();
+    let entry_filter = query.state;
+    let page = result.query(&query);
+    let filtered_entries: Vec<&FolderEntryDiff> = page
+        .groups
+        .iter()
+        .flat_map(|group| group.entries.iter().copied())
+        .collect();
+    let count = if folder_args.query_is_restricting() {
+        page.total_matched
     } else {
         differences
     };
@@ -1988,7 +2002,7 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
     match folder_args.output {
         FolderOutput::Structured(OutputMode::Text) => {
             println!(
-                "compared={} skipped={} identical={} different={} one_sided={} left_only={} right_only={} errors={} aborted={} method_downgrades={} filtered={} elapsed_ms={} status={}",
+                "compared={} skipped={} identical={} different={} one_sided={} left_only={} right_only={} errors={} aborted={} method_downgrades={} filtered={} returned={} offset={} has_more={} elapsed_ms={} status={}",
                 summary.compared_count,
                 summary.skipped_count,
                 summary.identical_count,
@@ -1999,7 +2013,10 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
                 summary.errors_count,
                 summary.aborted_count,
                 summary.method_downgrade_count,
-                filtered_entries.len(),
+                page.total_matched,
+                page.returned,
+                page.offset,
+                page.has_more,
                 summary.elapsed.as_millis(),
                 folder_status(summary.status)
             );
@@ -2112,7 +2129,10 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
                 "errors": summary.errors_count,
                 "aborted": summary.aborted_count,
                 "method_downgrades": summary.method_downgrade_count,
-                "filtered": filtered_entries.len(),
+                "filtered": page.total_matched,
+                "returned": page.returned,
+                "offset": page.offset,
+                "has_more": page.has_more,
                 "elapsed_ms": summary.elapsed.as_millis(),
                 "status": folder_status(summary.status),
                 "options": folder_options_metadata_json(
@@ -4078,6 +4098,13 @@ struct FolderArgs {
     filter_match_options: FilterMatchOptions,
     hide_skipped: bool,
     state_filter: Option<FolderEntryFilter>,
+    type_filter: FolderTypeFilter,
+    search: Option<String>,
+    sort: FolderSortKey,
+    descending: bool,
+    group_by: FolderGrouping,
+    offset: usize,
+    limit: Option<usize>,
     hash_algorithm: HashAlgorithm,
     compare_permissions: bool,
     compare_ownership: bool,
@@ -4103,6 +4130,30 @@ impl FolderArgs {
             compare_ownership: self.compare_ownership,
         }
     }
+
+    fn query(&self) -> FolderQuery {
+        FolderQuery {
+            state: self.state_filter.unwrap_or(FolderEntryFilter::All),
+            types: self.type_filter,
+            search: self.search.clone(),
+            sort: self.sort,
+            descending: self.descending,
+            group_by: self.group_by,
+            offset: self.offset,
+            limit: self.limit,
+        }
+    }
+
+    /// True when the query restricts the result set beyond the default
+    /// (used to decide whether `--count` reports matches vs. raw differences).
+    fn query_is_restricting(&self) -> bool {
+        self.state_filter.is_some()
+            || !self.type_filter.is_unrestricted()
+            || self
+                .search
+                .as_deref()
+                .is_some_and(|needle| !needle.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4122,6 +4173,13 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
     let mut filter_match_options = FilterMatchOptions::default();
     let mut hide_skipped = false;
     let mut state_filter = None;
+    let mut type_filter = FolderTypeFilter::default();
+    let mut search = None;
+    let mut sort = FolderSortKey::default();
+    let mut descending = false;
+    let mut group_by = FolderGrouping::default();
+    let mut offset = 0usize;
+    let mut limit = None;
     let mut hash_algorithm = HashAlgorithm::default();
     let mut compare_permissions = false;
     let mut compare_ownership = false;
@@ -4287,6 +4345,66 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
                 state_filter = Some(parse_folder_entry_filter(value)?);
                 index += 2;
             }
+            "--search" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--search requires a value".to_owned());
+                };
+                search = Some(value.clone());
+                index += 2;
+            }
+            "--sort" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(
+                        "--sort requires a value: name | path | state | type | size | modified"
+                            .to_owned(),
+                    );
+                };
+                sort = parse_folder_sort_key(value)?;
+                index += 2;
+            }
+            "--desc" => {
+                descending = true;
+                index += 1;
+            }
+            "--types" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(
+                        "--types requires a comma-separated value: file,dir,symlink,special"
+                            .to_owned(),
+                    );
+                };
+                type_filter = parse_folder_type_filter(value)?;
+                index += 2;
+            }
+            "--group-by" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(
+                        "--group-by requires a value: none | state | type | directory".to_owned(),
+                    );
+                };
+                group_by = parse_folder_grouping(value)?;
+                index += 2;
+            }
+            "--offset" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--offset requires a non-negative integer".to_owned());
+                };
+                offset = value
+                    .parse::<usize>()
+                    .map_err(|_| format!("invalid --offset '{value}': expected an integer"))?;
+                index += 2;
+            }
+            "--limit" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--limit requires a non-negative integer".to_owned());
+                };
+                limit = Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| format!("invalid --limit '{value}': expected an integer"))?,
+                );
+                index += 2;
+            }
             "--dry-run" => {
                 dry_run = true;
                 index += 1;
@@ -4338,6 +4456,13 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
         filter_match_options,
         hide_skipped,
         state_filter,
+        type_filter,
+        search,
+        sort,
+        descending,
+        group_by,
+        offset,
+        limit,
         hash_algorithm,
         compare_permissions,
         compare_ownership,
@@ -4480,6 +4605,65 @@ fn parse_folder_entry_filter(value: &str) -> Result<FolderEntryFilter, String> {
         "aborted" => Ok(FolderEntryFilter::Aborted),
         other => Err(format!("unknown folder state filter '{other}'")),
     }
+}
+
+fn parse_folder_sort_key(value: &str) -> Result<FolderSortKey, String> {
+    match value {
+        "name" => Ok(FolderSortKey::Name),
+        "path" => Ok(FolderSortKey::Path),
+        "state" => Ok(FolderSortKey::State),
+        "type" => Ok(FolderSortKey::Type),
+        "size" => Ok(FolderSortKey::Size),
+        "modified" | "mtime" => Ok(FolderSortKey::Modified),
+        other => Err(format!(
+            "unknown --sort key '{other}': expected name | path | state | type | size | modified"
+        )),
+    }
+}
+
+fn parse_folder_grouping(value: &str) -> Result<FolderGrouping, String> {
+    match value {
+        "none" => Ok(FolderGrouping::None),
+        "state" => Ok(FolderGrouping::State),
+        "type" => Ok(FolderGrouping::Type),
+        "directory" | "dir" => Ok(FolderGrouping::Directory),
+        other => Err(format!(
+            "unknown --group-by value '{other}': expected none | state | type | directory"
+        )),
+    }
+}
+
+fn parse_folder_type_filter(value: &str) -> Result<FolderTypeFilter, String> {
+    let mut filter = FolderTypeFilter {
+        files: false,
+        directories: false,
+        symlinks: false,
+        special: false,
+    };
+    for token in value.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+        match token {
+            "file" | "files" => filter.files = true,
+            "dir" | "directory" | "directories" => filter.directories = true,
+            "symlink" | "symlinks" | "link" => filter.symlinks = true,
+            "special" => filter.special = true,
+            other => {
+                return Err(format!(
+                    "unknown --types entry '{other}': expected file, dir, symlink, or special"
+                ));
+            }
+        }
+    }
+    if filter
+        == (FolderTypeFilter {
+            files: false,
+            directories: false,
+            symlinks: false,
+            special: false,
+        })
+    {
+        return Err("--types requires at least one of: file, dir, symlink, special".to_owned());
+    }
+    Ok(filter)
 }
 
 fn parse_cli_bool(value: &str, flag: &str) -> Result<bool, String> {
@@ -5100,8 +5284,8 @@ Inspect a Git-style conflict-marker file and report conflict sections.
 .B filter <validate RULE | validate-file PATH | list | migrate INPUT [--out OUTPUT | --in-place]>
 Manage named filters and validate filter expressions. `validate` checks a single filter rule grammar; `validate-file` checks a filter file; `list` reports stored named filters; `migrate` converts a legacy .flt file to the LinSync filter grammar, writing to --out, in-place with --in-place, or stdout by default.
 .TP
-.B folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT
-Compare two folders and summarize identical, different, left-only, and right-only entries. --profile seeds folder options from a compare profile, and --json includes the effective profile, filters, and folder options used for the run.
+.B folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--types LIST] [--search SUBSTR] [--sort KEY] [--desc] [--group-by GROUP] [--offset N] [--limit N] [--json|--csv|--count|--quiet] LEFT RIGHT
+Compare two folders and summarize identical, different, left-only, and right-only entries. --profile seeds folder options from a compare profile, and --json includes the effective profile, filters, and folder options used for the run. The result view is driven by the core query API: --state filters by comparison state, --types restricts to a comma-separated set of entry types (file,dir,symlink,special), --search keeps entries whose relative path contains a case-insensitive substring, --sort (name|path|state|type|size|modified) with --desc orders the rows, --group-by (none|state|type|directory) buckets them, and --offset/--limit paginate. JSON and text output report filtered (total matches), returned, offset, and has_more.
 .TP
 .B hex [--width BYTES] [--metadata-only] [--json|--count|--quiet] LEFT RIGHT
 Compare two binary files and print differing hex rows or metadata-only differences.
@@ -5177,7 +5361,7 @@ USAGE:
     linsync-cli conflict [--json] FILE
     linsync-cli completions SHELL
     linsync-cli filter <validate RULE | validate-file PATH | list | migrate INPUT [--out OUTPUT | --in-place]>
-    linsync-cli folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT
+    linsync-cli folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--types LIST] [--search SUBSTR] [--sort KEY] [--desc] [--group-by GROUP] [--offset N] [--limit N] [--json|--csv|--count|--quiet] LEFT RIGHT
     linsync-cli hex [--width BYTES] [--metadata-only] [--json|--count|--quiet] LEFT RIGHT
     linsync-cli launch [--wait] [--] [ARGS...]
     linsync-cli man [--output FILE]

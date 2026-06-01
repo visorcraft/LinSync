@@ -35,9 +35,10 @@ pub use filter::{
 pub use folder::{
     CompareMethod, FolderCompareControl, FolderCompareError, FolderCompareEvent,
     FolderCompareOptions, FolderCompareResult, FolderCompareStatus, FolderCompareSummary,
-    FolderEntryDiff, FolderEntryFilter, FolderEntryState, FolderEntryType, FolderOperation,
-    FolderOperationCounts, FolderOperationKind, FolderOperationOutcome, FolderOperationPlan,
-    FolderOperationStatus, FolderOperationWarning, FolderOperationWarningKind, HashAlgorithm,
+    FolderEntryDiff, FolderEntryFilter, FolderEntryState, FolderEntryType, FolderGrouping,
+    FolderOperation, FolderOperationCounts, FolderOperationKind, FolderOperationOutcome,
+    FolderOperationPlan, FolderOperationStatus, FolderOperationWarning, FolderOperationWarningKind,
+    FolderQuery, FolderQueryGroup, FolderQueryPage, FolderSortKey, FolderTypeFilter, HashAlgorithm,
     SymlinkPolicy, assess_operation_risks, compare_folders, compare_folders_with_progress,
     execute_folder_operation_plan, plan_folder_operation,
 };

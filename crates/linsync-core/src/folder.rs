@@ -147,7 +147,7 @@ impl FolderCompareResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FolderCompareSummary {
     pub compared_count: usize,
     pub skipped_count: usize,
@@ -163,8 +163,9 @@ pub struct FolderCompareSummary {
     pub status: FolderCompareStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FolderCompareStatus {
+    #[default]
     Complete,
     Cancelled,
 }
@@ -232,8 +233,9 @@ pub enum FolderEntryState {
     Aborted,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FolderEntryFilter {
+    #[default]
     All,
     Differences,
     Identical,
@@ -358,6 +360,266 @@ impl FolderEntryFilter {
             Self::Skipped => state == FolderEntryState::Skipped,
             Self::Errors => state == FolderEntryState::Error,
             Self::Aborted => state == FolderEntryState::Aborted,
+        }
+    }
+}
+
+impl FolderEntryState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Identical => "identical",
+            Self::Different => "different",
+            Self::LeftOnly => "left-only",
+            Self::RightOnly => "right-only",
+            Self::Skipped => "skipped",
+            Self::Error => "error",
+            Self::Aborted => "aborted",
+        }
+    }
+}
+
+/// Selects which entry *types* a folder-result query keeps. Every flag defaults
+/// to `true`, so a default filter is a no-op that retains every entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FolderTypeFilter {
+    pub files: bool,
+    pub directories: bool,
+    pub symlinks: bool,
+    pub special: bool,
+}
+
+impl Default for FolderTypeFilter {
+    fn default() -> Self {
+        Self {
+            files: true,
+            directories: true,
+            symlinks: true,
+            special: true,
+        }
+    }
+}
+
+impl FolderTypeFilter {
+    pub fn matches(self, entry_type: FolderEntryType) -> bool {
+        match entry_type {
+            FolderEntryType::File => self.files,
+            FolderEntryType::Directory => self.directories,
+            FolderEntryType::Symlink => self.symlinks,
+            FolderEntryType::Special => self.special,
+        }
+    }
+
+    /// True when no type is excluded (the filter keeps everything).
+    pub fn is_unrestricted(self) -> bool {
+        self.files && self.directories && self.symlinks && self.special
+    }
+}
+
+/// Column a folder-result query sorts on. Ties always break on the relative
+/// path so the ordering is fully deterministic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FolderSortKey {
+    /// File/dir name, compared case-insensitively.
+    Name,
+    /// Full relative path (the default).
+    #[default]
+    Path,
+    /// Comparison state.
+    State,
+    /// Entry type.
+    Type,
+    /// Larger of the two side sizes.
+    Size,
+    /// Most recent of the two side modification times.
+    Modified,
+}
+
+/// How a folder-result query buckets the returned page. Group order follows
+/// first appearance in the sorted page, not alphabetical label order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FolderGrouping {
+    #[default]
+    None,
+    State,
+    Type,
+    Directory,
+}
+
+/// A reusable, client-agnostic description of how to view a folder result:
+/// filter by state and type, full-text search the relative path, sort, group,
+/// and paginate. Clients (CLI, GUI) build one of these and call
+/// [`FolderCompareResult::query`] rather than re-implementing the logic.
+#[derive(Debug, Clone, Default)]
+pub struct FolderQuery {
+    pub state: FolderEntryFilter,
+    pub types: FolderTypeFilter,
+    /// Case-insensitive substring matched against the relative path. An empty
+    /// or absent value matches everything.
+    pub search: Option<String>,
+    pub sort: FolderSortKey,
+    pub descending: bool,
+    pub group_by: FolderGrouping,
+    pub offset: usize,
+    /// Maximum entries to return after the offset. `None` means no limit.
+    pub limit: Option<usize>,
+}
+
+/// One bucket of query results. With [`FolderGrouping::None`] there is a single
+/// group whose `label` is empty.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderQueryGroup<'a> {
+    pub label: String,
+    pub entries: Vec<&'a FolderEntryDiff>,
+}
+
+/// The outcome of a [`FolderQuery`]: the matched total (before pagination), the
+/// applied offset, the entries on this page (grouped), and whether more follow.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderQueryPage<'a> {
+    /// Entries matching the filter + search, before offset/limit are applied.
+    pub total_matched: usize,
+    /// The offset actually applied (clamped to `total_matched`).
+    pub offset: usize,
+    /// Entries returned on this page (the sum across `groups`).
+    pub returned: usize,
+    /// True when entries remain beyond this page.
+    pub has_more: bool,
+    pub groups: Vec<FolderQueryGroup<'a>>,
+}
+
+fn folder_entry_size(entry: &FolderEntryDiff) -> u64 {
+    entry
+        .left_size
+        .unwrap_or(0)
+        .max(entry.right_size.unwrap_or(0))
+}
+
+fn folder_entry_modified(entry: &FolderEntryDiff) -> Option<SystemTime> {
+    match (entry.left_modified, entry.right_modified) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (only, None) | (None, only) => only,
+    }
+}
+
+fn folder_state_rank(state: FolderEntryState) -> u8 {
+    match state {
+        FolderEntryState::Different => 0,
+        FolderEntryState::LeftOnly => 1,
+        FolderEntryState::RightOnly => 2,
+        FolderEntryState::Identical => 3,
+        FolderEntryState::Skipped => 4,
+        FolderEntryState::Error => 5,
+        FolderEntryState::Aborted => 6,
+    }
+}
+
+fn folder_type_rank(entry_type: FolderEntryType) -> u8 {
+    match entry_type {
+        FolderEntryType::Directory => 0,
+        FolderEntryType::File => 1,
+        FolderEntryType::Symlink => 2,
+        FolderEntryType::Special => 3,
+    }
+}
+
+fn folder_group_label(entry: &FolderEntryDiff, grouping: FolderGrouping) -> String {
+    match grouping {
+        FolderGrouping::None => String::new(),
+        FolderGrouping::State => entry.state.as_str().to_string(),
+        FolderGrouping::Type => entry.entry_type.as_str().to_string(),
+        FolderGrouping::Directory => entry
+            .relative_path
+            .parent()
+            .map(|parent| parent.to_string_lossy().into_owned())
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| ".".to_string()),
+    }
+}
+
+impl FolderCompareResult {
+    /// Apply a [`FolderQuery`] to the entries: filter by state/type, search the
+    /// relative path, sort, paginate, then group the resulting page. The
+    /// returned page borrows from `self`.
+    pub fn query(&self, query: &FolderQuery) -> FolderQueryPage<'_> {
+        let needle = query
+            .search
+            .as_deref()
+            .map(str::to_lowercase)
+            .filter(|s| !s.is_empty());
+
+        let mut matched: Vec<&FolderEntryDiff> = self
+            .entries
+            .iter()
+            .filter(|entry| query.state.matches(entry.state))
+            .filter(|entry| query.types.matches(entry.entry_type))
+            .filter(|entry| match &needle {
+                None => true,
+                Some(needle) => entry
+                    .relative_path
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains(needle.as_str()),
+            })
+            .collect();
+
+        matched.sort_by(|a, b| {
+            let primary = match query.sort {
+                FolderSortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                FolderSortKey::Path => a.relative_path.cmp(&b.relative_path),
+                FolderSortKey::State => folder_state_rank(a.state).cmp(&folder_state_rank(b.state)),
+                FolderSortKey::Type => {
+                    folder_type_rank(a.entry_type).cmp(&folder_type_rank(b.entry_type))
+                }
+                FolderSortKey::Size => folder_entry_size(a).cmp(&folder_entry_size(b)),
+                FolderSortKey::Modified => folder_entry_modified(a).cmp(&folder_entry_modified(b)),
+            };
+            let ordered = primary.then_with(|| a.relative_path.cmp(&b.relative_path));
+            if query.descending {
+                ordered.reverse()
+            } else {
+                ordered
+            }
+        });
+
+        let total_matched = matched.len();
+        let offset = query.offset.min(total_matched);
+        let end = match query.limit {
+            Some(limit) => offset.saturating_add(limit).min(total_matched),
+            None => total_matched,
+        };
+        let page = &matched[offset..end];
+        let has_more = end < total_matched;
+
+        let groups = if matches!(query.group_by, FolderGrouping::None) {
+            if page.is_empty() {
+                Vec::new()
+            } else {
+                vec![FolderQueryGroup {
+                    label: String::new(),
+                    entries: page.to_vec(),
+                }]
+            }
+        } else {
+            let mut groups: Vec<FolderQueryGroup<'_>> = Vec::new();
+            for &entry in page {
+                let label = folder_group_label(entry, query.group_by);
+                match groups.iter_mut().find(|group| group.label == label) {
+                    Some(group) => group.entries.push(entry),
+                    None => groups.push(FolderQueryGroup {
+                        label,
+                        entries: vec![entry],
+                    }),
+                }
+            }
+            groups
+        };
+
+        FolderQueryPage {
+            total_matched,
+            offset,
+            returned: page.len(),
+            has_more,
+            groups,
         }
     }
 }
@@ -3397,5 +3659,270 @@ mod tests {
             "expected DeleteReadOnly warning, got: {:?}",
             plan.warnings
         );
+    }
+
+    fn query_entry(
+        rel: &str,
+        state: FolderEntryState,
+        entry_type: FolderEntryType,
+        size: Option<u64>,
+        modified_secs: Option<u64>,
+    ) -> FolderEntryDiff {
+        let relative_path = PathBuf::from(rel);
+        let name = relative_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let extension = relative_path
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned());
+        let modified = modified_secs.map(|s| UNIX_EPOCH + std::time::Duration::from_secs(s));
+        FolderEntryDiff {
+            relative_path,
+            name,
+            extension,
+            state,
+            left_size: size,
+            right_size: size,
+            left_modified: modified,
+            right_modified: modified,
+            entry_type,
+            effective_method: None,
+            method_note: None,
+            is_dir: entry_type == FolderEntryType::Directory,
+            error: None,
+            left_permissions: None,
+            right_permissions: None,
+            left_owner: None,
+            right_owner: None,
+            left_group: None,
+            right_group: None,
+            left_hash: None,
+            right_hash: None,
+        }
+    }
+
+    fn query_result(entries: Vec<FolderEntryDiff>) -> FolderCompareResult {
+        FolderCompareResult {
+            left_root: PathBuf::from("/left"),
+            right_root: PathBuf::from("/right"),
+            entries,
+            summary: FolderCompareSummary::default(),
+        }
+    }
+
+    fn flat_paths<'a>(page: &FolderQueryPage<'a>) -> Vec<String> {
+        page.groups
+            .iter()
+            .flat_map(|group| group.entries.iter())
+            .map(|entry| entry.relative_path.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn query_filters_by_type_and_state() {
+        let result = query_result(vec![
+            query_entry(
+                "a.txt",
+                FolderEntryState::Different,
+                FolderEntryType::File,
+                Some(10),
+                None,
+            ),
+            query_entry(
+                "dir",
+                FolderEntryState::Different,
+                FolderEntryType::Directory,
+                None,
+                None,
+            ),
+            query_entry(
+                "link",
+                FolderEntryState::LeftOnly,
+                FolderEntryType::Symlink,
+                None,
+                None,
+            ),
+            query_entry(
+                "same.txt",
+                FolderEntryState::Identical,
+                FolderEntryType::File,
+                Some(5),
+                None,
+            ),
+        ]);
+
+        let page = result.query(&FolderQuery {
+            state: FolderEntryFilter::Differences,
+            types: FolderTypeFilter {
+                directories: false,
+                symlinks: false,
+                ..FolderTypeFilter::default()
+            },
+            ..FolderQuery::default()
+        });
+
+        // Differences keeps Different + LeftOnly; type filter then drops the
+        // directory and the symlink, leaving only the changed file.
+        assert_eq!(flat_paths(&page), vec!["a.txt"]);
+        assert_eq!(page.total_matched, 1);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn query_search_is_case_insensitive_over_relative_path() {
+        let result = query_result(vec![
+            query_entry(
+                "src/Main.rs",
+                FolderEntryState::Different,
+                FolderEntryType::File,
+                None,
+                None,
+            ),
+            query_entry(
+                "docs/readme.md",
+                FolderEntryState::Different,
+                FolderEntryType::File,
+                None,
+                None,
+            ),
+            query_entry(
+                "src/lib.rs",
+                FolderEntryState::Different,
+                FolderEntryType::File,
+                None,
+                None,
+            ),
+        ]);
+
+        let page = result.query(&FolderQuery {
+            search: Some("SRC/".to_string()),
+            ..FolderQuery::default()
+        });
+
+        assert_eq!(flat_paths(&page), vec!["src/Main.rs", "src/lib.rs"]);
+        assert_eq!(page.total_matched, 2);
+
+        // An empty search matches everything (treated as no filter).
+        let all = result.query(&FolderQuery {
+            search: Some(String::new()),
+            ..FolderQuery::default()
+        });
+        assert_eq!(all.total_matched, 3);
+    }
+
+    #[test]
+    fn query_sorts_by_size_descending_with_path_tiebreak() {
+        let result = query_result(vec![
+            query_entry(
+                "b.bin",
+                FolderEntryState::Different,
+                FolderEntryType::File,
+                Some(100),
+                None,
+            ),
+            query_entry(
+                "a.bin",
+                FolderEntryState::Different,
+                FolderEntryType::File,
+                Some(100),
+                None,
+            ),
+            query_entry(
+                "small.bin",
+                FolderEntryState::Different,
+                FolderEntryType::File,
+                Some(1),
+                None,
+            ),
+        ]);
+
+        let page = result.query(&FolderQuery {
+            sort: FolderSortKey::Size,
+            descending: true,
+            ..FolderQuery::default()
+        });
+
+        // Larger first; equal sizes break on path (reversed under descending).
+        assert_eq!(flat_paths(&page), vec!["b.bin", "a.bin", "small.bin"]);
+    }
+
+    #[test]
+    fn query_paginates_with_offset_and_limit() {
+        let entries = (0..5)
+            .map(|i| {
+                query_entry(
+                    &format!("file{i}.txt"),
+                    FolderEntryState::Different,
+                    FolderEntryType::File,
+                    None,
+                    None,
+                )
+            })
+            .collect();
+        let result = query_result(entries);
+
+        let page = result.query(&FolderQuery {
+            offset: 1,
+            limit: Some(2),
+            ..FolderQuery::default()
+        });
+
+        assert_eq!(flat_paths(&page), vec!["file1.txt", "file2.txt"]);
+        assert_eq!(page.total_matched, 5);
+        assert_eq!(page.offset, 1);
+        assert_eq!(page.returned, 2);
+        assert!(page.has_more);
+
+        // Offset past the end clamps and yields an empty, terminal page.
+        let beyond = result.query(&FolderQuery {
+            offset: 99,
+            limit: Some(2),
+            ..FolderQuery::default()
+        });
+        assert_eq!(beyond.offset, 5);
+        assert_eq!(beyond.returned, 0);
+        assert!(!beyond.has_more);
+        assert!(beyond.groups.is_empty());
+    }
+
+    #[test]
+    fn query_groups_by_type_in_first_seen_order() {
+        let result = query_result(vec![
+            query_entry(
+                "dir",
+                FolderEntryState::Different,
+                FolderEntryType::Directory,
+                None,
+                None,
+            ),
+            query_entry(
+                "a.txt",
+                FolderEntryState::Different,
+                FolderEntryType::File,
+                None,
+                None,
+            ),
+            query_entry(
+                "b.txt",
+                FolderEntryState::Different,
+                FolderEntryType::File,
+                None,
+                None,
+            ),
+        ]);
+
+        // Sort by type so directories sort ahead of files, then group by type.
+        let page = result.query(&FolderQuery {
+            sort: FolderSortKey::Type,
+            group_by: FolderGrouping::Type,
+            ..FolderQuery::default()
+        });
+
+        assert_eq!(page.groups.len(), 2);
+        assert_eq!(page.groups[0].label, "directory");
+        assert_eq!(page.groups[0].entries.len(), 1);
+        assert_eq!(page.groups[1].label, "file");
+        assert_eq!(page.groups[1].entries.len(), 2);
     }
 }
