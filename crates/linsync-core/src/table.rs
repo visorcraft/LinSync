@@ -52,6 +52,14 @@ pub struct TableColumnRule {
     /// Replacement text for `normalize_pattern` matches (default empty: delete).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub normalize_replacement: String,
+    /// Treat this column's cells as date/times and compare them equal when they
+    /// fall within this many seconds of each other. Cells are parsed as
+    /// ISO-8601-ish values (`YYYY-MM-DD`, optional `T`/space + `HH:MM[:SS]`,
+    /// optional fractional seconds and timezone, which are ignored); when either
+    /// side does not parse the comparison falls back to the normal text/numeric
+    /// rules. Applied after regex/trim normalization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_tolerance_seconds: Option<u64>,
 }
 
 impl Default for TableCompareOptions {
@@ -128,11 +136,71 @@ impl<'a> CellComparer<'a> {
         };
         let left = normalize(left);
         let right = normalize(right);
+        // Date/time tolerance wins when configured and both cells parse as
+        // datetimes; otherwise fall through to numeric/text comparison.
+        if let Some(tolerance) = rule.and_then(|r| r.date_tolerance_seconds)
+            && let (Some(a), Some(b)) = (parse_datetime_epoch(&left), parse_datetime_epoch(&right))
+        {
+            return a.abs_diff(b) <= tolerance;
+        }
         let tolerance = rule
             .and_then(|r| r.numeric_tolerance)
             .or(self.global_tolerance);
         cells_equal_with_tolerance(&left, &right, tolerance)
     }
+}
+
+/// Days from 1970-01-01 for a proleptic-Gregorian date (Howard Hinnant's
+/// `days_from_civil`). Valid for any in-range `(y, m, d)`.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// Parse an ISO-8601-ish datetime to epoch seconds (UTC; any timezone
+/// offset / `Z` and fractional seconds are ignored). Returns `None` when the
+/// value does not match `YYYY-MM-DD` optionally followed by `T`/space and
+/// `HH:MM[:SS]`.
+fn parse_datetime_epoch(value: &str) -> Option<i64> {
+    let value = value.trim();
+    let (date_part, time_part) = match value.find(['T', ' ']) {
+        Some(index) => (&value[..index], Some(&value[index + 1..])),
+        None => (value, None),
+    };
+    let mut date = date_part.split('-');
+    let year: i64 = date.next()?.parse().ok()?;
+    let month: i64 = date.next()?.parse().ok()?;
+    let day: i64 = date.next()?.parse().ok()?;
+    if date.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let (mut hour, mut minute, mut second) = (0i64, 0i64, 0i64);
+    if let Some(time) = time_part {
+        // Strip timezone (`Z`/`+hh:mm`/`-hh:mm`) and fractional seconds.
+        let core = time
+            .trim()
+            .split(['Z', 'z', '+', '-'])
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .next()
+            .unwrap_or("");
+        let mut parts = core.trim().split(':');
+        hour = parts.next()?.parse().ok()?;
+        minute = parts.next()?.parse().ok()?;
+        if let Some(sec) = parts.next() {
+            second = sec.parse().ok()?;
+        }
+        if !(0..=23).contains(&hour) || !(0..=59).contains(&minute) || !(0..=60).contains(&second) {
+            return None;
+        }
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1397,6 +1465,69 @@ mod tests {
         assert_eq!(result.rows[0].cells[0].state, TableCellState::Equal);
         assert_eq!(result.rows[0].cells[1].state, TableCellState::Changed);
         assert_eq!(result.changed_cells, 1);
+    }
+
+    #[test]
+    fn parse_datetime_epoch_matches_known_values() {
+        assert_eq!(parse_datetime_epoch("1970-01-01"), Some(0));
+        assert_eq!(parse_datetime_epoch("1970-01-02"), Some(86_400));
+        assert_eq!(
+            parse_datetime_epoch("2000-01-01T00:00:00Z"),
+            Some(946_684_800)
+        );
+        assert_eq!(
+            parse_datetime_epoch("2024-01-01 00:00:00"),
+            Some(1_704_067_200)
+        );
+        // Fractional seconds and timezone offset are ignored (wall-clock UTC).
+        assert_eq!(
+            parse_datetime_epoch("2000-01-01T00:00:00.500+05:00"),
+            Some(946_684_800)
+        );
+        assert_eq!(parse_datetime_epoch("not a date"), None);
+        assert_eq!(
+            parse_datetime_epoch("2024-13-01"),
+            None,
+            "month out of range"
+        );
+    }
+
+    #[test]
+    fn column_rule_date_tolerance_groups_near_timestamps() {
+        let opts = |tol: u64| TableCompareOptions {
+            has_header: false,
+            column_rules: vec![TableColumnRule {
+                column: 0,
+                date_tolerance_seconds: Some(tol),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // The two timestamps are 30 seconds apart.
+        let within = compare_tables(
+            "l",
+            "2024-01-01T12:00:00\n",
+            "r",
+            "2024-01-01T12:00:30\n",
+            &opts(60),
+        )
+        .unwrap();
+        assert!(within.is_equal(), "within tolerance compares equal");
+        let outside = compare_tables(
+            "l",
+            "2024-01-01T12:00:00\n",
+            "r",
+            "2024-01-01T12:00:30\n",
+            &opts(10),
+        )
+        .unwrap();
+        assert!(!outside.is_equal(), "beyond tolerance compares different");
+        // Non-date cells fall back to the normal text comparison.
+        let fallback = compare_tables("l", "alpha\n", "r", "beta\n", &opts(60)).unwrap();
+        assert!(
+            !fallback.is_equal(),
+            "non-date cells fall back to text compare"
+        );
     }
 
     #[test]
