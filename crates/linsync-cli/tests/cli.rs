@@ -2624,3 +2624,49 @@ fn project_run_all_equal_exits_zero() {
     let out = run(&["project", "run", project.to_str().unwrap()]);
     assert!(out.status.success(), "all-equal project should exit 0");
 }
+
+#[test]
+fn project_report_writes_html_per_comparison() {
+    let temp = TempFixture::new();
+    fs::write(temp.path.join("a.txt"), "same").unwrap();
+    fs::write(temp.path.join("b.txt"), "same").unwrap();
+    fs::write(temp.path.join("c.txt"), "left").unwrap();
+    fs::write(temp.path.join("d.txt"), "right").unwrap();
+    let (a, b) = (temp.path.join("a.txt"), temp.path.join("b.txt"));
+    let (c, d) = (temp.path.join("c.txt"), temp.path.join("d.txt"));
+    let project = temp.path.join("demo.linsync-project");
+    let json = format!(
+        r#"{{"schema_version":1,"name":"demo","sessions":[
+            {{"schema_version":1,"session":{{"title":"Same Pair","left":"{}","right":"{}","options":{{}}}}}},
+            {{"schema_version":1,"session":{{"title":"Changed!","left":"{}","right":"{}","options":{{}}}}}}
+        ]}}"#,
+        a.display(),
+        b.display(),
+        c.display(),
+        d.display()
+    );
+    fs::write(&project, json).unwrap();
+    let out_dir = temp.path.join("reports");
+
+    let out = run(&[
+        "project",
+        "report",
+        project.to_str().unwrap(),
+        "--output",
+        out_dir.to_str().unwrap(),
+    ]);
+    // One comparison differs, so the CI exit code is 1.
+    assert_eq!(out.status.code(), Some(1));
+
+    // A slugified HTML file is written per comparison.
+    let same = out_dir.join("00-same-pair.html");
+    let changed = out_dir.join("01-changed.html");
+    assert!(same.exists(), "expected {}", same.display());
+    assert!(changed.exists(), "expected {}", changed.display());
+    let html = fs::read_to_string(&changed).unwrap();
+    assert!(html.contains("<html"), "report should be HTML");
+
+    // Missing --output is a usage error.
+    let out = run(&["project", "report", project.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2));
+}

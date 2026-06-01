@@ -3147,11 +3147,15 @@ fn report_command(args: &[String]) -> Result<ExitCode, String> {
 fn project_command(args: &[String]) -> Result<ExitCode, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         eprintln!(
-            "usage: linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json]>"
+            "usage: linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR>"
         );
         return Ok(ExitCode::from(2));
     };
     let rest = &args[1..];
+    // `report` takes a value-bearing `--output`, so it parses its own args.
+    if subcommand == "report" {
+        return project_report(rest);
+    }
     let as_json = rest.iter().any(|arg| arg == "--json");
     let path = rest
         .iter()
@@ -3203,8 +3207,108 @@ fn project_command(args: &[String]) -> Result<ExitCode, String> {
         }
         "run" => project_run(&project, as_json),
         other => Err(format!(
-            "unknown project subcommand '{other}'; expected validate, show, or run"
+            "unknown project subcommand '{other}'; expected validate, show, run, or report"
         )),
+    }
+}
+
+/// `project report PATH --output DIR` — write an HTML report per comparison
+/// (text or folder, like the `report` command) into DIR. Exits 0 (all equal),
+/// 1 (some differ), or 2 (error), matching `project run`.
+fn project_report(args: &[String]) -> Result<ExitCode, String> {
+    let mut path = None;
+    let mut output = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--output" | "-o" => {
+                output = Some(PathBuf::from(
+                    args.get(index + 1).ok_or("--output requires a directory")?,
+                ));
+                index += 2;
+            }
+            other if other.starts_with("--") => {
+                return Err(format!("unknown project report flag '{other}'"));
+            }
+            other => {
+                if path.is_some() {
+                    return Err("project report takes a single PATH".to_owned());
+                }
+                path = Some(PathBuf::from(other));
+                index += 1;
+            }
+        }
+    }
+    let path = path.ok_or("usage: linsync-cli project report PATH --output DIR")?;
+    let output = output.ok_or("project report requires --output DIR")?;
+    let project = ProjectFileStore::new(path.clone())
+        .load()
+        .map_err(|err| format!("cannot load project '{}': {err}", path.display()))?;
+    fs::create_dir_all(&output)
+        .map_err(|err| format!("cannot create output dir '{}': {err}", output.display()))?;
+
+    let mut any_diff = false;
+    let mut any_err = false;
+    for (index, sf) in project.sessions.iter().enumerate() {
+        let (left, right) = (&sf.session.left, &sf.session.right);
+        let file = output.join(format!("{index:02}-{}.html", slugify(&sf.session.title)));
+        let rendered = if left.is_dir() && right.is_dir() {
+            compare_folders(left, right, &FolderCompareOptions::default())
+                .map_err(|err| err.to_string())
+                .map(|result| {
+                    if !result.is_equal() {
+                        any_diff = true;
+                    }
+                    folder_html_report(&result, &[], ReportTreeState::Expanded, false, None)
+                })
+        } else {
+            compare_text_files(left, right, &TextCompareOptions::default())
+                .map_err(|err| err.to_string())
+                .map(|result| {
+                    if !result.is_equal() {
+                        any_diff = true;
+                    }
+                    result.to_html_report_with_context(None)
+                })
+        };
+        match rendered {
+            Ok(html) => {
+                fs::write(&file, html).map_err(|err| err.to_string())?;
+                println!("wrote {}", file.display());
+            }
+            Err(err) => {
+                any_err = true;
+                eprintln!("error: comparison {index} ({}): {err}", sf.session.title);
+            }
+        }
+    }
+
+    Ok(if any_err {
+        ExitCode::from(2)
+    } else if any_diff {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// Lower-case, dash-separated filename slug from a session title.
+fn slugify(title: &str) -> String {
+    let slug: String = title
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        "comparison".to_owned()
+    } else {
+        trimmed.to_owned()
     }
 }
 
@@ -5876,8 +5980,8 @@ Manage compare profiles — named bundles of per-mode comparison options. Built-
 .B report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]
 Generate an HTML file or folder comparison report with optional text context, folder columns, tree state, or nested file reports.
 .TP
-.B project <validate PATH | show PATH [--json] | run PATH [--json]>
-Operate on a project file (a named bundle of saved comparisons). validate loads and schema-checks it; show lists its comparisons; run executes each one (auto-detecting folder / text / binary / table like the compare command, with default options) and exits 0 when all are equal, 1 when some differ, or 2 on error, for CI use.
+.B project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR>
+Operate on a project file (a named bundle of saved comparisons). validate loads and schema-checks it; show lists its comparisons; run executes each one (auto-detecting folder / text / binary / table like the compare command, with default options) and exits 0 when all are equal, 1 when some differ, or 2 on error, for CI use; report writes an HTML report per comparison (text or folder) into DIR with the same exit codes.
 .TP
 .B reveal [--wait] PATH...
 Reveal files or folders through org.freedesktop.FileManager1.ShowItems, falling back to xdg-open for the containing folder.
@@ -5944,7 +6048,7 @@ USAGE:
     linsync-cli patch LEFT RIGHT [--format unified|context|normal] [--context LINES] [--preview|--output FILE]
     linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
     linsync-cli profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
-    linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json]>
+    linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR>
     linsync-cli reveal [--wait] PATH...
     linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports]
     linsync-cli session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] | list [--json] | show [INDEX] [--json] | clear>
