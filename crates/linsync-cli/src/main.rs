@@ -12,7 +12,7 @@ use linsync_core::{
     InlineGranularity, MergeChoice, MoveDirection, ProfileId, ProfileStore, ProfileStoreError,
     SymlinkPolicy, TableCellState, TableCompareOptions, TextBookmark, TextCompareOptions,
     TextDocument, TextFindOptions, TextInputEncoding, TextRenderMode, TextSubstitution,
-    TextSyntaxMode, ThreeWayMergeState, assess_operation_risks, builtin_profiles,
+    TextSyntaxMode, ThreeWayConflict, ThreeWayMergeState, assess_operation_risks, builtin_profiles,
     builtin_text_regex_rule_sets, compare_binary_files, compare_folders, compare_table_files,
     compare_text, compare_text_files, find_builtin, is_likely_binary, merge_three_way,
     parse_conflict_markers, plan_folder_operation,
@@ -98,6 +98,7 @@ const MERGETOOL_FLAGS: &[&str] = &[
     "--remote",
     "--merged",
     "--auto-resolve",
+    "--json",
 ];
 
 const COMPARE_FLAGS: &[&str] = &[
@@ -1014,12 +1015,29 @@ fn display_label(label: &str) -> &str {
     if label.is_empty() { "-" } else { label }
 }
 
+fn merge_conflicts_json(conflicts: &[ThreeWayConflict]) -> Vec<serde_json::Value> {
+    conflicts
+        .iter()
+        .map(|conflict| {
+            serde_json::json!({
+                "id": conflict.id.0,
+                "start_line": conflict.start_line,
+                "end_line": conflict.end_line,
+                "left_lines": conflict.left_lines.len(),
+                "base_lines": conflict.base_lines.len(),
+                "right_lines": conflict.right_lines.len(),
+            })
+        })
+        .collect()
+}
+
 fn mergetool_command(args: &[String]) -> Result<ExitCode, String> {
     let mut base: Option<String> = None;
     let mut local: Option<String> = None;
     let mut remote: Option<String> = None;
     let mut merged: Option<String> = None;
     let mut auto: Option<String> = None;
+    let mut json = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -1043,6 +1061,10 @@ fn mergetool_command(args: &[String]) -> Result<ExitCode, String> {
                 auto = args.get(i + 1).cloned();
                 i += 2;
             }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
             other => {
                 return Err(format!("unknown mergetool flag: {other}"));
             }
@@ -1065,6 +1087,7 @@ fn mergetool_command(args: &[String]) -> Result<ExitCode, String> {
     let remote_doc = TextDocument::from_text("remote", &remote_text);
 
     let mut state = ThreeWayMergeState::new(base_doc, local_doc, remote_doc);
+    let initial_conflicts = state.conflicts();
 
     if let Some(choice) = auto.as_deref() {
         let mc = match choice {
@@ -1077,7 +1100,7 @@ fn mergetool_command(args: &[String]) -> Result<ExitCode, String> {
                 ));
             }
         };
-        let conflict_ids: Vec<_> = state.conflicts().iter().map(|c| c.id).collect();
+        let conflict_ids: Vec<_> = initial_conflicts.iter().map(|c| c.id).collect();
         for id in conflict_ids {
             state
                 .resolve(id, mc.clone())
@@ -1086,7 +1109,45 @@ fn mergetool_command(args: &[String]) -> Result<ExitCode, String> {
         state
             .save_to(std::path::Path::new(&merged))
             .map_err(|e| format!("save failed: {e}"))?;
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "resolved",
+                    "mode": "auto",
+                    "auto_choice": choice,
+                    "base": base,
+                    "local": local,
+                    "remote": remote,
+                    "merged": merged,
+                    "conflicts": initial_conflicts.len(),
+                    "resolved_conflicts": initial_conflicts.len(),
+                    "unresolved_conflicts": state.unresolved_count(),
+                    "written": true,
+                    "items": merge_conflicts_json(&initial_conflicts),
+                })
+            );
+        }
         return Ok(ExitCode::SUCCESS);
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": "unsupported_interactive",
+                "mode": "interactive",
+                "base": base,
+                "local": local,
+                "remote": remote,
+                "merged": merged,
+                "conflicts": initial_conflicts.len(),
+                "resolved_conflicts": 0,
+                "unresolved_conflicts": state.unresolved_count(),
+                "written": false,
+                "items": merge_conflicts_json(&initial_conflicts),
+            })
+        );
     }
 
     // No --auto-resolve: interactive GUI mode not yet implemented in v1.
@@ -4653,10 +4714,11 @@ Generate shell completions for bash, zsh, or fish.
 .B man [--output FILE]
 Generate this manual page.
 .TP
-.B mergetool --base BASE --local LOCAL --remote REMOTE --merged MERGED [--auto-resolve left|right|base]
+.B mergetool --base BASE --local LOCAL --remote REMOTE --merged MERGED [--auto-resolve left|right|base] [--json]
 Invoke linsync-cli as a Git mergetool. With --auto-resolve, all conflicts are resolved to
-the chosen side and the result is written to the MERGED file. Without --auto-resolve,
-the command exits with code 2 (interactive GUI integration is deferred to a future release).
+the chosen side and the result is written to the MERGED file. With --json, a
+machine-readable merge summary is printed. Without --auto-resolve, the command exits
+with code 2 (interactive GUI integration is deferred to a future release).
 .SH EXIT STATUS
 .TP
 .B 0
@@ -4691,7 +4753,7 @@ USAGE:
     linsync-cli hex [--width BYTES] [--metadata-only] [--json|--count|--quiet] LEFT RIGHT
     linsync-cli launch [--wait] [--] [ARGS...]
     linsync-cli man [--output FILE]
-    linsync-cli mergetool --base BASE --local LOCAL --remote REMOTE --merged MERGED [--auto-resolve left|right|base]
+    linsync-cli mergetool --base BASE --local LOCAL --remote REMOTE --merged MERGED [--auto-resolve left|right|base] [--json]
     linsync-cli open-external [--wait] [--preset PRESET] PATH...
     linsync-cli patch LEFT RIGHT [--format unified|context|normal] [--context LINES] [--preview|--output FILE]
     linsync-cli profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
@@ -4704,8 +4766,9 @@ USAGE:
 mergetool:
     Run linsync-cli as a Git mergetool. Requires --base, --local, --remote, and --merged.
     With --auto-resolve <left|right|base>, all conflicts are resolved automatically and
-    the result is written to --merged. Without --auto-resolve, returns exit code 2 (GUI
-    integration deferred to a future release).
+    the result is written to --merged. Add --json to print a machine-readable merge
+    summary. Without --auto-resolve, returns exit code 2 (GUI integration deferred to a
+    future release).
 
 profile:
     Manage compare profiles — named bundles of per-mode options stored under

@@ -2243,6 +2243,98 @@ fn mergetool_subcommand_auto_resolve_base() {
     assert_eq!(fs::read_to_string(&merged).unwrap(), "a\nb\nc\n");
 }
 
+#[test]
+fn mergetool_subcommand_json_reports_auto_resolve_summary() {
+    let dir = TempFixture::new();
+    let base = dir.path.join("base.txt");
+    fs::write(&base, "a\nb\nc\n").unwrap();
+    let local = dir.path.join("local.txt");
+    fs::write(&local, "a\nb_local\nc\n").unwrap();
+    let remote = dir.path.join("remote.txt");
+    fs::write(&remote, "a\nb_remote\nc\n").unwrap();
+    let merged = dir.path.join("merged.txt");
+    fs::write(&merged, "").unwrap();
+
+    let output = run(&[
+        "mergetool",
+        "--base",
+        base.to_str().unwrap(),
+        "--local",
+        local.to_str().unwrap(),
+        "--remote",
+        remote.to_str().unwrap(),
+        "--merged",
+        merged.to_str().unwrap(),
+        "--auto-resolve",
+        "left",
+        "--json",
+    ]);
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(fs::read_to_string(&merged).unwrap(), "a\nb_local\nc\n");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["status"], "resolved");
+    assert_eq!(json["mode"], "auto");
+    assert_eq!(json["auto_choice"], "left");
+    assert_eq!(json["conflicts"], 1);
+    assert_eq!(json["resolved_conflicts"], 1);
+    assert_eq!(json["unresolved_conflicts"], 0);
+    assert_eq!(json["written"], true);
+    assert_eq!(json["merged"], merged.to_str().unwrap());
+    assert_eq!(json["items"][0]["id"], 0);
+    assert!(json["items"][0]["start_line"].as_u64().unwrap() > 0);
+    assert!(
+        json["items"][0]["end_line"].as_u64().unwrap()
+            >= json["items"][0]["start_line"].as_u64().unwrap()
+    );
+    assert!(json["items"][0]["left_lines"].as_u64().unwrap() > 0);
+    assert!(json["items"][0]["base_lines"].as_u64().unwrap() > 0);
+    assert!(json["items"][0]["right_lines"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn mergetool_subcommand_json_reports_deferred_interactive_summary() {
+    let dir = TempFixture::new();
+    let base = dir.path.join("base.txt");
+    fs::write(&base, "a\nb\nc\n").unwrap();
+    let local = dir.path.join("local.txt");
+    fs::write(&local, "a\nb_local\nc\n").unwrap();
+    let remote = dir.path.join("remote.txt");
+    fs::write(&remote, "a\nb_remote\nc\n").unwrap();
+    let merged = dir.path.join("merged.txt");
+    fs::write(&merged, "").unwrap();
+
+    let output = run(&[
+        "mergetool",
+        "--base",
+        base.to_str().unwrap(),
+        "--local",
+        local.to_str().unwrap(),
+        "--remote",
+        remote.to_str().unwrap(),
+        "--merged",
+        merged.to_str().unwrap(),
+        "--json",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("interactive mergetool mode not yet implemented")
+    );
+    assert_eq!(fs::read_to_string(&merged).unwrap(), "");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["status"], "unsupported_interactive");
+    assert_eq!(json["mode"], "interactive");
+    assert_eq!(json["conflicts"], 1);
+    assert_eq!(json["resolved_conflicts"], 0);
+    assert_eq!(json["unresolved_conflicts"], 1);
+    assert_eq!(json["written"], false);
+    assert_eq!(json["items"][0]["id"], 0);
+}
+
 impl Drop for TempFixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
