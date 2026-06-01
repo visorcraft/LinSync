@@ -157,6 +157,19 @@ impl From<std::io::Error> for SandboxError {
 
 #[cfg(all(test, target_os = "linux"))]
 mod env_tests {
+    use super::SandboxStrategy;
+
+    #[test]
+    fn strategy_confinement_and_labels() {
+        assert!(SandboxStrategy::Landlock.is_confined());
+        assert_eq!(SandboxStrategy::Landlock.describe(), "landlock+seccomp");
+        let bwrap = SandboxStrategy::Bubblewrap(std::path::PathBuf::from("/usr/bin/bwrap"));
+        assert!(bwrap.is_confined());
+        assert_eq!(bwrap.describe(), "bubblewrap");
+        // Degraded never reports confinement; the exact label depends on env.
+        assert!(!SandboxStrategy::Degraded.is_confined());
+    }
+
     #[test]
     fn allowlist_includes_runtime_essentials_and_excludes_secrets() {
         assert!(super::SANDBOX_ENV_ALLOWLIST.contains(&"PATH"));
@@ -231,6 +244,32 @@ impl SandboxStrategy {
             }
         }
         Self::Degraded
+    }
+
+    /// Whether helpers actually run confined under this strategy. `Degraded`
+    /// means no confinement is applied (helpers either run unsandboxed via an
+    /// explicit opt-out, or are refused).
+    pub fn is_confined(&self) -> bool {
+        matches!(self, Self::Landlock | Self::Bubblewrap(_))
+    }
+
+    /// A stable, human-facing label for diagnostics. For `Degraded` it
+    /// distinguishes the reason (explicit skip, accepted-risk opt-out, or no
+    /// backend available — in which case helpers are refused).
+    pub fn describe(&self) -> &'static str {
+        match self {
+            Self::Landlock => "landlock+seccomp",
+            Self::Bubblewrap(_) => "bubblewrap",
+            Self::Degraded => {
+                if std::env::var_os("LINSYNC_SANDBOX_SKIP").is_some() {
+                    "degraded (LINSYNC_SANDBOX_SKIP set: unsandboxed)"
+                } else if std::env::var_os("LINSYNC_SANDBOX_ALLOW_UNSANDBOXED").is_some() {
+                    "degraded (LINSYNC_SANDBOX_ALLOW_UNSANDBOXED set: unsandboxed)"
+                } else {
+                    "degraded (no backend available: helpers refused)"
+                }
+            }
+        }
     }
 }
 

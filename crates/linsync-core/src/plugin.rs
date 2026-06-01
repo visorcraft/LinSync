@@ -1431,6 +1431,40 @@ impl PluginProbeOutcome {
     }
 }
 
+/// A human-facing description of the sandbox confinement that applies to plugin
+/// helpers in the current environment, for diagnostics and result metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxStatus {
+    /// Stable label, e.g. `"landlock+seccomp"`, `"bubblewrap"`, or
+    /// `"degraded (LINSYNC_SANDBOX_SKIP set: unsandboxed)"`.
+    pub label: String,
+    /// True when helpers actually run confined (false when degraded/disabled).
+    pub confined: bool,
+}
+
+/// Report the sandbox confinement that plugin helpers run under right now.
+/// Reflects the runtime decision (kernel Landlock support, bwrap availability,
+/// and the `LINSYNC_SANDBOX_SKIP` / `LINSYNC_SANDBOX_ALLOW_UNSANDBOXED` opt-outs)
+/// so degradation is visible rather than silent. When built without the
+/// `sandbox` feature, confinement is reported as disabled.
+pub fn active_sandbox_status() -> SandboxStatus {
+    #[cfg(feature = "sandbox")]
+    {
+        let strategy = linsync_sandbox::SandboxStrategy::detect();
+        SandboxStatus {
+            label: strategy.describe().to_string(),
+            confined: strategy.is_confined(),
+        }
+    }
+    #[cfg(not(feature = "sandbox"))]
+    {
+        SandboxStatus {
+            label: "disabled (built without the sandbox feature)".to_string(),
+            confined: false,
+        }
+    }
+}
+
 /// Invoke a plugin's `probe` operation with the given inputs and capture a
 /// diagnostic outcome (exit / timeout / stdout / stderr / parsed response).
 ///

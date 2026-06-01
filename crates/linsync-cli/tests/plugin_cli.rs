@@ -311,6 +311,15 @@ fn plugin_run_diagnostic_reports_healthy_probe() {
         json["response"]["diagnostics"][0]["message"],
         serde_json::json!("alive")
     );
+    // The diagnostic surfaces the active sandbox confinement. Run under
+    // LINSYNC_SANDBOX_SKIP, so it is unconfined and labelled "degraded".
+    assert_eq!(json["sandbox"]["confined"], serde_json::json!(false));
+    assert!(
+        json["sandbox"]["label"]
+            .as_str()
+            .unwrap()
+            .contains("degraded")
+    );
 }
 
 #[test]

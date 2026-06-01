@@ -14,12 +14,12 @@ use linsync_core::{
     ProfileId, ProfileStore, ProfileStoreError, SymlinkPolicy, TableCellState, TableCompareOptions,
     TextBookmark, TextCompareOptions, TextDocument, TextFindOptions, TextInputEncoding,
     TextRenderMode, TextSubstitution, TextSyntaxMode, ThreeWayConflict, ThreeWayMergeState,
-    assess_operation_risks, builtin_profiles, builtin_text_regex_rule_sets, clear_plugin_option,
-    compare_binary_files, compare_folders, compare_table_files, compare_text, compare_text_files,
-    compare_text_files_with_prediffer, discover_installed_plugins, find_builtin, is_likely_binary,
-    load_plugin_enabled_map, load_plugin_options, merge_three_way, parse_conflict_markers,
-    plan_folder_operation, probe_plugin, resolve_enabled_prediffer, set_plugin_enabled,
-    set_plugin_option,
+    active_sandbox_status, assess_operation_risks, builtin_profiles, builtin_text_regex_rule_sets,
+    clear_plugin_option, compare_binary_files, compare_folders, compare_table_files, compare_text,
+    compare_text_files, compare_text_files_with_prediffer, discover_installed_plugins,
+    find_builtin, is_likely_binary, load_plugin_enabled_map, load_plugin_options, merge_three_way,
+    parse_conflict_markers, plan_folder_operation, probe_plugin, resolve_enabled_prediffer,
+    set_plugin_enabled, set_plugin_option,
 };
 
 fn main() -> ExitCode {
@@ -1577,6 +1577,7 @@ fn plugin_run_diagnostic(paths: &AppPaths, rest: &[String]) -> Result<ExitCode, 
         options.timeout = Duration::from_millis(ms);
     }
 
+    let sandbox = active_sandbox_status();
     let outcome = probe_plugin(&plugin.root, &plugin.manifest, inputs, &options)
         .map_err(|err| err.to_string())?;
 
@@ -1603,6 +1604,7 @@ fn plugin_run_diagnostic(paths: &AppPaths, rest: &[String]) -> Result<ExitCode, 
             "stdout": outcome.stdout,
             "stderr": outcome.stderr,
             "response": response,
+            "sandbox": {"label": sandbox.label, "confined": sandbox.confined},
         });
         println!(
             "{}",
@@ -1611,6 +1613,10 @@ fn plugin_run_diagnostic(paths: &AppPaths, rest: &[String]) -> Result<ExitCode, 
     } else {
         println!("plugin:    {id}");
         println!("healthy:   {}", outcome.is_healthy());
+        println!(
+            "sandbox:   {} (confined={})",
+            sandbox.label, sandbox.confined
+        );
         match outcome.exit_code {
             Some(code) => println!("exit:      {code}"),
             None => println!("exit:      (none)"),
@@ -5493,7 +5499,7 @@ Open files or folders through the configured external viewer, xdg-open, or a nam
 Generate or preview a unified, context, or normal diff from two text files or text-only folder changes.
 .TP
 .B plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
-Manage discovered plugins. list shows installed plugins with enabled state; inspect shows a plugin's manifest, option schema, and current values; validate checks the persisted options against the manifest schema; enable/disable toggle a plugin; set-option validates a value against the schema before persisting it; clear-option removes a stored option; run-diagnostic probes a plugin's helper with an optional sample --input and reports exit/timeout/stdout/stderr plus the parsed protocol response (exit 0 healthy, 1 unhealthy, 2 transport error). Enabled state lives in $XDG_CONFIG_HOME/linsync/plugins.json and option values under $XDG_CONFIG_HOME/linsync/plugin-options/.
+Manage discovered plugins. list shows installed plugins with enabled state; inspect shows a plugin's manifest, option schema, and current values; validate checks the persisted options against the manifest schema; enable/disable toggle a plugin; set-option validates a value against the schema before persisting it; clear-option removes a stored option; run-diagnostic probes a plugin's helper with an optional sample --input and reports exit/timeout/stdout/stderr, the parsed protocol response, and the active sandbox confinement (exit 0 healthy, 1 unhealthy, 2 transport error). Enabled state lives in $XDG_CONFIG_HOME/linsync/plugins.json and option values under $XDG_CONFIG_HOME/linsync/plugin-options/.
 .TP
 .B profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
 Manage compare profiles — named bundles of per-mode comparison options. Built-in profiles ship with the binary; user profiles live under $XDG_CONFIG_HOME/linsync/profiles/. Use --profile NAME-OR-PATH on a compare command to source options from a profile; CLI flags override profile values.
@@ -5584,8 +5590,8 @@ plugin:
     validates the value against the schema before persisting it (VALUE is parsed
     as JSON, falling back to a string); `clear-option ID KEY` removes it;
     `run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]` probes the
-    helper and reports exit/timeout/stdout/stderr plus the parsed response
-    (exit 0 healthy, 1 unhealthy, 2 transport error).
+    helper and reports exit/timeout/stdout/stderr, the parsed response, and the
+    active sandbox confinement (exit 0 healthy, 1 unhealthy, 2 transport error).
 
 profile:
     Manage compare profiles — named bundles of per-mode options stored under

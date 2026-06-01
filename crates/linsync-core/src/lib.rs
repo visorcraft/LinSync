@@ -64,13 +64,13 @@ pub use plugin::{
     PluginOperationOutput, PluginOperationRequest, PluginOperationResponse, PluginOperationStatus,
     PluginOption, PluginOptionError, PluginOptionKind, PluginOutputKind, PluginOutputStream,
     PluginProbeOutcome, PluginSandbox, PluginStoreError, PluginTextOperationOptions,
-    PluginTextResult, UnpackFolderResponse, VirtualNode, clear_plugin_option,
-    discover_installed_plugins, discover_plugins, is_stable_plugin_id, load_plugin_enabled_map,
-    load_plugin_options, plugin_discovery_roots, probe_plugin, resolve_enabled_prediffer,
-    run_plugin_helper, run_prediffer_plugin, run_prediffer_plugin_with_options,
-    run_streaming_plugin, run_unpack_folder_plugin, run_unpack_text_plugin,
-    run_unpack_text_plugin_with_options, save_plugin_options, set_plugin_enabled,
-    set_plugin_option,
+    PluginTextResult, SandboxStatus, UnpackFolderResponse, VirtualNode, active_sandbox_status,
+    clear_plugin_option, discover_installed_plugins, discover_plugins, is_stable_plugin_id,
+    load_plugin_enabled_map, load_plugin_options, plugin_discovery_roots, probe_plugin,
+    resolve_enabled_prediffer, run_plugin_helper, run_prediffer_plugin,
+    run_prediffer_plugin_with_options, run_streaming_plugin, run_unpack_folder_plugin,
+    run_unpack_text_plugin, run_unpack_text_plugin_with_options, save_plugin_options,
+    set_plugin_enabled, set_plugin_option,
 };
 pub use profile::builtin::{builtin_profile_ids, builtin_profiles, find_builtin};
 pub use profile::{
