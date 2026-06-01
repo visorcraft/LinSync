@@ -16,9 +16,9 @@ use linsync_core::{
     TextRenderMode, TextSubstitution, TextSyntaxMode, ThreeWayConflict, ThreeWayMergeState,
     active_sandbox_status, assess_operation_risks, builtin_profiles, builtin_text_regex_rule_sets,
     clear_plugin_option, compare_binary_files, compare_folders, compare_table_files, compare_text,
-    compare_text_files, compare_text_files_with_prediffer, discover_installed_plugins,
+    compare_text_files, compare_text_files_with_prediffer_chain, discover_installed_plugins,
     find_builtin, is_likely_binary, load_plugin_enabled_map, load_plugin_options, merge_three_way,
-    parse_conflict_markers, plan_folder_operation, probe_plugin, resolve_enabled_prediffer,
+    parse_conflict_markers, plan_folder_operation, probe_plugin, resolve_enabled_prediffers,
     set_plugin_enabled, set_plugin_option,
 };
 
@@ -444,8 +444,10 @@ fn binary_extension(path: &Path) -> bool {
 }
 
 /// Compare two text files, routing a profile's `prediffer_plugins` through the
-/// plugin pipeline when one resolves to an enabled, installed prediffer. Falls
-/// back to a plain comparison when no prediffer is requested or resolvable.
+/// plugin pipeline. Every enabled, installed prediffer in the list is applied
+/// as an ordered chain (each stage normalizes the previous stage's output)
+/// before diffing. Falls back to a plain comparison when no prediffer is
+/// requested or none resolve.
 fn run_text_compare(
     left: &Path,
     right: &Path,
@@ -455,30 +457,27 @@ fn run_text_compare(
         return compare_text_files(left, right, options).map_err(|err| err.to_string());
     }
     let paths = AppPaths::from_env();
-    match resolve_enabled_prediffer(&paths, &options.prediffer_plugins) {
-        Some(plugin) => {
-            eprintln!(
-                "info: applying prediffer plugin '{}' before diffing",
-                plugin.manifest.id
-            );
-            compare_text_files_with_prediffer(
-                left,
-                right,
-                options,
-                Some(&plugin.root),
-                Some(&plugin.manifest),
-                &PluginExecutionOptions::default(),
-            )
-            .map_err(|err| err.to_string())
-        }
-        None => {
-            eprintln!(
-                "info: profile requested prediffer(s) {:?} but none are installed + enabled; comparing without",
-                options.prediffer_plugins
-            );
-            compare_text_files(left, right, options).map_err(|err| err.to_string())
-        }
+    let chain = resolve_enabled_prediffers(&paths, &options.prediffer_plugins);
+    if chain.is_empty() {
+        eprintln!(
+            "info: profile requested prediffer(s) {:?} but none are installed + enabled; comparing without",
+            options.prediffer_plugins
+        );
+        return compare_text_files(left, right, options).map_err(|err| err.to_string());
     }
+    let chain_ids: Vec<&str> = chain.iter().map(|p| p.manifest.id.as_str()).collect();
+    eprintln!(
+        "info: applying prediffer chain before diffing: {}",
+        chain_ids.join(" -> ")
+    );
+    compare_text_files_with_prediffer_chain(
+        left,
+        right,
+        options,
+        &chain,
+        &PluginExecutionOptions::default(),
+    )
+    .map_err(|err| err.to_string())
 }
 
 fn compare_text_command(
@@ -5472,7 +5471,7 @@ Compare two archive files by extracting them (via tar / unzip subprocesses) and 
 Clear LinSync cache directories. Currently the only supported scope is webcompare (the webpage compare HTTP fetch cache under $XDG_CACHE_HOME/linsync/webcompare).
 .TP
 .B compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text] [--ocr-language LANG] LEFT RIGHT
-Compare two files and exit with 0 for equal files or 1 for differences. The --type auto default routes Folder/Binary/Table/Text; --type image and --type document must be selected explicitly because auto-detection does not route to those engines. --profile seeds every per-mode option from a built-in id (default, strict-bytes, ignore-formatting, code-review, prose-review, folder-sync-preview, webpage-source-safe), a saved user profile id, or a path to a profile JSON file; explicit CLI flags override the profile values regardless of argument order. --prediffer PLUGIN_ID (repeatable; also settable per profile as text.prediffer_plugins) routes an enabled, installed prediffer plugin to normalize each side before diffing; ids that are missing, the wrong class, or disabled are skipped with a note and the comparison proceeds without them.
+Compare two files and exit with 0 for equal files or 1 for differences. The --type auto default routes Folder/Binary/Table/Text; --type image and --type document must be selected explicitly because auto-detection does not route to those engines. --profile seeds every per-mode option from a built-in id (default, strict-bytes, ignore-formatting, code-review, prose-review, folder-sync-preview, webpage-source-safe), a saved user profile id, or a path to a profile JSON file; explicit CLI flags override the profile values regardless of argument order. --prediffer PLUGIN_ID (repeatable; also settable per profile as text.prediffer_plugins) routes enabled, installed prediffer plugins to normalize each side before diffing. Multiple ids form an ordered chain — each stage normalizes the previous stage's output. Ids that are missing, the wrong class, or disabled are skipped with a note and the comparison proceeds without them.
 .TP
 .B compare3 [--markers|--json] LEFT BASE RIGHT
 Compare left and right against a base file and optionally print conflict markers or JSON.

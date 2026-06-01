@@ -792,22 +792,83 @@ pub fn resolve_enabled_prediffer(
     paths: &AppPaths,
     candidate_ids: &[String],
 ) -> Option<DiscoveredPlugin> {
+    resolve_enabled_prediffers(paths, candidate_ids)
+        .into_iter()
+        .next()
+}
+
+/// Resolve **all** enabled, installed prediffers named in `candidate_ids`, in
+/// the order they appear (the chain order). Ids that aren't installed, don't
+/// declare the `prediffer` class, or are disabled in `plugins.json` are
+/// skipped. The returned plugins are meant to be applied as a pipeline — each
+/// stage's normalized output feeds the next (see `run_prediffer_chain`).
+pub fn resolve_enabled_prediffers(
+    paths: &AppPaths,
+    candidate_ids: &[String],
+) -> Vec<DiscoveredPlugin> {
     if candidate_ids.is_empty() {
-        return None;
+        return Vec::new();
     }
     let discovery = discover_installed_plugins(paths);
     let enabled = load_plugin_enabled_map(paths);
-    candidate_ids.iter().find_map(|id| {
-        discovery
-            .plugins
-            .iter()
-            .find(|plugin| {
-                plugin.manifest.id == *id
-                    && plugin.manifest.classes.contains(&PluginClass::Prediffer)
-                    && enabled.get(id).copied().unwrap_or(true)
-            })
-            .cloned()
-    })
+    candidate_ids
+        .iter()
+        .filter_map(|id| {
+            discovery
+                .plugins
+                .iter()
+                .find(|plugin| {
+                    plugin.manifest.id == *id
+                        && plugin.manifest.classes.contains(&PluginClass::Prediffer)
+                        && enabled.get(id).copied().unwrap_or(true)
+                })
+                .cloned()
+        })
+        .collect()
+}
+
+/// Apply an ordered chain of prediffers to a single input, threading each
+/// stage's text output into the next via a private temp file, and return the
+/// final normalized text.
+///
+/// Returns `None` (the caller then compares the original input) when the chain
+/// is empty, when any stage fails to run, or when a stage yields empty text —
+/// matching the single-prediffer fallback so a broken or no-op prediffer never
+/// crashes the comparison. `role` is the input role passed to each stage
+/// (`"left"` / `"right"`).
+pub fn run_prediffer_chain(
+    chain: &[DiscoveredPlugin],
+    role: &str,
+    input: &Path,
+    execution_options: &PluginExecutionOptions,
+) -> Option<String> {
+    if chain.is_empty() {
+        return None;
+    }
+    let temp = TemporaryPluginDir::new(execution_options.temp_root.as_deref()).ok()?;
+    let mut current_path = input.to_path_buf();
+    let mut current_text = None;
+    for (index, plugin) in chain.iter().enumerate() {
+        let descriptor = PluginInputDescriptor::for_file(role, &current_path);
+        let result = run_prediffer_plugin(
+            &plugin.root,
+            &plugin.manifest,
+            descriptor,
+            execution_options,
+        )
+        .ok()?;
+        if result.text.is_empty() {
+            return None;
+        }
+        // Materialize this stage's output so the next stage has a file to read.
+        if index + 1 < chain.len() {
+            let stage_path = temp.path().join(format!("stage-{index}"));
+            std::fs::write(&stage_path, result.text.as_bytes()).ok()?;
+            current_path = stage_path;
+        }
+        current_text = Some(result.text);
+    }
+    current_text
 }
 
 /// Set a single plugin's enabled state (load → modify → write).
@@ -2439,6 +2500,63 @@ JSON
         assert_eq!(result.encoding.as_deref(), Some("utf-8"));
         assert_eq!(result.line_ending.as_deref(), Some("lf"));
         assert_eq!(result.diagnostics[0].message, "normalized");
+    }
+
+    /// A prediffer helper that echoes the request_id + role and applies `xform`
+    /// (a `tr` expression) to the input file's content.
+    fn write_transform_prediffer(plugin_dir: &Path, xform: &str) {
+        let script = format!(
+            "#!/bin/sh\n\
+             request=$(cat)\n\
+             rid=$(printf '%s' \"$request\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+             role=$(printf '%s' \"$request\" | sed -n 's/.*\"role\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+             path=$(printf '%s' \"$request\" | sed -n 's/.*\"path\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+             text=$({xform} < \"$path\")\n\
+             printf '{{\"protocol_version\":1,\"request_id\":\"%s\",\"status\":\"ok\",\"outputs\":[{{\"role\":\"%s\",\"kind\":\"text\",\"inline_text\":\"%s\",\"encoding\":\"utf-8\",\"line_ending\":\"lf\"}}],\"diagnostics\":[]}}\\n' \"$rid\" \"$role\" \"$text\"\n"
+        );
+        write_helper(plugin_dir, "prediff.sh", &script);
+    }
+
+    fn discovered(plugin_dir: &Path, manifest: PluginManifest) -> DiscoveredPlugin {
+        DiscoveredPlugin {
+            root: plugin_dir.to_path_buf(),
+            manifest_path: plugin_dir.join("linsync-plugin.json"),
+            manifest,
+        }
+    }
+
+    #[test]
+    fn run_prediffer_chain_threads_stages() {
+        let fixture = TempFixture::new();
+        // Stage 1 lowercases; stage 2 strips digits. "HELLO123" -> "hello".
+        let lower_dir = fixture.path.join("plugins/lower");
+        fs::create_dir_all(&lower_dir).unwrap();
+        write_transform_prediffer(&lower_dir, "tr 'A-Z' 'a-z'");
+        let mut lower = sample_manifest("example.lower");
+        lower.entry = vec!["prediff.sh".to_owned()];
+
+        let strip_dir = fixture.path.join("plugins/strip");
+        fs::create_dir_all(&strip_dir).unwrap();
+        write_transform_prediffer(&strip_dir, "tr -d '0-9'");
+        let mut strip = sample_manifest("example.strip");
+        strip.entry = vec!["prediff.sh".to_owned()];
+
+        let input = fixture.path.join("in.txt");
+        fs::write(&input, "HELLO123").unwrap();
+
+        let chain = vec![discovered(&lower_dir, lower), discovered(&strip_dir, strip)];
+        let out = run_prediffer_chain(&chain, "left", &input, &PluginExecutionOptions::default());
+        assert_eq!(
+            out.as_deref(),
+            Some("hello"),
+            "both stages applied in order"
+        );
+
+        // An empty chain falls back (caller uses the original input).
+        assert_eq!(
+            run_prediffer_chain(&[], "left", &input, &PluginExecutionOptions::default()),
+            None
+        );
     }
 
     #[test]

@@ -158,6 +158,46 @@ fn install_lowercasing_prediffer(home: &Path) -> &'static str {
     "test.lower"
 }
 
+/// Install a prediffer whose helper strips ASCII digits from each side, used to
+/// exercise multi-prediffer *chaining* alongside the lowercaser.
+fn install_digit_stripper_prediffer(home: &Path) -> &'static str {
+    let plugin_dir = home.join("data/linsync/plugins/strip");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    let script = "#!/bin/sh\n\
+        request=$(cat)\n\
+        rid=$(printf '%s' \"$request\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+        role=$(printf '%s' \"$request\" | sed -n 's/.*\"role\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+        path=$(printf '%s' \"$request\" | sed -n 's/.*\"path\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+        text=$(tr -d '0-9' < \"$path\")\n\
+        printf '{\"protocol_version\":1,\"request_id\":\"%s\",\"status\":\"ok\",\"outputs\":[{\"role\":\"%s\",\"kind\":\"text\",\"inline_text\":\"%s\",\"encoding\":\"utf-8\",\"line_ending\":\"lf\"}],\"diagnostics\":[]}\\n' \"$rid\" \"$role\" \"$text\"\n";
+    let helper = plugin_dir.join("helper.sh");
+    fs::write(&helper, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&helper).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&helper, perms).unwrap();
+    }
+    let manifest = r#"{
+      "schema_version": 1,
+      "id": "test.strip",
+      "name": "Digit Stripper Prediffer",
+      "version": "1.0.0",
+      "license": "GPL-3.0-only",
+      "entry": ["./helper.sh"],
+      "classes": ["prediffer"],
+      "mime_types": ["text/plain"],
+      "extensions": ["txt"],
+      "capabilities": [],
+      "deterministic": true,
+      "sandbox": { "network": false, "writes_input": false, "requires_home_access": false },
+      "options_schema": []
+    }"#;
+    fs::write(plugin_dir.join("linsync-plugin.json"), manifest).unwrap();
+    "test.strip"
+}
+
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
@@ -370,7 +410,8 @@ fn compare_prediffer_normalizes_then_compares_equal() {
         String::from_utf8_lossy(&routed.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&routed.stderr).contains("applying prediffer plugin 'test.lower'")
+        String::from_utf8_lossy(&routed.stderr)
+            .contains("applying prediffer chain before diffing: test.lower")
     );
 
     // A disabled prediffer is skipped: the comparison falls back to plain and
@@ -383,4 +424,41 @@ fn compare_prediffer_normalizes_then_compares_equal() {
         "disabled prediffer must not apply"
     );
     assert!(String::from_utf8_lossy(&disabled.stderr).contains("none are installed + enabled"));
+}
+
+#[test]
+fn compare_prediffer_chain_applies_all_stages_in_order() {
+    let home = temp_home("prediffer-chain");
+    let lower = install_lowercasing_prediffer(&home);
+    let strip = install_digit_stripper_prediffer(&home);
+    let left = home.join("a.txt");
+    let right = home.join("b.txt");
+    // Differ by both case and digits; only lowercase+strip together make them equal.
+    fs::write(&left, "HELLO123").unwrap();
+    fs::write(&right, "hello999").unwrap();
+    let (l, r) = (left.to_str().unwrap(), right.to_str().unwrap());
+
+    // One prediffer alone is not enough: lowercasing leaves the digits differing.
+    let one = run_isolated_unsandboxed(&home, &["compare", "--prediffer", lower, l, r]);
+    assert_eq!(
+        one.status.code(),
+        Some(1),
+        "lowercase alone still differs on digits"
+    );
+
+    // The full chain (lowercase -> strip-digits) normalizes both sides to "hello".
+    let chained = run_isolated_unsandboxed(
+        &home,
+        &["compare", "--prediffer", lower, "--prediffer", strip, l, r],
+    );
+    assert_eq!(
+        chained.status.code(),
+        Some(0),
+        "chain should normalize to equal; stderr={}",
+        String::from_utf8_lossy(&chained.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&chained.stderr).contains(&format!("{lower} -> {strip}")),
+        "stderr should report the chain order"
+    );
 }

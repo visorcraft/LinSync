@@ -701,6 +701,30 @@ pub fn compare_text_files_with_prediffer(
     Ok(compare_documents(left_document, right_document, options))
 }
 
+/// Compare two text files after running an ordered **chain** of prediffers over
+/// each side (each stage's output feeds the next). When the chain is empty or a
+/// side's chain falls back (a stage failed or produced empty text), that side
+/// is read from disk unchanged. See [`crate::plugin::run_prediffer_chain`].
+pub fn compare_text_files_with_prediffer_chain(
+    left: &Path,
+    right: &Path,
+    options: &TextCompareOptions,
+    prediffers: &[crate::plugin::DiscoveredPlugin],
+    execution_options: &crate::plugin::PluginExecutionOptions,
+) -> io::Result<TextCompareResult> {
+    let left_document =
+        match crate::plugin::run_prediffer_chain(prediffers, "left", left, execution_options) {
+            Some(text) => TextDocument::from_text(&left.display().to_string(), &text),
+            None => TextDocument::from_path_with_encoding(left, options.encoding)?,
+        };
+    let right_document =
+        match crate::plugin::run_prediffer_chain(prediffers, "right", right, execution_options) {
+            Some(text) => TextDocument::from_text(&right.display().to_string(), &text),
+            None => TextDocument::from_path_with_encoding(right, options.encoding)?,
+        };
+    Ok(compare_documents(left_document, right_document, options))
+}
+
 fn apply_prediffer_to_side(
     path: &Path,
     role: &str,
