@@ -495,20 +495,31 @@ Item {
 
     // ── Conflict range helpers ────────────────────────────────────────────────
 
-function currentConflictStart(side) {
+// Each MergeFileColumn displays one *side's file* (left/base/right), so a
+// conflict's highlight/scroll range must be expressed in that side's own line
+// numbers. The conflict's `start_line`/`end_line` are positions in the merged
+// *marker-rendered* output, not in any single side, so using them here put the
+// highlight on the wrong lines (and out of range). Derive the range from the
+// side's own line array instead. The current merge model emits one whole-file
+// conflict, so each side's conflict region is its entire content.
+function currentConflictLines(side) {
     if (root.currentConflict < 0 || root.conflicts.length === 0)
-        return -1
+        return null
     const c = root.conflicts[root.currentConflict]
-    if (!c) return -1
-    return (c.start_line || 0) - 1
+    if (!c) return null
+    if (side === "base") return c.base_lines || []
+    if (side === "right") return c.right_lines || []
+    return c.left_lines || []
+}
+
+function currentConflictStart(side) {
+    const lines = currentConflictLines(side)
+    return lines && lines.length > 0 ? 0 : -1
 }
 
 function currentConflictEnd(side) {
-    if (root.currentConflict < 0 || root.conflicts.length === 0)
-        return -1
-    const c = root.conflicts[root.currentConflict]
-    if (!c) return -1
-    return (c.end_line || 0) - 1
+    const lines = currentConflictLines(side)
+    return lines && lines.length > 0 ? lines.length - 1 : -1
 }
 
     // ── Inner component: a single file column ─────────────────────────────────
