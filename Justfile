@@ -135,3 +135,17 @@ ci: fmt-check lint test
 # Validate release metadata and packaging stubs.
 release-smoke:
     bash scripts/release-smoke.sh
+
+# Extract translatable qsTr() strings from the QML into every i18n catalog
+# (the source-language baseline is apps/linsync-gui/i18n/linsync_en.ts).
+# Requires Qt's lupdate from qt6-tools. Translators copy the baseline to
+# linsync_<lang>.ts and translate; rerunning refreshes existing catalogs.
+l10n-update:
+    lupdate=$(command -v lupdate6 || command -v lupdate-qt6 || command -v lupdate || echo /usr/lib/qt6/bin/lupdate); \
+    for ts in apps/linsync-gui/i18n/*.ts; do "$lupdate" apps/linsync-gui/qml -ts "$ts"; done
+
+# Compile every i18n/*.ts catalog to a runtime .qm (one per locale).
+# Requires Qt's lrelease from qt6-tools.
+l10n-release:
+    lrelease=$(command -v lrelease6 || command -v lrelease-qt6 || command -v lrelease || echo /usr/lib/qt6/bin/lrelease); \
+    for ts in apps/linsync-gui/i18n/*.ts; do "$lrelease" "$ts"; done

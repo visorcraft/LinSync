@@ -12,6 +12,10 @@
 *.exe
 *.dSYM/
 
+# Compiled Qt translation catalogs. The .ts sources are tracked; the .qm
+# binaries are produced by `just l10n-release` and installed at package time.
+/apps/linsync-gui/i18n/*.qm
+
 # Editor / OS
 .DS_Store
 .vscode/
