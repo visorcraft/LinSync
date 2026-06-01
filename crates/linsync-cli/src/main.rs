@@ -137,6 +137,7 @@ const COMPARE3_FLAGS: &[&str] = &["--markers", "--json"];
 const CONFLICT_FLAGS: &[&str] = &["--json"];
 const COMPLETION_SHELLS: &[&str] = &["bash", "zsh", "fish"];
 const FOLDER_FLAGS: &[&str] = &[
+    "--profile",
     "--recursive",
     "-r",
     "--method",
@@ -632,6 +633,11 @@ fn compare_folder_command(
                 "errors": summary.errors_count,
                 "elapsed_ms": summary.elapsed.as_millis(),
                 "status": "complete",
+                "options": folder_options_metadata_json(
+                    &compare_args.folder_options,
+                    compare_args.effective_profile.as_deref(),
+                    FolderEntryFilter::All,
+                ),
             });
             if let Some(profile_id) = compare_args.effective_profile.as_deref()
                 && let Some(obj) = json.as_object_mut()
@@ -1686,28 +1692,16 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
 
     if folder_args.paths.len() != 2 {
         return Err(
-            "usage: linsync-cli folders [--recursive] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT"
+            "usage: linsync-cli folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT"
                 .to_owned(),
         );
     }
 
+    let options = folder_args.compare_options();
     let result = compare_folders(
         PathBuf::from(&folder_args.paths[0]).as_path(),
         PathBuf::from(&folder_args.paths[1]).as_path(),
-        &FolderCompareOptions {
-            recursive: folder_args.recursive,
-            compare_method: folder_args.compare_method,
-            timestamp_tolerance: folder_args.timestamp_tolerance,
-            filters: folder_args.filters,
-            filter_match_options: folder_args.filter_match_options,
-            include_skipped: !folder_args.hide_skipped,
-            symlink_policy: folder_args.symlink_policy,
-            large_file_threshold: folder_args.large_file_threshold,
-            large_file_fallback_method: folder_args.large_file_fallback_method,
-            hash_algorithm: folder_args.hash_algorithm,
-            compare_permissions: folder_args.compare_permissions,
-            compare_ownership: folder_args.compare_ownership,
-        },
+        &options,
     )
     .map_err(|err| err.to_string())?;
 
@@ -1851,8 +1845,16 @@ fn folders_command(args: &[String]) -> Result<ExitCode, String> {
                 "filtered": filtered_entries.len(),
                 "elapsed_ms": summary.elapsed.as_millis(),
                 "status": folder_status(summary.status),
+                "options": folder_options_metadata_json(
+                    &options,
+                    folder_args.effective_profile.as_deref(),
+                    entry_filter,
+                ),
                 "entries": entries,
             });
+            if let Some(profile_id) = folder_args.effective_profile.as_deref() {
+                output["profile"] = serde_json::json!(profile_id);
+            }
             if let Some(risk) = risk_metadata {
                 output["risk"] = risk;
             }
@@ -3752,6 +3754,7 @@ fn set_output_mode(
 }
 
 struct FolderArgs {
+    effective_profile: Option<String>,
     recursive: bool,
     compare_method: CompareMethod,
     timestamp_tolerance: Duration,
@@ -3768,6 +3771,25 @@ struct FolderArgs {
     output: FolderOutput,
     dry_run: bool,
     paths: Vec<String>,
+}
+
+impl FolderArgs {
+    fn compare_options(&self) -> FolderCompareOptions {
+        FolderCompareOptions {
+            recursive: self.recursive,
+            compare_method: self.compare_method,
+            timestamp_tolerance: self.timestamp_tolerance,
+            filters: self.filters.clone(),
+            filter_match_options: self.filter_match_options,
+            include_skipped: !self.hide_skipped,
+            symlink_policy: self.symlink_policy,
+            large_file_threshold: self.large_file_threshold,
+            large_file_fallback_method: self.large_file_fallback_method,
+            hash_algorithm: self.hash_algorithm,
+            compare_permissions: self.compare_permissions,
+            compare_ownership: self.compare_ownership,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3794,6 +3816,40 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
     let mut csv = false;
     let mut dry_run = false;
     let mut paths = Vec::new();
+
+    let mut effective_profile: Option<String> = None;
+    let mut filtered: Vec<&String> = Vec::with_capacity(args.len());
+    let mut profile_seek = 0;
+    while profile_seek < args.len() {
+        if args[profile_seek] == "--profile" {
+            let Some(value) = args.get(profile_seek + 1) else {
+                return Err(
+                    "--profile requires a value (name of a built-in / saved profile, or a path to a profile JSON file)"
+                        .to_owned(),
+                );
+            };
+            let profile = resolve_profile_arg(value)?;
+            recursive = profile.folder.recursive;
+            compare_method = profile.folder.compare_method;
+            timestamp_tolerance = profile.folder.timestamp_tolerance;
+            symlink_policy = profile.folder.symlink_policy;
+            large_file_threshold = profile.folder.large_file_threshold;
+            large_file_fallback_method = profile.folder.large_file_fallback_method;
+            filters = profile.folder.filters.clone();
+            filter_match_options = profile.folder.filter_match_options;
+            hide_skipped = !profile.folder.include_skipped;
+            hash_algorithm = profile.folder.hash_algorithm;
+            compare_permissions = profile.folder.compare_permissions;
+            compare_ownership = profile.folder.compare_ownership;
+            effective_profile = Some(profile.id.to_string());
+            profile_seek += 2;
+            continue;
+        }
+        filtered.push(&args[profile_seek]);
+        profile_seek += 1;
+    }
+
+    let args: Vec<String> = filtered.into_iter().cloned().collect();
     let mut index = 0;
 
     while index < args.len() {
@@ -3958,6 +4014,7 @@ fn split_folder_args(args: &[String]) -> Result<FolderArgs, String> {
     };
 
     Ok(FolderArgs {
+        effective_profile,
         recursive,
         compare_method,
         timestamp_tolerance,
@@ -4254,6 +4311,61 @@ fn folder_status(status: linsync_core::FolderCompareStatus) -> &'static str {
     match status {
         linsync_core::FolderCompareStatus::Complete => "complete",
         linsync_core::FolderCompareStatus::Cancelled => "cancelled",
+    }
+}
+
+fn folder_options_metadata_json(
+    options: &FolderCompareOptions,
+    effective_profile: Option<&str>,
+    state_filter: FolderEntryFilter,
+) -> serde_json::Value {
+    let timestamp_tolerance_ms =
+        u64::try_from(options.timestamp_tolerance.as_millis()).unwrap_or(u64::MAX);
+    serde_json::json!({
+        "profile": effective_profile,
+        "recursive": options.recursive,
+        "compare_method": options.compare_method.as_str(),
+        "timestamp_tolerance_ms": timestamp_tolerance_ms,
+        "symlink_policy": symlink_policy_cli_value(options.symlink_policy),
+        "large_file_threshold_bytes": options.large_file_threshold,
+        "large_file_fallback_method": options.large_file_fallback_method.as_str(),
+        "hash_algorithm": hash_algorithm_cli_value(options.hash_algorithm),
+        "compare_permissions": options.compare_permissions,
+        "compare_ownership": options.compare_ownership,
+        "include_skipped": options.include_skipped,
+        "state_filter": folder_entry_filter_value(state_filter),
+        "filter_match_options": options.filter_match_options,
+        "filters": &options.filters,
+    })
+}
+
+fn symlink_policy_cli_value(policy: SymlinkPolicy) -> &'static str {
+    match policy {
+        SymlinkPolicy::CompareTarget => "target",
+        SymlinkPolicy::Follow => "follow",
+        SymlinkPolicy::SpecialFile => "special",
+    }
+}
+
+fn hash_algorithm_cli_value(algorithm: HashAlgorithm) -> &'static str {
+    match algorithm {
+        HashAlgorithm::Blake3 => "blake3",
+        HashAlgorithm::Sha256 => "sha256",
+        HashAlgorithm::Crc32 => "crc32",
+    }
+}
+
+fn folder_entry_filter_value(filter: FolderEntryFilter) -> &'static str {
+    match filter {
+        FolderEntryFilter::All => "all",
+        FolderEntryFilter::Differences => "differences",
+        FolderEntryFilter::Identical => "identical",
+        FolderEntryFilter::Different => "different",
+        FolderEntryFilter::LeftOnly => "left-only",
+        FolderEntryFilter::RightOnly => "right-only",
+        FolderEntryFilter::Errors => "errors",
+        FolderEntryFilter::Skipped => "skipped",
+        FolderEntryFilter::Aborted => "aborted",
     }
 }
 
@@ -4675,8 +4787,8 @@ Inspect a Git-style conflict-marker file and report conflict sections.
 .B filter <validate RULE | validate-file PATH | list | migrate INPUT [--out OUTPUT | --in-place]>
 Manage named filters and validate filter expressions. `validate` checks a single filter rule grammar; `validate-file` checks a filter file; `list` reports stored named filters; `migrate` converts a legacy .flt file to the LinSync filter grammar, writing to --out, in-place with --in-place, or stdout by default.
 .TP
-.B folders [--recursive] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT
-Compare two folders and summarize identical, different, left-only, and right-only entries.
+.B folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT
+Compare two folders and summarize identical, different, left-only, and right-only entries. --profile seeds folder options from a compare profile, and --json includes the effective profile, filters, and folder options used for the run.
 .TP
 .B hex [--width BYTES] [--metadata-only] [--json|--count|--quiet] LEFT RIGHT
 Compare two binary files and print differing hex rows or metadata-only differences.
@@ -4749,7 +4861,7 @@ USAGE:
     linsync-cli conflict [--json] FILE
     linsync-cli completions SHELL
     linsync-cli filter <validate RULE | validate-file PATH | list | migrate INPUT [--out OUTPUT | --in-place]>
-    linsync-cli folders [--recursive] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT
+    linsync-cli folders [--recursive] [--profile NAME-OR-PATH] [--method METHOD] [--timestamp-tolerance-ms MS] [--symlinks target|follow|special] [--large-file-threshold-bytes BYTES] [--large-file-method quick|binary] [--hash-algorithm blake3|sha256|crc32] [--compare-permissions] [--compare-ownership] [--dry-run] [--exclude-generated] [--filter RULE] [--filter-name NAME] [--case-insensitive-filter] [--hide-skipped] [--state STATE] [--json|--csv|--count|--quiet] LEFT RIGHT
     linsync-cli hex [--width BYTES] [--metadata-only] [--json|--count|--quiet] LEFT RIGHT
     linsync-cli launch [--wait] [--] [ARGS...]
     linsync-cli man [--output FILE]

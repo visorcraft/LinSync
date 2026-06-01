@@ -1767,6 +1767,54 @@ fn folders_apply_filters_and_can_hide_skipped_rows() {
 }
 
 #[test]
+fn folders_json_shows_effective_profile_filters_and_options() {
+    let temp = TempFixture::new();
+    let left = temp.path.join("left");
+    let right = temp.path.join("right");
+    fs::create_dir_all(left.join("nested")).unwrap();
+    fs::create_dir_all(right.join("nested")).unwrap();
+    fs::write(left.join("nested/value.txt"), "left").unwrap();
+    fs::write(right.join("nested/value.txt"), "right").unwrap();
+    fs::write(left.join("generated.log"), "left").unwrap();
+    fs::write(right.join("generated.log"), "right").unwrap();
+
+    let output = run(&[
+        "folders",
+        "--profile",
+        "folder-sync-preview",
+        "--method",
+        "existence",
+        "--filter",
+        "f!:generated",
+        "--case-insensitive-filter",
+        "--state",
+        "skipped",
+        "--json",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["profile"], "folder-sync-preview");
+    assert_eq!(json["options"]["profile"], "folder-sync-preview");
+    assert_eq!(json["options"]["recursive"], true);
+    assert_eq!(json["options"]["compare_method"], "existence");
+    assert_eq!(json["options"]["state_filter"], "skipped");
+    assert_eq!(
+        json["options"]["filter_match_options"]["case_sensitive"],
+        false
+    );
+    assert_eq!(json["options"]["filters"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        json["options"]["filters"][0]["rules"][0]["pattern"],
+        "generated"
+    );
+    assert_eq!(json["filtered"], 1);
+    assert_eq!(json["entries"][0]["path"], "generated.log");
+}
+
+#[test]
 fn folders_apply_metadata_expression_filters() {
     let temp = TempFixture::new();
     let left = temp.path.join("left");
