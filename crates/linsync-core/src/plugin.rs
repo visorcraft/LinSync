@@ -780,6 +780,36 @@ pub fn load_plugin_enabled_map(paths: &AppPaths) -> std::collections::HashMap<St
     serde_json::from_str(&text).unwrap_or_default()
 }
 
+/// Resolve the first **enabled, installed** prediffer named in `candidate_ids`
+/// (tried in order), for routing a profile's `prediffer_plugins` into a text
+/// comparison. Ids that aren't installed, don't declare the `prediffer` class,
+/// or are disabled in `plugins.json` are skipped. Returns `None` when no
+/// candidate resolves (callers then compare without a prediffer).
+///
+/// Only the first match is returned today; chaining multiple prediffers and
+/// per-profile ordering/conflict rules are still outstanding (see PLAN Phase 6).
+pub fn resolve_enabled_prediffer(
+    paths: &AppPaths,
+    candidate_ids: &[String],
+) -> Option<DiscoveredPlugin> {
+    if candidate_ids.is_empty() {
+        return None;
+    }
+    let discovery = discover_installed_plugins(paths);
+    let enabled = load_plugin_enabled_map(paths);
+    candidate_ids.iter().find_map(|id| {
+        discovery
+            .plugins
+            .iter()
+            .find(|plugin| {
+                plugin.manifest.id == *id
+                    && plugin.manifest.classes.contains(&PluginClass::Prediffer)
+                    && enabled.get(id).copied().unwrap_or(true)
+            })
+            .cloned()
+    })
+}
+
 /// Set a single plugin's enabled state (load → modify → write).
 pub fn set_plugin_enabled(paths: &AppPaths, plugin_id: &str, enabled: bool) -> io::Result<()> {
     let mut map = load_plugin_enabled_map(paths);

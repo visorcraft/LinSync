@@ -120,6 +120,12 @@ pub struct TextCompareOptions {
     pub find: Option<TextFindOptions>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bookmarks: Vec<TextBookmark>,
+    /// Ids of prediffer plugins to apply before diffing, when this options set
+    /// comes from a profile. Clients resolve each id to an enabled, installed
+    /// prediffer (see `linsync_core::resolve_enabled_prediffer`) and run it to
+    /// normalize each side. Empty = no prediffer routing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prediffer_plugins: Vec<String>,
 }
 
 fn default_min_move_lines() -> usize {
@@ -147,6 +153,7 @@ impl Default for TextCompareOptions {
             show_only_changes: false,
             find: None,
             bookmarks: Vec::new(),
+            prediffer_plugins: Vec::new(),
         }
     }
 }

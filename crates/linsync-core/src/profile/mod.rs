@@ -469,6 +469,24 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_preserves_prediffer_plugins() {
+        let (_dir, store) = temp_store();
+        let mut p = CompareProfile::new(ProfileId::new("pred").unwrap(), "Prediffer");
+        p.text.prediffer_plugins = vec!["org.example.normalize".into(), "org.example.strip".into()];
+        store.save(&p).unwrap();
+
+        let loaded = store.load(&p.id).unwrap();
+        assert_eq!(
+            loaded.text.prediffer_plugins,
+            vec![
+                "org.example.normalize".to_string(),
+                "org.example.strip".to_string()
+            ],
+            "a profile must carry its prediffer plugin ids across save/load"
+        );
+    }
+
+    #[test]
     fn save_refuses_to_overwrite_builtin() {
         let (_dir, store) = temp_store();
         let mut p = CompareProfile::new(ProfileId::new("default").unwrap(), "Default");

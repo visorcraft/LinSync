@@ -115,6 +115,49 @@ fn install_probe_plugin(home: &Path, response: &str, exit_code: u8) -> &'static 
     "test.probe"
 }
 
+/// Install a prediffer plugin whose helper lowercases each side's content, so a
+/// case-only difference disappears once it runs. Exercises the profile/CLI
+/// prediffer routing (`resolve_enabled_prediffer` + the prediffer compare path).
+fn install_lowercasing_prediffer(home: &Path) -> &'static str {
+    let plugin_dir = home.join("data/linsync/plugins/lower");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    // Echo back the request_id (the host validates it), the input role, and the
+    // file's content lowercased, as the prediffer's normalized output.
+    let script = "#!/bin/sh\n\
+        request=$(cat)\n\
+        rid=$(printf '%s' \"$request\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+        role=$(printf '%s' \"$request\" | sed -n 's/.*\"role\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+        path=$(printf '%s' \"$request\" | sed -n 's/.*\"path\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+        text=$(tr 'A-Z' 'a-z' < \"$path\")\n\
+        printf '{\"protocol_version\":1,\"request_id\":\"%s\",\"status\":\"ok\",\"outputs\":[{\"role\":\"%s\",\"kind\":\"text\",\"inline_text\":\"%s\",\"encoding\":\"utf-8\",\"line_ending\":\"lf\"}],\"diagnostics\":[]}\\n' \"$rid\" \"$role\" \"$text\"\n";
+    let helper = plugin_dir.join("helper.sh");
+    fs::write(&helper, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&helper).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&helper, perms).unwrap();
+    }
+    let manifest = r#"{
+      "schema_version": 1,
+      "id": "test.lower",
+      "name": "Lowercase Prediffer",
+      "version": "1.0.0",
+      "license": "GPL-3.0-only",
+      "entry": ["./helper.sh"],
+      "classes": ["prediffer"],
+      "mime_types": ["text/plain"],
+      "extensions": ["txt"],
+      "capabilities": [],
+      "deterministic": true,
+      "sandbox": { "network": false, "writes_input": false, "requires_home_access": false },
+      "options_schema": []
+    }"#;
+    fs::write(plugin_dir.join("linsync-plugin.json"), manifest).unwrap();
+    "test.lower"
+}
+
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
@@ -291,4 +334,44 @@ fn plugin_run_diagnostic_unknown_id_errors() {
     let out = run_isolated(&home, &["plugin", "run-diagnostic", "does.not.exist"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("no installed plugin"));
+}
+
+#[test]
+fn compare_prediffer_normalizes_then_compares_equal() {
+    let home = temp_home("prediffer");
+    let id = install_lowercasing_prediffer(&home);
+    let left = home.join("a.txt");
+    let right = home.join("b.txt");
+    fs::write(&left, "HELLO WORLD").unwrap();
+    fs::write(&right, "hello world").unwrap();
+    let (l, r) = (left.to_str().unwrap(), right.to_str().unwrap());
+
+    // Without a prediffer the case difference makes the files differ (exit 1).
+    let plain = run_isolated_unsandboxed(&home, &["compare", l, r]);
+    assert_eq!(plain.status.code(), Some(1), "plain compare should differ");
+
+    // Routing the enabled lowercasing prediffer normalizes both sides, so they
+    // compare equal (exit 0). This is the Phase 6 prediffer-routing acceptance.
+    let routed = run_isolated_unsandboxed(&home, &["compare", "--prediffer", id, l, r]);
+    assert_eq!(
+        routed.status.code(),
+        Some(0),
+        "prediffer should normalize to equal; stdout={} stderr={}",
+        stdout(&routed),
+        String::from_utf8_lossy(&routed.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&routed.stderr).contains("applying prediffer plugin 'test.lower'")
+    );
+
+    // A disabled prediffer is skipped: the comparison falls back to plain and
+    // the files differ again (exit 1), with a visible note.
+    run_isolated(&home, &["plugin", "disable", id]);
+    let disabled = run_isolated_unsandboxed(&home, &["compare", "--prediffer", id, l, r]);
+    assert_eq!(
+        disabled.status.code(),
+        Some(1),
+        "disabled prediffer must not apply"
+    );
+    assert!(String::from_utf8_lossy(&disabled.stderr).contains("none are installed + enabled"));
 }
