@@ -16,6 +16,9 @@ Kirigami.ScrollablePage {
     property bool reduceMotion: false
     property var discoveryErrors: []
     property var discoveryRoots: []
+    // Sandbox confinement helpers run under, surfaced by /plugins/list.
+    property string sandboxLabel: ""
+    property bool sandboxConfined: false
     // Cache once per (plugins, filterText) change so the count label and the
     // Repeater don't re-filter the list twice on every keystroke.
     readonly property var filteredPlugins: page.filtered()
@@ -51,6 +54,9 @@ Kirigami.ScrollablePage {
         page.plugins = merged
         page.discoveryErrors = payload.errors || []
         page.discoveryRoots = payload.roots || []
+        const sandbox = payload.sandbox || {}
+        page.sandboxLabel = sandbox.label || ""
+        page.sandboxConfined = !!sandbox.confined
     }
 
     padding: 0
@@ -355,6 +361,14 @@ Kirigami.ScrollablePage {
                             .arg(page.plugins.length).arg(page.plugins.length === 1 ? "" : "s")
                             .arg(page.plugins.filter(p => p.enabled).length)
                         opacity: 0.6
+                        font.pixelSize: 12
+                    }
+                    Controls.Label {
+                        visible: page.sandboxLabel.length > 0
+                        text: qsTr("Sandbox: %1").arg(page.sandboxLabel)
+                        color: page.sandboxConfined
+                            ? Kirigami.Theme.positiveTextColor
+                            : Kirigami.Theme.negativeTextColor
                         font.pixelSize: 12
                     }
                 }

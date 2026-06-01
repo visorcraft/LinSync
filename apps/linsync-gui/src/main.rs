@@ -5031,10 +5031,14 @@ fn plugins_list_bridge_response(
         .iter()
         .map(|root| root.display().to_string())
         .collect();
+    // Surface the sandbox confinement that helpers run under, so the Plugins
+    // page can show whether plugin execution is confined or degraded.
+    let sandbox = linsync_core::active_sandbox_status();
     let body = serde_json::json!({
         "plugins": plugins,
         "errors": errors,
         "roots": roots,
+        "sandbox": { "label": sandbox.label, "confined": sandbox.confined },
     })
     .to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
@@ -6633,6 +6637,27 @@ mod tests {
         assert!(
             tab.get("left_rows").is_none() && tab.get("right_rows").is_none(),
             "folder response should not duplicate virtual table data into text rows: {body}"
+        );
+    }
+
+    #[test]
+    fn plugins_list_response_includes_sandbox_status() {
+        let paths = test_app_paths("plugins-sandbox-status");
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            "GET /plugins/list HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        let body = json_response_body(&resp);
+        assert!(
+            body["sandbox"]["label"].is_string(),
+            "plugins/list should report the sandbox confinement label: {body}"
+        );
+        assert!(
+            body["sandbox"]["confined"].is_boolean(),
+            "plugins/list should report whether plugin helpers run confined: {body}"
         );
     }
 
