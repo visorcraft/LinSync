@@ -25,6 +25,21 @@ Kirigami.ScrollablePage {
 
     signal pluginToggled(string id, bool enabled)
     signal refreshRequested()
+    // Ask Main.qml to probe a plugin's helper (GET /plugins/diagnostic).
+    signal pluginDiagnoseRequested(string id)
+    // Last diagnostic result, shown as a transient line in the header.
+    property string lastDiagnostic: ""
+
+    function showDiagnosticResult(id, payload) {
+        if (!payload) {
+            page.lastDiagnostic = qsTr("Diagnostic for %1 failed").arg(id)
+            return
+        }
+        const verdict = payload.healthy ? qsTr("healthy") : qsTr("unhealthy")
+        const exit = (payload.exit_code === null || payload.exit_code === undefined)
+            ? qsTr("no exit") : (qsTr("exit ") + payload.exit_code)
+        page.lastDiagnostic = qsTr("%1: %2 (%3)").arg(id).arg(verdict).arg(exit)
+    }
     // Request that the bridge layer (Main.qml) fetch this plugin's option
     // schema+values and then call `openOptionsDialog`.
     signal pluginOptionsRequested(string id, string name)
@@ -371,6 +386,12 @@ Kirigami.ScrollablePage {
                             : Kirigami.Theme.negativeTextColor
                         font.pixelSize: 12
                     }
+                    Controls.Label {
+                        visible: page.lastDiagnostic.length > 0
+                        text: qsTr("Diagnostic — %1").arg(page.lastDiagnostic)
+                        opacity: 0.75
+                        font.pixelSize: 12
+                    }
                 }
 
                 Controls.Button {
@@ -589,6 +610,19 @@ Kirigami.ScrollablePage {
                                 }
                                 Item { Layout.fillWidth: true }
                             }
+                        }
+
+                        Controls.Button {
+                            Layout.alignment: Qt.AlignVCenter
+                            text: qsTr("Diagnose")
+                            flat: true
+                            visible: !modelData.builtin
+                            enabled: page.bridgeConnected
+                            Controls.ToolTip.text: page.bridgeConnected
+                                ? qsTr("Probe this plugin's helper and report its health")
+                                : qsTr("Diagnostics require a bridge connection")
+                            Controls.ToolTip.visible: hovered
+                            onClicked: page.pluginDiagnoseRequested(modelData.id)
                         }
 
                         Controls.Button {

@@ -4475,6 +4475,15 @@ Kirigami.ApplicationWindow {
                     xhr.open("GET", url)
                     xhr.send()
                 }
+                onPluginDiagnoseRequested: function(id) {
+                    root.bridgeGet("/plugins/diagnostic?id=" + encodeURIComponent(id),
+                        function (ok, payload) {
+                            if (ok)
+                                pluginsPage.showDiagnosticResult(id, payload)
+                            else
+                                pluginsPage.showDiagnosticResult(id, null)
+                        })
+                }
                 onPluginOptionsRequested: function(id, name) {
                     if (root.bridgeUrl === "") return
                     const url = root.bridgeUrl + "/plugins/options/get?id=" + encodeURIComponent(id)

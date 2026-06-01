@@ -3128,6 +3128,7 @@ fn bridge_response_with_token(
         }
         "/plugins/options/get" => plugins_options_get_bridge_response(query, paths),
         "/plugins/options/set" => plugins_options_set_bridge_response(query, paths),
+        "/plugins/diagnostic" => plugins_diagnostic_bridge_response(query, paths),
         "/folder/op/plan" => folder_op_plan_bridge_response(query, paths, state),
         "/folder/op/execute" => folder_op_execute_bridge_response(query, paths, state),
         "/merge/conflicts" => merge_conflicts_bridge_response(state),
@@ -5081,6 +5082,66 @@ fn plugins_toggle_bridge_response(
     }
 }
 
+/// `/plugins/diagnostic?id=X` — probe a discovered plugin's helper and report a
+/// structured health verdict (exit/timeout/stdout/stderr + parsed response) plus
+/// the active sandbox confinement. Backs the Plugins page "Diagnose" action.
+fn plugins_diagnostic_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(id) = query_value(&params, "id") else {
+        return bridge_error(400, "Bad Request", "missing plugin id");
+    };
+    if !linsync_core::is_stable_plugin_id(id) {
+        return bridge_error(400, "Bad Request", "invalid plugin id");
+    }
+    let discovery = discover_installed_plugins(paths);
+    let Some(plugin) = discovery.plugins.iter().find(|p| p.manifest.id == id) else {
+        return bridge_error(404, "Not Found", "no installed plugin with that id");
+    };
+    let sandbox = linsync_core::active_sandbox_status();
+    let sandbox_json = serde_json::json!({ "label": sandbox.label, "confined": sandbox.confined });
+    match linsync_core::probe_plugin(
+        &plugin.root,
+        &plugin.manifest,
+        Vec::new(),
+        &linsync_core::PluginExecutionOptions::default(),
+    ) {
+        Ok(outcome) => {
+            let response = outcome.response.as_ref().map(|r| {
+                serde_json::json!({
+                    "status": format!("{:?}", r.status).to_lowercase(),
+                    "diagnostics": r
+                        .diagnostics
+                        .iter()
+                        .map(|d| serde_json::json!({"severity": d.severity, "message": d.message}))
+                        .collect::<Vec<_>>(),
+                })
+            });
+            let body = serde_json::json!({
+                "id": id,
+                "healthy": outcome.is_healthy(),
+                "exit_code": outcome.exit_code,
+                "timed_out": outcome.timed_out,
+                "stdout": outcome.stdout,
+                "stderr": outcome.stderr,
+                "response": response,
+                "sandbox": sandbox_json,
+            })
+            .to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
+        }
+        Err(err) => {
+            let body = serde_json::json!({
+                "id": id,
+                "healthy": false,
+                "error": err.to_string(),
+                "sandbox": sandbox_json,
+            })
+            .to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
+        }
+    }
+}
+
 fn plugins_options_get_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
     let params = query_params(query);
     let Some(id) = query_value(&params, "id") else {
@@ -6658,6 +6719,78 @@ mod tests {
         assert!(
             body["sandbox"]["confined"].is_boolean(),
             "plugins/list should report whether plugin helpers run confined: {body}"
+        );
+    }
+
+    #[test]
+    fn plugins_diagnostic_returns_structured_verdict() {
+        let paths = test_app_paths("plugins-diagnostic");
+        // Install a fixture plugin with a helper that answers a probe.
+        let plugin_dir = paths.user_plugins_dir().join("test.diag");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let helper = plugin_dir.join("run.sh");
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\nread request\nprintf '%s\\n' '{\"protocol_version\":1,\"request_id\":\"x\",\"status\":\"ok\",\"outputs\":[],\"diagnostics\":[]}'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("linsync-plugin.json"),
+            r#"{
+              "schema_version": 1,
+              "id": "test.diag",
+              "name": "Diagnostic Fixture",
+              "version": "1.0.0",
+              "license": "GPL-3.0-only",
+              "entry": ["./run.sh"],
+              "classes": ["prediffer"],
+              "mime_types": ["text/plain"],
+              "extensions": ["txt"],
+              "capabilities": [],
+              "deterministic": true,
+              "sandbox": { "network": false, "writes_input": false, "requires_home_access": false },
+              "options_schema": []
+            }"#,
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&helper).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&helper, perms).unwrap();
+        }
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            "GET /plugins/diagnostic?id=test.diag HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        let body = json_response_body(&resp);
+        // The endpoint discovered the plugin, ran a probe, and returned a
+        // structured verdict including the sandbox confinement. (The probe's
+        // healthy/exit outcome is exercised by linsync-core's probe_plugin
+        // tests; here we verify the bridge wraps it.)
+        assert_eq!(body["id"], "test.diag", "diagnostic body: {body}");
+        assert!(
+            body["healthy"].is_boolean(),
+            "diagnostic reports a health verdict: {body}"
+        );
+        assert!(
+            body["sandbox"]["label"].is_string(),
+            "diagnostic reports the sandbox confinement: {body}"
+        );
+
+        // An unknown plugin id is a 404.
+        let missing = String::from_utf8(bridge_response(
+            "GET /plugins/diagnostic?id=does.not.exist HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(
+            missing.starts_with("HTTP/1.1 404"),
+            "unknown plugin id should 404: {missing}"
         );
     }
 
