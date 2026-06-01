@@ -35,3 +35,7 @@ criterion.workspace = true
 tempfile = "3"
 httptest = "0.16"
 serde_json = { workspace = true }
+
+[[bench]]
+name = "compare_bench"
+harness = false

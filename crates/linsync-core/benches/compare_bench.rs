@@ -1,8 +1,16 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 
 use linsync_core::{
     BinaryCompareOptions, TableCompareOptions, TextCompareOptions, TextDocument, compare_binary,
     compare_documents, compare_tables, compare_text,
+};
+use linsync_core::{
+    CURRENT_PLUGIN_SCHEMA_VERSION, PluginClass, PluginError, PluginExecutionOptions,
+    PluginManifest, PluginSandbox, discover_plugins, run_plugin_helper,
 };
 
 #[cfg(feature = "image-compare")]
@@ -256,9 +264,159 @@ fn table_compare(c: &mut Criterion) {
     group.finish();
 }
 
+struct PluginBenchFixture {
+    _dir: tempfile::TempDir,
+    root: PathBuf,
+    fast_dir: PathBuf,
+    slow_dir: PathBuf,
+    fast_manifest: PluginManifest,
+    slow_manifest: PluginManifest,
+}
+
+impl PluginBenchFixture {
+    fn new(discovery_plugins: usize) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("plugins");
+        fs::create_dir_all(&root).unwrap();
+
+        for i in 0..discovery_plugins {
+            let plugin_dir = root.join(format!("discover-{i:03}"));
+            fs::create_dir_all(&plugin_dir).unwrap();
+            write_plugin_helper(&plugin_dir, "probe.sh", FAST_PLUGIN_SCRIPT);
+            write_plugin_manifest(
+                &plugin_dir,
+                &plugin_manifest(&format!("example.discover-{i:03}"), "probe.sh"),
+            );
+        }
+
+        let fast_dir = root.join("fast");
+        fs::create_dir_all(&fast_dir).unwrap();
+        write_plugin_helper(&fast_dir, "fast.sh", FAST_PLUGIN_SCRIPT);
+        let fast_manifest = plugin_manifest("example.fast-startup", "fast.sh");
+        write_plugin_manifest(&fast_dir, &fast_manifest);
+
+        let slow_dir = root.join("slow");
+        fs::create_dir_all(&slow_dir).unwrap();
+        write_plugin_helper(&slow_dir, "slow.sh", SLOW_PLUGIN_SCRIPT);
+        let slow_manifest = plugin_manifest("example.timeout", "slow.sh");
+        write_plugin_manifest(&slow_dir, &slow_manifest);
+
+        Self {
+            _dir: dir,
+            root,
+            fast_dir,
+            slow_dir,
+            fast_manifest,
+            slow_manifest,
+        }
+    }
+}
+
+const FAST_PLUGIN_SCRIPT: &str = r#"#!/bin/sh
+read request || true
+printf '{"ok":true}\n'
+"#;
+
+const SLOW_PLUGIN_SCRIPT: &str = r#"#!/bin/sh
+echo "started" >&2
+sleep 1
+"#;
+
+fn plugin_manifest(id: &str, entry: &str) -> PluginManifest {
+    PluginManifest {
+        schema_version: CURRENT_PLUGIN_SCHEMA_VERSION,
+        id: id.to_owned(),
+        name: "Benchmark Plugin".to_owned(),
+        version: "1.0.0".to_owned(),
+        license: "MIT".to_owned(),
+        entry: vec![entry.to_owned()],
+        classes: vec![PluginClass::Prediffer],
+        mime_types: vec!["text/plain".to_owned()],
+        extensions: vec!["txt".to_owned()],
+        capabilities: vec!["benchmark".to_owned()],
+        deterministic: true,
+        sandbox: PluginSandbox::default(),
+        streaming: false,
+        options_schema: vec![],
+    }
+}
+
+fn write_plugin_manifest(plugin_dir: &Path, manifest: &PluginManifest) {
+    let text = serde_json::to_string_pretty(manifest).unwrap();
+    fs::write(
+        plugin_dir.join(linsync_core::plugin::PLUGIN_MANIFEST_FILE),
+        text,
+    )
+    .unwrap();
+}
+
+fn write_plugin_helper(plugin_dir: &Path, name: &str, script: &str) {
+    let path = plugin_dir.join(name);
+    fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).unwrap();
+    }
+}
+
+fn plugin_startup_timeout(c: &mut Criterion) {
+    let fixture = PluginBenchFixture::new(18);
+    let roots = vec![fixture.root.clone()];
+    let startup_options = PluginExecutionOptions {
+        timeout: Duration::from_secs(2),
+        ..PluginExecutionOptions::default()
+    };
+    let timeout_options = PluginExecutionOptions {
+        timeout: Duration::from_millis(10),
+        ..PluginExecutionOptions::default()
+    };
+
+    let mut group = c.benchmark_group("plugin_startup_timeout");
+    group.sample_size(10);
+
+    group.bench_function("discover_20_plugins", |b| {
+        b.iter(|| {
+            let discovery = discover_plugins(&roots);
+            assert_eq!(discovery.plugins.len(), 20);
+            assert!(discovery.errors.is_empty());
+        });
+    });
+
+    group.bench_function("helper_startup_fast_response", |b| {
+        b.iter(|| {
+            let result = run_plugin_helper(
+                &fixture.fast_dir,
+                &fixture.fast_manifest,
+                "{\"operation\":\"probe\"}\n",
+                &startup_options,
+            )
+            .unwrap();
+            assert!(result.stdout.contains("\"ok\""));
+        });
+    });
+
+    group.bench_function("helper_timeout_10ms", |b| {
+        b.iter(|| {
+            let err = run_plugin_helper(
+                &fixture.slow_dir,
+                &fixture.slow_manifest,
+                "{}",
+                &timeout_options,
+            )
+            .unwrap_err();
+            assert!(matches!(err, PluginError::TimedOut { .. }));
+        });
+    });
+
+    group.finish();
+}
+
 #[cfg(feature = "image-compare")]
 fn image_compare(c: &mut Criterion) {
-    use std::path::PathBuf;
     use tempfile::TempDir;
 
     struct ImageFixture {
@@ -370,6 +528,7 @@ criterion_group!(
     text_compare_options,
     binary_compare,
     table_compare,
+    plugin_startup_timeout,
     image_compare,
 );
 
@@ -382,6 +541,7 @@ criterion_group!(
     text_compare_options,
     binary_compare,
     table_compare,
+    plugin_startup_timeout,
 );
 
 criterion_main!(benches);
