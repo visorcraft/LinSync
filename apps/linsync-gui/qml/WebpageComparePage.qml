@@ -6,9 +6,8 @@ import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
-// WebpageComparePage — fetch and compare two URLs in one of five sub-modes:
-//   html (raw HTML source), text (extracted text), tree (resource tree),
-//   rendered (Qt WebEngine, feature-gated), screenshot (Qt WebEngine, feature-gated).
+// WebpageComparePage — fetch and compare two URLs in default-build sub-modes:
+//   html (raw HTML source), text (extracted text), tree (resource tree).
 //
 // All network fetches are opt-in: the user must click "Compare…" and then
 // confirm in the dialog before any request is made.
@@ -261,34 +260,14 @@ Controls.Pane {
                         id: subModeCombo
                         Layout.preferredWidth: 280
                         implicitHeight: 30
-                        // Rendered / screenshot modes are not yet implemented:
-                        // linsync-webengine returns NotImplemented even when the
-                        // feature is built. Tracked in PLAN.md Phase 5 "Webpage".
                         model: [
                             { text: qsTr("HTML source"), value: "html" },
                             { text: qsTr("Extracted text"), value: "text" },
-                            { text: qsTr("Resource tree"), value: "tree" },
-                            { text: qsTr("Rendered (not implemented yet)"), value: "rendered" },
-                            { text: qsTr("Screenshot (not implemented yet)"), value: "screenshot" }
+                            { text: qsTr("Resource tree"), value: "tree" }
                         ]
                         textRole: "text"
                         valueRole: "value"
-                        property string _previousValidValue: "html"
                         onActivated: {
-                            if (currentValue === "rendered" || currentValue === "screenshot") {
-                                root.resultSummary = qsTr("%1 mode is not implemented yet").arg(currentValue)
-                                var prevIdx = -1
-                                for (var i = 0; i < model.length; i++) {
-                                    if (model[i].value === subModeCombo._previousValidValue) {
-                                        prevIdx = i
-                                        break
-                                    }
-                                }
-                                if (prevIdx >= 0)
-                                    currentIndex = prevIdx
-                                return
-                            }
-                            subModeCombo._previousValidValue = currentValue
                             root.subMode = currentValue
                         }
                         Accessible.name: qsTr("Compare mode")

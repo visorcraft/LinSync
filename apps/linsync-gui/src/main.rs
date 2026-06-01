@@ -6459,6 +6459,26 @@ mod tests {
     }
 
     #[test]
+    fn webpage_qml_hides_default_build_unsupported_modes() {
+        let source_file =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/WebpageComparePage.qml");
+        let qml =
+            fs::read_to_string(&source_file).expect("WebpageComparePage.qml should be readable");
+        for mode in ["html", "text", "tree"] {
+            assert!(
+                qml.contains(&format!("value: \"{mode}\"")),
+                "WebpageComparePage should expose implemented mode {mode}"
+            );
+        }
+        for mode in ["rendered", "screenshot"] {
+            assert!(
+                !qml.contains(&format!("value: \"{mode}\"")),
+                "WebpageComparePage should not offer unsupported default-build mode {mode}"
+            );
+        }
+    }
+
+    #[test]
     fn source_tree_qml_keeps_folder_table_on_entry_model() {
         let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
         let qml = fs::read_to_string(&source_file).expect("Main.qml should be readable");
@@ -8431,11 +8451,9 @@ mod tests {
 
     #[test]
     fn webpage_unsupported_mode_returns_clear_error() {
-        // Regression guard: when the GUI requests a webpage compare with a
-        // mode the bridge doesn't implement (rendered, screenshot in default
-        // builds without the web-engine feature) the response must contain
-        // an `error` field with an actionable message. The QML relies on
-        // this error to disable the corresponding controls.
+        // Regression guard: direct or stale requests for a webpage mode the
+        // bridge doesn't implement must receive an actionable error instead
+        // of a silent success or panic.
         let paths = test_app_paths("drift-webpage-unsupported");
         let body = linsync::webpage_compare_bridge_response(
             "left=http://example.com/a&right=http://example.com/b&mode=rendered",

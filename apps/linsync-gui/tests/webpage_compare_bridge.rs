@@ -5,11 +5,10 @@
 // `/compare/webpage/clear-cache`.
 //
 // These do not exercise real network traffic. They verify that the
-// bridge handler enforces its query-parameter contract and that the
-// rendered / screenshot modes (which require the web-engine feature)
+// bridge handler enforces its query-parameter contract and that direct
+// rendered / screenshot requests (which require a real web-engine path)
 // surface as a structured JSON error rather than a silent success or
-// panic. The QML disables those modes' controls and relies on the
-// error shape to drive its disabled state.
+// panic. The default-build QML does not offer those modes.
 
 use linsync::test_support::temp_app_paths;
 use linsync::{
@@ -59,10 +58,8 @@ fn missing_right_param_returns_error_json() {
 
 #[test]
 fn rendered_mode_returns_unsupported_error() {
-    // The Webpage Compare page exposes a "Rendered (not implemented
-    // yet)" entry whose value is `rendered`. The bridge must surface
-    // this as {"error": "unsupported mode: rendered"} so the QML can
-    // display the failure rather than appearing to succeed silently.
+    // The bridge still guards direct or stale callers even though the
+    // default-build QML no longer offers this mode.
     let paths = temp_app_paths("webpage-rendered");
     let body = webpage_compare_bridge_response(
         "left=http://example.com/a&right=http://example.com/b&mode=rendered",
