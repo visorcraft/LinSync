@@ -4317,15 +4317,19 @@ td,th{border:1px solid #bbb;padding:0.25rem 0.4rem}td.path,td.error{font-family:
         escape_html(&result.left_root.display().to_string()),
         escape_html(&result.right_root.display().to_string())
     ));
+    // Note: the wall-clock elapsed is deliberately omitted here. An HTML report
+    // must be a pure function of the comparison *content* so that re-rendering a
+    // saved result (`report --from-json`) is byte-identical to a fresh direct
+    // report; embedding timing made the artifact non-reproducible. The elapsed
+    // is still reported in the live text/JSON summary output.
     output.push_str(&format!(
-        "<p>compared={} skipped={} identical={} different={} one-sided={} errors={} elapsed_ms={} status=complete</p>\n",
+        "<p>compared={} skipped={} identical={} different={} one-sided={} errors={} status=complete</p>\n",
         summary.compared_count,
         summary.skipped_count,
         summary.identical_count,
         summary.different_count,
         summary.one_sided_count,
         summary.errors_count,
-        summary.elapsed.as_millis()
     ));
     output.push_str(&folder_tree_html(result, tree_state));
     output.push_str("<table><thead><tr>");
