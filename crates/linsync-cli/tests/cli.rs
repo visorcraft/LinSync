@@ -2869,9 +2869,9 @@ fn compare_save_result_then_report_from_json_matches_direct() {
         "report --from-json must reproduce the direct report"
     );
 
-    // A non-text envelope is rejected.
+    // An unsupported result kind is rejected.
     let bad = temp.path.join("bad.json");
-    fs::write(&bad, r#"{"kind":"folder","result":{}}"#).unwrap();
+    fs::write(&bad, r#"{"kind":"image","result":{}}"#).unwrap();
     let out = run(&[
         "report",
         "--from-json",
@@ -2880,4 +2880,53 @@ fn compare_save_result_then_report_from_json_matches_direct() {
         temp.path.join("x.html").to_str().unwrap(),
     ]);
     assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn folder_save_result_then_report_from_json_matches_direct() {
+    let temp = TempFixture::new();
+    let left = temp.path.join("l");
+    let right = temp.path.join("r");
+    fs::create_dir_all(&left).unwrap();
+    fs::create_dir_all(&right).unwrap();
+    fs::write(left.join("x.txt"), "a").unwrap();
+    fs::write(right.join("x.txt"), "b").unwrap();
+    fs::write(left.join("y.txt"), "same").unwrap();
+    fs::write(right.join("y.txt"), "same").unwrap();
+    let result_json = temp.path.join("folder.json");
+    let from_html = temp.path.join("from.html");
+    let direct_html = temp.path.join("direct.html");
+
+    let save = run(&[
+        "compare",
+        "--type",
+        "folder",
+        "--save-result",
+        result_json.to_str().unwrap(),
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+    assert_eq!(save.status.code(), Some(1));
+
+    let from = run(&[
+        "report",
+        "--from-json",
+        result_json.to_str().unwrap(),
+        "--output",
+        from_html.to_str().unwrap(),
+    ]);
+    assert_eq!(from.status.code(), Some(1));
+    let direct = run(&[
+        "report",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--output",
+        direct_html.to_str().unwrap(),
+    ]);
+    assert_eq!(direct.status.code(), Some(1));
+    assert_eq!(
+        fs::read_to_string(&from_html).unwrap(),
+        fs::read_to_string(&direct_html).unwrap(),
+        "folder report --from-json must reproduce the direct report"
+    );
 }

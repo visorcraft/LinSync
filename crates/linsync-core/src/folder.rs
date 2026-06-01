@@ -121,7 +121,7 @@ impl From<io::Error> for FolderCompareError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FolderCompareResult {
     pub left_root: PathBuf,
     pub right_root: PathBuf,
@@ -147,7 +147,7 @@ impl FolderCompareResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FolderCompareSummary {
     pub compared_count: usize,
     pub skipped_count: usize,
@@ -163,7 +163,8 @@ pub struct FolderCompareSummary {
     pub status: FolderCompareStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FolderCompareStatus {
     #[default]
     Complete,

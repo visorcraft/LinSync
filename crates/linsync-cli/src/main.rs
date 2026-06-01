@@ -705,6 +705,26 @@ fn compare_folder_command(
 ) -> Result<ExitCode, String> {
     let result = compare_folders(left, right, &compare_args.folder_options)
         .map_err(|err| err.to_string())?;
+
+    if let Some(path) = &compare_args.save_result {
+        let result_json = serde_json::to_value(&result).map_err(|err| err.to_string())?;
+        let envelope = serde_json::json!({
+            "schema_version": 1,
+            "kind": "folder",
+            "result": result_json,
+        });
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&envelope).map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| {
+            format!(
+                "cannot write --save-result file '{}': {err}",
+                path.display()
+            )
+        })?;
+    }
+
     let summary = &result.summary;
     let differences = summary.different_count + summary.one_sided_count + summary.errors_count;
 
@@ -3253,18 +3273,38 @@ fn report_command(args: &[String]) -> Result<ExitCode, String> {
             .map_err(|err| format!("cannot read '{}': {err}", from_json.display()))?;
         let envelope: serde_json::Value =
             serde_json::from_str(&raw).map_err(|err| format!("invalid result JSON: {err}"))?;
-        if envelope.get("kind").and_then(|k| k.as_str()) != Some("text") {
-            return Err("report --from-json only supports saved text results".to_owned());
-        }
-        let result: linsync_core::TextCompareResult =
-            serde_json::from_value(envelope.get("result").cloned().unwrap_or_default())
-                .map_err(|err| format!("invalid saved text result: {err}"))?;
-        fs::write(
-            &output,
-            result.to_html_report_with_context(report_args.context),
-        )
-        .map_err(|err| err.to_string())?;
-        return Ok(if result.is_equal() {
+        let result_value = envelope.get("result").cloned().unwrap_or_default();
+        let (html, equal) = match envelope.get("kind").and_then(|k| k.as_str()) {
+            Some("text") => {
+                let result: linsync_core::TextCompareResult = serde_json::from_value(result_value)
+                    .map_err(|err| format!("invalid saved text result: {err}"))?;
+                (
+                    result.to_html_report_with_context(report_args.context),
+                    result.is_equal(),
+                )
+            }
+            Some("folder") => {
+                let result: FolderCompareResult = serde_json::from_value(result_value)
+                    .map_err(|err| format!("invalid saved folder result: {err}"))?;
+                (
+                    folder_html_report(
+                        &result,
+                        &report_args.columns,
+                        report_args.tree_state,
+                        report_args.nested_file_reports,
+                        report_args.context,
+                    ),
+                    result.is_equal(),
+                )
+            }
+            other => {
+                return Err(format!(
+                    "report --from-json: unsupported result kind {other:?} (expected text or folder)"
+                ));
+            }
+        };
+        fs::write(&output, html).map_err(|err| err.to_string())?;
+        return Ok(if equal {
             ExitCode::SUCCESS
         } else {
             ExitCode::from(1)
