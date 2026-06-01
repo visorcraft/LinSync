@@ -2823,3 +2823,61 @@ fn report_relative_paths_strips_absolute_prefix() {
         "default report keeps the absolute path"
     );
 }
+
+#[test]
+fn compare_save_result_then_report_from_json_matches_direct() {
+    let temp = TempFixture::new();
+    fs::write(temp.path.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    fs::write(temp.path.join("b.txt"), "one\nTWO\nthree\nfour\n").unwrap();
+    let a = temp.path.join("a.txt");
+    let b = temp.path.join("b.txt");
+    let result_json = temp.path.join("result.json");
+    let from_html = temp.path.join("from.html");
+    let direct_html = temp.path.join("direct.html");
+
+    // Save the full result; the compared files differ, so exit 1.
+    let save = run(&[
+        "compare",
+        "--save-result",
+        result_json.to_str().unwrap(),
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+    ]);
+    assert_eq!(save.status.code(), Some(1));
+    assert!(result_json.exists(), "result JSON should be written");
+
+    // Re-render from the saved JSON (no recompare) and directly; the HTML must match.
+    let from = run(&[
+        "report",
+        "--from-json",
+        result_json.to_str().unwrap(),
+        "--output",
+        from_html.to_str().unwrap(),
+    ]);
+    assert_eq!(from.status.code(), Some(1));
+    let direct = run(&[
+        "report",
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+        "--output",
+        direct_html.to_str().unwrap(),
+    ]);
+    assert_eq!(direct.status.code(), Some(1));
+    assert_eq!(
+        fs::read_to_string(&from_html).unwrap(),
+        fs::read_to_string(&direct_html).unwrap(),
+        "report --from-json must reproduce the direct report"
+    );
+
+    // A non-text envelope is rejected.
+    let bad = temp.path.join("bad.json");
+    fs::write(&bad, r#"{"kind":"folder","result":{}}"#).unwrap();
+    let out = run(&[
+        "report",
+        "--from-json",
+        bad.to_str().unwrap(),
+        "--output",
+        temp.path.join("x.html").to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+}

@@ -393,7 +393,7 @@ pub struct TextLine {
     pub newline: Option<LineEnding>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextCompareResult {
     pub left_name: String,
     pub right_name: String,
@@ -638,7 +638,7 @@ pub struct EncodingSummary {
     pub bom_differs: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompareSummary {
     pub equal: bool,
     pub differences: usize,
@@ -649,7 +649,7 @@ pub struct CompareSummary {
     pub diff_blocks: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffBlock {
     pub kind: DiffBlockKind,
     pub left_start: Option<usize>,
@@ -658,7 +658,8 @@ pub struct DiffBlock {
     pub right_len: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DiffBlockKind {
     Equal,
     Difference,
@@ -668,7 +669,8 @@ pub enum DiffBlockKind {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MoveDirection {
     /// Content moved from left to right (deleted on left, added on right).
     LeftToRight,
@@ -676,7 +678,7 @@ pub enum MoveDirection {
     RightToLeft,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffLine {
     pub kind: DiffLineKind,
     pub left_line: Option<usize>,
@@ -686,7 +688,8 @@ pub struct DiffLine {
     pub inline: Vec<InlineDiff>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DiffLineKind {
     Equal,
     Changed,
@@ -694,7 +697,7 @@ pub enum DiffLineKind {
     RightOnly,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InlineDiff {
     pub left_start: usize,
     pub left_end: usize,
@@ -3536,6 +3539,33 @@ mod tests {
 
         assert!(rows.iter().any(|row| row.folded_count == Some(2)));
         assert!(rows.iter().any(|row| row.state == "changed"));
+    }
+
+    #[test]
+    fn text_compare_result_json_round_trip_preserves_report() {
+        // A saved result must re-render identically (report --from-json) without
+        // recomparing. Internal byte offsets (`#[serde(skip)]`) are not part of
+        // the contract, so fidelity is checked at the rendered-report level.
+        let result = compare_text(
+            "left.txt",
+            "alpha\nbeta\ngamma\n",
+            "right.txt",
+            "alpha\nBETA\ngamma\ndelta\n",
+            &TextCompareOptions::default(),
+        );
+        let json = serde_json::to_string(&result).expect("serialize");
+        let back: TextCompareResult = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(
+            back.summary, result.summary,
+            "summary survives the round-trip"
+        );
+        assert_eq!(back.lines.len(), result.lines.len());
+        assert_eq!(
+            back.to_html_report_with_context(None),
+            result.to_html_report_with_context(None),
+            "a re-rendered report must match the original"
+        );
     }
 
     #[test]
