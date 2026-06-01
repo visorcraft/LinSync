@@ -1666,7 +1666,7 @@ impl PluginProbeOutcome {
 
 /// A human-facing description of the sandbox confinement that applies to plugin
 /// helpers in the current environment, for diagnostics and result metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxStatus {
     /// Stable label, e.g. `"landlock+seccomp"`, `"bubblewrap"`, or
     /// `"degraded (LINSYNC_SANDBOX_SKIP set: unsandboxed)"`.

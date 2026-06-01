@@ -132,6 +132,12 @@ pub struct FolderCompareResult {
     pub right_root: PathBuf,
     pub entries: Vec<FolderEntryDiff>,
     pub summary: FolderCompareSummary,
+    /// Sandbox confinement that applied when an unpacker / folder-virtualizer
+    /// plugin produced this result (archive or virtual-tree compare). `None`
+    /// for a plain filesystem comparison where no helper ran. Omitted from JSON
+    /// when `None`, so existing result round-trips are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<crate::plugin::SandboxStatus>,
 }
 
 impl FolderCompareResult {
@@ -1522,6 +1528,9 @@ pub fn compare_virtual_trees(
         right_root: PathBuf::from("<virtual:right>"),
         entries,
         summary,
+        // The trees came from a sandboxed unpacker/virtualizer helper; record
+        // the confinement that applied so clients can surface it.
+        sandbox: Some(crate::plugin::active_sandbox_status()),
     }
 }
 
@@ -1638,6 +1647,7 @@ where
         right_root: right.to_path_buf(),
         entries,
         summary,
+        sandbox: None,
     })
 }
 
@@ -2636,6 +2646,10 @@ mod tests {
         fs::write(right.join("different.txt"), "right side").unwrap();
 
         let result = compare_folders(&left, &right, &FolderCompareOptions::default()).unwrap();
+        assert!(
+            result.sandbox.is_none(),
+            "a plain filesystem compare runs no helper, so carries no sandbox status"
+        );
         let states: BTreeMap<_, _> = result
             .entries
             .iter()
@@ -3911,6 +3925,7 @@ mod tests {
             right_root: PathBuf::from("/right"),
             entries,
             summary: FolderCompareSummary::default(),
+            sandbox: None,
         }
     }
 
@@ -4173,6 +4188,13 @@ mod tests {
         assert_eq!(result.summary.left_only_count, 1);
         assert_eq!(result.summary.right_only_count, 1);
         assert_eq!(result.summary.one_sided_count, 2);
+
+        // A virtual-tree compare is always plugin-sourced, so the result carries
+        // the sandbox confinement that applied.
+        assert!(
+            result.sandbox.is_some(),
+            "virtual-tree result should record the sandbox confinement"
+        );
 
         // The standard folder query API works on the virtualized result.
         let page = result.query(&FolderQuery {

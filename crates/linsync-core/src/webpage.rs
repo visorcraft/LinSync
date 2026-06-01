@@ -474,6 +474,7 @@ pub(crate) fn url_tree_to_folder_result(
             elapsed: std::time::Duration::ZERO,
             status: FolderCompareStatus::Complete,
         },
+        sandbox: None,
     }
 }
 

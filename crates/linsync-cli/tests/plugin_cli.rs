@@ -461,6 +461,36 @@ fn compare_prediffer_chain_applies_all_stages_in_order() {
         String::from_utf8_lossy(&chained.stderr).contains(&format!("{lower} -> {strip}")),
         "stderr should report the chain order"
     );
+
+    // A prediffer-routed compare records the sandbox confinement on the result
+    // type itself; --save-result must therefore carry a `sandbox` object.
+    let result_json = home.join("chain-result.json");
+    let saved = run_isolated_unsandboxed(
+        &home,
+        &[
+            "compare",
+            "--prediffer",
+            lower,
+            "--prediffer",
+            strip,
+            "--save-result",
+            result_json.to_str().unwrap(),
+            l,
+            r,
+        ],
+    );
+    assert_eq!(saved.status.code(), Some(0));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&result_json).unwrap()).unwrap();
+    let sandbox = &parsed["result"]["sandbox"];
+    assert!(
+        sandbox["label"].is_string(),
+        "prediffer-routed result should carry the sandbox confinement: {parsed}"
+    );
+    assert!(
+        sandbox["confined"].is_boolean(),
+        "sandbox confinement should report a confined flag: {parsed}"
+    );
 }
 
 /// Install a folder-virtualizer plugin whose helper emits a one-file virtual

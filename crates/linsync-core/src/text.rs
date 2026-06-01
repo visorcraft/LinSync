@@ -402,6 +402,12 @@ pub struct TextCompareResult {
     pub lines: Vec<DiffLine>,
     pub blocks: Vec<DiffBlock>,
     pub summary: CompareSummary,
+    /// Sandbox confinement that applied when a plugin (e.g. a prediffer chain)
+    /// participated in producing this result. `None` for a pure built-in
+    /// comparison where no helper process ran. Omitted from JSON when `None`,
+    /// so existing result round-trips are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<crate::plugin::SandboxStatus>,
 }
 
 impl TextCompareResult {
@@ -820,7 +826,13 @@ pub fn compare_text_files_with_prediffer_chain(
             Some(text) => TextDocument::from_text(&right.display().to_string(), &text),
             None => TextDocument::from_path_with_encoding(right, options.encoding)?,
         };
-    Ok(compare_documents(left_document, right_document, options))
+    let mut result = compare_documents(left_document, right_document, options);
+    // Record the confinement helper processes ran under when a prediffer
+    // actually participated, so clients can surface it on the result.
+    if !prediffers.is_empty() {
+        result.sandbox = Some(crate::plugin::active_sandbox_status());
+    }
+    Ok(result)
 }
 
 fn apply_prediffer_to_side(
@@ -932,6 +944,7 @@ pub fn compare_documents_cancellable(
         lines,
         blocks,
         summary,
+        sandbox: None,
     })
 }
 
