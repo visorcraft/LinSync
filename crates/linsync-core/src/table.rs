@@ -22,6 +22,27 @@ pub struct TableCompareOptions {
     pub skip_blank_rows: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub numeric_tolerance: Option<f64>,
+    /// Per-column comparison rules (case-folding, whitespace trimming, and a
+    /// per-column numeric-tolerance override). Columns without a rule use the
+    /// global settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub column_rules: Vec<TableColumnRule>,
+}
+
+/// A normalization/tolerance rule applied to one column before comparison.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TableColumnRule {
+    /// Zero-based column index this rule applies to.
+    pub column: usize,
+    /// Compare this column case-insensitively.
+    #[serde(default)]
+    pub case_insensitive: bool,
+    /// Trim leading/trailing ASCII/Unicode whitespace before comparing.
+    #[serde(default)]
+    pub trim: bool,
+    /// Numeric tolerance for this column, overriding the table-wide value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numeric_tolerance: Option<f64>,
 }
 
 impl Default for TableCompareOptions {
@@ -37,7 +58,53 @@ impl Default for TableCompareOptions {
             comment_prefix: None,
             skip_blank_rows: true,
             numeric_tolerance: None,
+            column_rules: Vec::new(),
         }
+    }
+}
+
+/// Resolves per-column comparison rules and the table-wide numeric tolerance
+/// into a single cell-equality decision. Built once per compare.
+struct CellComparer<'a> {
+    global_tolerance: Option<f64>,
+    rules: std::collections::HashMap<usize, &'a TableColumnRule>,
+}
+
+impl<'a> CellComparer<'a> {
+    fn new(options: &'a TableCompareOptions) -> Self {
+        let rules = options
+            .column_rules
+            .iter()
+            .map(|rule| (rule.column, rule))
+            .collect();
+        Self {
+            global_tolerance: options.numeric_tolerance,
+            rules,
+        }
+    }
+
+    /// Whether two cells in `column` are equal under this column's rule and the
+    /// effective numeric tolerance.
+    fn equal(&self, column: usize, left: &str, right: &str) -> bool {
+        let rule = self.rules.get(&column).copied();
+        let normalize = |value: &str| {
+            let trimmed = if rule.is_some_and(|r| r.trim) {
+                value.trim()
+            } else {
+                value
+            };
+            if rule.is_some_and(|r| r.case_insensitive) {
+                trimmed.to_lowercase()
+            } else {
+                trimmed.to_owned()
+            }
+        };
+        let left = normalize(left);
+        let right = normalize(right);
+        let tolerance = rule
+            .and_then(|r| r.numeric_tolerance)
+            .or(self.global_tolerance);
+        cells_equal_with_tolerance(&left, &right, tolerance)
     }
 }
 
@@ -321,6 +388,7 @@ pub fn compare_tables(
 
     let ignore_set: std::collections::HashSet<usize> =
         options.ignore_columns.iter().copied().collect();
+    let comparer = CellComparer::new(options);
 
     if !options.key_columns.is_empty() {
         return Ok(compare_by_key(
@@ -332,7 +400,7 @@ pub fn compare_tables(
             &options.key_columns,
             &ignore_set,
             options.ignore_row_order,
-            options.numeric_tolerance,
+            &comparer,
         ));
     }
 
@@ -340,7 +408,6 @@ pub fn compare_tables(
     let max_rows = left_rows.len().max(right_rows.len());
     let mut rows = Vec::new();
     let mut changed_cells = 0;
-    let tolerance = options.numeric_tolerance;
 
     for row_index in 0..max_rows {
         let left_row = left_rows.get(row_index);
@@ -370,7 +437,7 @@ pub fn compare_tables(
             let left_cell = left_row.and_then(|row| row.get(column_index)).cloned();
             let right_cell = right_row.and_then(|row| row.get(column_index)).cloned();
             let state = match (&left_cell, &right_cell) {
-                (Some(left), Some(right)) if cells_equal_with_tolerance(left, right, tolerance) => {
+                (Some(left), Some(right)) if comparer.equal(column_index, left, right) => {
                     TableCellState::Equal
                 }
                 (Some(_), Some(_)) => TableCellState::Changed,
@@ -427,7 +494,7 @@ fn compare_rows_by_cell(
     right_row: Option<&[String]>,
     ignore_set: &std::collections::HashSet<usize>,
     header: Option<&Vec<String>>,
-    tolerance: Option<f64>,
+    comparer: &CellComparer,
 ) -> (TableRowDiff, usize) {
     let max_cols = left_row
         .map_or(0, |r| r.len())
@@ -455,9 +522,7 @@ fn compare_rows_by_cell(
         let left_cell = left_row.and_then(|r| r.get(column_index)).cloned();
         let right_cell = right_row.and_then(|r| r.get(column_index)).cloned();
         let state = match (&left_cell, &right_cell) {
-            (Some(l), Some(r)) if cells_equal_with_tolerance(l, r, tolerance) => {
-                TableCellState::Equal
-            }
+            (Some(l), Some(r)) if comparer.equal(column_index, l, r) => TableCellState::Equal,
             (Some(_), Some(_)) => TableCellState::Changed,
             (Some(_), None) => TableCellState::LeftOnly,
             (None, Some(_)) => TableCellState::RightOnly,
@@ -502,7 +567,7 @@ fn compare_by_key(
     key_columns: &[usize],
     ignore_set: &std::collections::HashSet<usize>,
     ignore_row_order: bool,
-    tolerance: Option<f64>,
+    comparer: &CellComparer,
 ) -> TableCompareResult {
     let hdr_ref = header.as_ref();
 
@@ -528,7 +593,7 @@ fn compare_by_key(
                 left: Option<&[String]>,
                 right: Option<&[String]>| {
         let (row_diff, cc) =
-            compare_rows_by_cell(rows.len(), left, right, ignore_set, hdr_ref, tolerance);
+            compare_rows_by_cell(rows.len(), left, right, ignore_set, hdr_ref, comparer);
         *changed_cells += cc;
         rows.push(row_diff);
     };
@@ -1131,6 +1196,67 @@ mod tests {
 
         assert!(result.is_equal());
         assert_eq!(result.changed_cells, 0);
+    }
+
+    #[test]
+    fn column_rules_normalize_per_column() {
+        // Column 0 differs only by case + surrounding whitespace; column 1 is a
+        // genuine value change. With a case-insensitive + trim rule on column 0,
+        // only column 1 should register as changed.
+        let opts = TableCompareOptions {
+            has_header: false,
+            column_rules: vec![TableColumnRule {
+                column: 0,
+                case_insensitive: true,
+                trim: true,
+                numeric_tolerance: None,
+            }],
+            ..Default::default()
+        };
+        let result = compare_tables("left", "Alpha,1\n", "right", "  alpha ,2\n", &opts).unwrap();
+        assert_eq!(result.changed_cells, 1, "only column 1 should differ");
+        let cells = &result.rows[0].cells;
+        assert_eq!(
+            cells[0].state,
+            TableCellState::Equal,
+            "col 0 normalized equal"
+        );
+        assert_eq!(cells[1].state, TableCellState::Changed, "col 1 changed");
+
+        // Without the rule the case/whitespace difference is a real change.
+        let strict = compare_tables(
+            "left",
+            "Alpha,1\n",
+            "right",
+            "  alpha ,1\n",
+            &TableCompareOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(strict.changed_cells, 1, "col 0 differs without a rule");
+    }
+
+    #[test]
+    fn column_rules_per_column_numeric_tolerance_overrides_global() {
+        // Column 0 tolerates 0.5; column 1 has no per-column tolerance and no
+        // global tolerance, so its 0.4 delta is a real change.
+        let opts = TableCompareOptions {
+            has_header: false,
+            column_rules: vec![TableColumnRule {
+                column: 0,
+                case_insensitive: false,
+                trim: false,
+                numeric_tolerance: Some(0.5),
+            }],
+            ..Default::default()
+        };
+        let result = compare_tables("left", "1.0,1.0\n", "right", "1.4,1.4\n", &opts).unwrap();
+        let cells = &result.rows[0].cells;
+        assert_eq!(cells[0].state, TableCellState::Equal, "col 0 within 0.5");
+        assert_eq!(
+            cells[1].state,
+            TableCellState::Changed,
+            "col 1 no tolerance"
+        );
     }
 
     #[test]

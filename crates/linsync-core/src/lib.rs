@@ -82,8 +82,9 @@ pub use storage::{
     ThemePreference, WindowSize, artifact_dir, cleanup_artifacts, save_artifact,
 };
 pub use table::{
-    TableCellDiff, TableCellState, TableCompareOptions, TableCompareResult, TableError,
-    TableParseError, TableRowDiff, compare_table_files, compare_tables, parse_delimited,
+    TableCellDiff, TableCellState, TableColumnRule, TableCompareOptions, TableCompareResult,
+    TableError, TableParseError, TableRowDiff, compare_table_files, compare_tables,
+    parse_delimited,
 };
 pub use text::{
     CompareOptions, CompareSession, CompareSide, CompareSummary, DiffAlgorithm, DiffBlock,
