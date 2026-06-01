@@ -13,11 +13,11 @@ use linsync_core::{
     FolderTypeFilter, HashAlgorithm, InlineGranularity, MergeChoice, MoveDirection,
     PluginExecutionOptions, PluginInputDescriptor, ProfileId, ProfileStore, ProfileStoreError,
     ProjectFileStore, RecentSessionStore, SessionFile, SettingsStore, SymlinkPolicy,
-    TableCellState, TableCompareOptions, TextBookmark, TextCompareOptions, TextDocument,
-    TextFindOptions, TextInputEncoding, TextRenderMode, TextSubstitution, TextSyntaxMode,
-    ThreeWayConflict, ThreeWayMergeState, active_sandbox_status, assess_operation_risks,
-    builtin_profiles, builtin_text_regex_rule_sets, clear_plugin_option, compare_binary_files,
-    compare_folders, compare_table_files, compare_text, compare_text_files,
+    TableCellState, TableCompareOptions, TableCompareResult, TextBookmark, TextCompareOptions,
+    TextDocument, TextFindOptions, TextInputEncoding, TextRenderMode, TextSubstitution,
+    TextSyntaxMode, ThreeWayConflict, ThreeWayMergeState, active_sandbox_status,
+    assess_operation_risks, builtin_profiles, builtin_text_regex_rule_sets, clear_plugin_option,
+    compare_binary_files, compare_folders, compare_table_files, compare_text, compare_text_files,
     compare_text_files_with_prediffer_chain, compare_virtual_trees, discover_installed_plugins,
     find_builtin, is_likely_binary, load_plugin_enabled_map, load_plugin_options, merge_three_way,
     parse_conflict_markers, plan_folder_operation, probe_plugin, resolve_enabled_prediffers,
@@ -790,6 +790,25 @@ fn compare_table_command(
         options.delimiter = '\t';
     }
     let result = compare_table_files(left, right, &options).map_err(|err| err.to_string())?;
+
+    if let Some(path) = &compare_args.save_result {
+        let result_json = serde_json::to_value(&result).map_err(|err| err.to_string())?;
+        let envelope = serde_json::json!({
+            "schema_version": 1,
+            "kind": "table",
+            "result": result_json,
+        });
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&envelope).map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| {
+            format!(
+                "cannot write --save-result file '{}': {err}",
+                path.display()
+            )
+        })?;
+    }
 
     match compare_args.output {
         OutputMode::Text => println!(
@@ -3297,9 +3316,14 @@ fn report_command(args: &[String]) -> Result<ExitCode, String> {
                     result.is_equal(),
                 )
             }
+            Some("table") => {
+                let result: TableCompareResult = serde_json::from_value(result_value)
+                    .map_err(|err| format!("invalid saved table result: {err}"))?;
+                (result.to_html_report(), result.is_equal())
+            }
             other => {
                 return Err(format!(
-                    "report --from-json: unsupported result kind {other:?} (expected text or folder)"
+                    "report --from-json: unsupported result kind {other:?} (expected text, folder, or table)"
                 ));
             }
         };

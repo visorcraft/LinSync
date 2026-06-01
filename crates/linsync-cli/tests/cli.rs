@@ -2930,3 +2930,41 @@ fn folder_save_result_then_report_from_json_matches_direct() {
         "folder report --from-json must reproduce the direct report"
     );
 }
+
+#[test]
+fn table_save_result_then_report_from_json_renders_table() {
+    let temp = TempFixture::new();
+    fs::write(temp.path.join("a.csv"), "1,alice\n2,bob\n").unwrap();
+    fs::write(temp.path.join("b.csv"), "1,alice\n2,BOB\n3,carol\n").unwrap();
+    let a = temp.path.join("a.csv");
+    let b = temp.path.join("b.csv");
+    let json = temp.path.join("t.json");
+    let html = temp.path.join("r.html");
+
+    let save = run(&[
+        "compare",
+        "--type",
+        "table",
+        "--save-result",
+        json.to_str().unwrap(),
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+    ]);
+    assert_eq!(save.status.code(), Some(1));
+
+    let from = run(&[
+        "report",
+        "--from-json",
+        json.to_str().unwrap(),
+        "--output",
+        html.to_str().unwrap(),
+    ]);
+    assert_eq!(from.status.code(), Some(1));
+    let report = fs::read_to_string(&html).unwrap();
+    assert!(report.contains("<table>"), "renders an HTML table");
+    assert!(
+        report.contains("class=\"changed\""),
+        "a changed cell is highlighted"
+    );
+    assert!(report.contains("carol"), "the added row is present");
+}

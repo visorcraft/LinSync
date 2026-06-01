@@ -149,6 +149,85 @@ impl TableCompareResult {
         self.changed_cells == 0
     }
 
+    /// Render a self-contained HTML report of the table comparison: a table
+    /// where changed cells show `left → right`, left-only cells are marked
+    /// removed and right-only cells added.
+    pub fn to_html_report(&self) -> String {
+        let mut html = String::new();
+        html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">\n");
+        html.push_str(&format!(
+            "<title>LinSync table report: {} vs {}</title>\n",
+            escape_table_html(&self.left_name),
+            escape_table_html(&self.right_name)
+        ));
+        html.push_str(
+            "<style>\n\
+             body{font-family:system-ui,sans-serif;margin:1.5rem;}\n\
+             table{border-collapse:collapse;}\n\
+             td,th{border:1px solid #ccc;padding:2px 6px;font-family:monospace;text-align:left;}\n\
+             .changed{background:#fff3b0;}\n\
+             .added{background:#c8f7c5;}\n\
+             .removed{background:#f7c5c5;}\n\
+             </style>\n</head><body>\n",
+        );
+        html.push_str(&format!(
+            "<h1>{} vs {}</h1>\n",
+            escape_table_html(&self.left_name),
+            escape_table_html(&self.right_name)
+        ));
+        html.push_str(&format!(
+            "<p>{} changed cell(s) across {} row(s).</p>\n",
+            self.changed_cells,
+            self.rows.len()
+        ));
+        html.push_str("<table>\n");
+        if let Some(header) = &self.header {
+            html.push_str("<thead><tr><th>#</th>");
+            for cell in header {
+                html.push_str(&format!("<th>{}</th>", escape_table_html(cell)));
+            }
+            html.push_str("</tr></thead>\n");
+        }
+        html.push_str("<tbody>\n");
+        for row in &self.rows {
+            html.push_str(&format!("<tr><td>{}</td>", row.row_index + 1));
+            for cell in &row.cells {
+                let (class, content) = match cell.state {
+                    TableCellState::Equal => (
+                        "",
+                        escape_table_html(
+                            cell.right.as_deref().or(cell.left.as_deref()).unwrap_or(""),
+                        ),
+                    ),
+                    TableCellState::Changed => (
+                        "changed",
+                        format!(
+                            "{} → {}",
+                            escape_table_html(cell.left.as_deref().unwrap_or("")),
+                            escape_table_html(cell.right.as_deref().unwrap_or(""))
+                        ),
+                    ),
+                    TableCellState::LeftOnly => (
+                        "removed",
+                        escape_table_html(cell.left.as_deref().unwrap_or("")),
+                    ),
+                    TableCellState::RightOnly => (
+                        "added",
+                        escape_table_html(cell.right.as_deref().unwrap_or("")),
+                    ),
+                };
+                if class.is_empty() {
+                    html.push_str(&format!("<td>{content}</td>"));
+                } else {
+                    html.push_str(&format!("<td class=\"{class}\">{content}</td>"));
+                }
+            }
+            html.push_str("</tr>\n");
+        }
+        html.push_str("</tbody></table>\n</body></html>\n");
+        html
+    }
+
     pub fn column_summaries(&self) -> Vec<TableColumnSummary> {
         let mut map: std::collections::BTreeMap<usize, TableColumnSummary> =
             std::collections::BTreeMap::new();
@@ -256,6 +335,14 @@ impl std::fmt::Display for TableParseError {
 }
 
 impl std::error::Error for TableParseError {}
+
+fn escape_table_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
 
 fn compute_diff_type(
     state: TableCellState,
