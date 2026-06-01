@@ -402,6 +402,7 @@ pub fn apply_gui_setting(
         "openLastSession" => settings.open_last_session = parse_bool_setting(key, value)?,
         "confirmOnClose" => settings.confirm_on_close = parse_bool_setting(key, value)?,
         "persistRecentPaths" => settings.persist_recent_paths = parse_bool_setting(key, value)?,
+        "reduceMotion" => settings.reduce_motion = parse_bool_setting(key, value)?,
         "maxRecentPaths" => {
             settings.recent_limit = value
                 .parse::<usize>()

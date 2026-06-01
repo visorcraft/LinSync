@@ -34,8 +34,8 @@ emits a `settingChanged(key, value)` signal for the following keys, grouped
 into four cards:
 
 - Appearance: `themePreference`, `fontFamily`, `fontSize`, `tabWidth`,
-  `showLineNumbers`, `showWhitespace`, `wordWrap`. `themePreference` uses the
-  Grex/Grexa integer contract: `0` system, `1` light, `2` dark,
+  `showLineNumbers`, `showWhitespace`, `wordWrap`, `reduceMotion`.
+  `themePreference` uses the Grex/Grexa integer contract: `0` system, `1` light, `2` dark,
   `3` Gentle Gecko, `4` Black Knight, `5` Diamond, `6` Dreams, `7` Paranoid,
   `8` Red Velvet, `9` Subspace, `10` Tiefling, `11` Vibes, `12` OLED Black.
 - Comparison behavior: `defaultCompareMode`, `ignoreCase`, `ignoreWhitespace`,

@@ -113,6 +113,7 @@ Kirigami.ApplicationWindow {
     property bool   openLastSession:    true
     property bool   confirmOnClose:     true
     property bool   persistRecentPaths: true
+    property bool   reduceMotion:       false
     property int    maxRecentPaths:     20
     readonly property string appIconSource: Qt.resolvedUrl("assets/com.visorcraft.LinSync.png")
 
@@ -808,6 +809,7 @@ Kirigami.ApplicationWindow {
             "openLastSession": true,
             "confirmOnClose": true,
             "persistRecentPaths": true,
+            "reduceMotion": false,
             "maxRecentPaths": 20
         }
     }
@@ -831,6 +833,7 @@ Kirigami.ApplicationWindow {
         root.openLastSession    = merged.openLastSession
         root.confirmOnClose     = merged.confirmOnClose
         root.persistRecentPaths = merged.persistRecentPaths
+        root.reduceMotion       = merged.reduceMotion
         root.maxRecentPaths     = merged.maxRecentPaths
         root.compareMode        = root.defaultCompareMode
         root._settingsReady = true
@@ -853,6 +856,7 @@ Kirigami.ApplicationWindow {
         else if (key === "openLastSession")    root.openLastSession    = value
         else if (key === "confirmOnClose")     root.confirmOnClose     = value
         else if (key === "persistRecentPaths") root.persistRecentPaths = value
+        else if (key === "reduceMotion")       root.reduceMotion       = value
         else if (key === "maxRecentPaths")     root.maxRecentPaths     = value
     }
 
@@ -2738,7 +2742,7 @@ Kirigami.ApplicationWindow {
         readonly property int collapsedWidth: 60
 
         width: sidebarCollapsed ? collapsedWidth : expandedWidth
-        Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        Behavior on width { NumberAnimation { duration: root.reduceMotion ? 0 : 160; easing.type: Easing.OutCubic } }
 
         readonly property color sidebarBg: Kirigami.ColorUtils.tintWithAlpha(
             root.activeBg, root.activeText, 0.035)
@@ -2870,6 +2874,7 @@ Kirigami.ApplicationWindow {
                 iconName: "view-split-left-right"
                 active: root.activeSection === 0
                 collapsed: drawer.sidebarCollapsed
+                reduceMotion: root.reduceMotion
                 onTriggered: root.activeSection = 0
             }
             LinSyncNavItem {
@@ -2877,6 +2882,7 @@ Kirigami.ApplicationWindow {
                 iconName: "image-compare"
                 active: root.activeSection === 9
                 collapsed: drawer.sidebarCollapsed
+                reduceMotion: root.reduceMotion
                 onTriggered: root.activeSection = 9
             }
             LinSyncNavItem {
@@ -2884,6 +2890,7 @@ Kirigami.ApplicationWindow {
                 iconName: "internet-web-browser-symbolic"
                 active: root.activeSection === 10
                 collapsed: drawer.sidebarCollapsed
+                reduceMotion: root.reduceMotion
                 onTriggered: root.activeSection = 10
             }
             LinSyncNavItem {
@@ -2891,6 +2898,7 @@ Kirigami.ApplicationWindow {
                 iconName: "document-open"
                 active: root.activeSection === 11
                 collapsed: drawer.sidebarCollapsed
+                reduceMotion: root.reduceMotion
                 onTriggered: root.activeSection = 11
             }
             LinSyncNavItem {
@@ -2898,6 +2906,7 @@ Kirigami.ApplicationWindow {
                 iconName: "view-history"
                 active: root.activeSection === 1
                 collapsed: drawer.sidebarCollapsed
+                reduceMotion: root.reduceMotion
                 onTriggered: root.activeSection = 1
             }
 
@@ -2925,6 +2934,7 @@ Kirigami.ApplicationWindow {
                 iconName: "view-filter"
                 active: root.activeSection === 2
                 collapsed: drawer.sidebarCollapsed
+                reduceMotion: root.reduceMotion
                 onTriggered: root.activeSection = 2
             }
             LinSyncNavItem {
@@ -2932,6 +2942,7 @@ Kirigami.ApplicationWindow {
                 iconName: "preferences-plugin"
                 active: root.activeSection === 3
                 collapsed: drawer.sidebarCollapsed
+                reduceMotion: root.reduceMotion
                 onTriggered: root.activeSection = 3
             }
 
@@ -2959,6 +2970,7 @@ Kirigami.ApplicationWindow {
                 iconName: "settings-configure"
                 active: root.activeSection === 4
                 collapsed: drawer.sidebarCollapsed
+                reduceMotion: root.reduceMotion
                 onTriggered: root.activeSection = 4
             }
             LinSyncNavItem {
@@ -2966,6 +2978,7 @@ Kirigami.ApplicationWindow {
                 iconName: "help-about"
                 active: root.activeSection === 5
                 collapsed: drawer.sidebarCollapsed
+                reduceMotion: root.reduceMotion
                 onTriggered: root.activeSection = 5
             }
 
@@ -4437,6 +4450,7 @@ Kirigami.ApplicationWindow {
                 Kirigami.Theme.negativeTextColor:        root.activeNegativeText
                 Kirigami.Theme.neutralTextColor:         root.activeNeutralText
                 bridgeConnected: root.bridgeAvailable()
+                reduceMotion: root.reduceMotion
                 onRefreshRequested: {
                     root.loadPlugins(function (payload) {
                         pluginsPage.applyDiscovery(payload)
@@ -4498,6 +4512,7 @@ Kirigami.ApplicationWindow {
                 openLastSession:    root.openLastSession
                 confirmOnClose:     root.confirmOnClose
                 persistRecentPaths: root.persistRecentPaths
+                reduceMotion:       root.reduceMotion
                 maxRecentPaths:     root.maxRecentPaths
                 bridgeConnected:    root.bridgeAvailable()
                 onSettingChanged: (key, value) => {

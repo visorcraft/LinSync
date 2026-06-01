@@ -300,6 +300,7 @@ struct GuiSettings {
     confirm_on_close: bool,
     persist_recent_paths: bool,
     max_recent_paths: usize,
+    reduce_motion: bool,
 }
 
 impl From<&Settings> for GuiSettings {
@@ -323,6 +324,7 @@ impl From<&Settings> for GuiSettings {
             confirm_on_close: settings.confirm_on_close,
             persist_recent_paths: settings.persist_recent_paths,
             max_recent_paths: settings.recent_limit,
+            reduce_motion: settings.reduce_motion,
         }
     }
 }
@@ -6495,6 +6497,27 @@ mod tests {
     }
 
     #[test]
+    fn source_tree_qml_wires_reduced_motion_setting() {
+        let qml_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml");
+        let main = fs::read_to_string(qml_root.join("Main.qml")).expect("Main.qml should read");
+        assert!(main.contains(r#""reduceMotion": false"#));
+        assert!(main.contains("reduceMotion: root.reduceMotion"));
+        assert!(main.contains("duration: root.reduceMotion ? 0 : 160"));
+
+        let settings = fs::read_to_string(qml_root.join("SettingsPage.qml"))
+            .expect("SettingsPage should read");
+        assert!(settings.contains("page.emit(\"reduceMotion\", checked)"));
+
+        let nav =
+            fs::read_to_string(qml_root.join("LinSyncNavItem.qml")).expect("nav item should read");
+        assert!(nav.contains("duration: nav.reduceMotion ? 0 : 110"));
+
+        let plugins =
+            fs::read_to_string(qml_root.join("PluginsPage.qml")).expect("PluginsPage should read");
+        assert!(plugins.contains("duration: page.reduceMotion ? 0 : 120"));
+    }
+
+    #[test]
     fn source_tree_window_icon_file_exists() {
         let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
         let icon_file = resolve_window_icon_file(&source_file).expect("missing window icon file");
@@ -6730,6 +6753,22 @@ mod tests {
         let body = json_response_body(&response);
         assert_eq!(body["themePreference"], 0);
         assert_eq!(body["maxRecentPaths"], 20);
+        assert_eq!(body["reduceMotion"], false);
+
+        let response = String::from_utf8(bridge_response(
+            "GET /settings/set?key=reduceMotion&value=true HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+
+        assert!(response.contains("HTTP/1.1 200 OK"));
+        let body = json_response_body(&response);
+        assert_eq!(body["reduceMotion"], true);
+        let settings = SettingsStore::new(paths.settings_file())
+            .load_or_default()
+            .expect("settings should load");
+        assert!(settings.reduce_motion);
 
         let response = String::from_utf8(bridge_response(
             "GET /settings/set?key=themePreference&value=12 HTTP/1.1\r\n",
@@ -6756,6 +6795,7 @@ mod tests {
         assert!(response.contains("HTTP/1.1 200 OK"));
         let body = json_response_body(&response);
         assert_eq!(body["themePreference"], 0);
+        assert_eq!(body["reduceMotion"], false);
     }
 
     #[test]

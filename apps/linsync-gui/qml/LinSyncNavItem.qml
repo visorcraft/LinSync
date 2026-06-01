@@ -19,6 +19,7 @@ Item {
     property string iconName: ""
     property bool active: false
     property bool collapsed: false
+    property bool reduceMotion: false
     property string tooltipText: label
 
     signal triggered()
@@ -80,7 +81,7 @@ Item {
                 color: nav.active ? nav.themeHighlight : nav.themeText
                 isMask: true
                 opacity: nav.active ? 1.0 : 0.78
-                Behavior on color { ColorAnimation { duration: 110 } }
+                Behavior on color { ColorAnimation { duration: nav.reduceMotion ? 0 : 110 } }
             }
         }
 
@@ -93,7 +94,7 @@ Item {
             color: nav.active ? nav.themeHighlight : nav.themeText
             opacity: nav.active ? 1.0 : 0.9
             elide: Text.ElideRight
-            Behavior on color { ColorAnimation { duration: 110 } }
+            Behavior on color { ColorAnimation { duration: nav.reduceMotion ? 0 : 110 } }
         }
     }
 

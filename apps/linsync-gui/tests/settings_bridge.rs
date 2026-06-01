@@ -24,6 +24,7 @@ fn every_documented_key_round_trips_through_bridge() {
         ("openLastSession", "true"),
         ("confirmOnClose", "true"),
         ("persistRecentPaths", "true"),
+        ("reduceMotion", "true"),
         ("maxRecentPaths", "25"),
     ] {
         let result = apply_gui_setting_test(key, value);
@@ -142,6 +143,13 @@ fn every_documented_key_persists_to_disk() {
     assert!(
         !loaded.persist_recent_paths,
         "persistRecentPaths=false should reload as false"
+    );
+
+    let loaded =
+        save_and_load_setting(&paths, "reduceMotion", "true").expect("reduceMotion should persist");
+    assert!(
+        loaded.reduce_motion,
+        "reduceMotion=true should reload as true"
     );
 
     let loaded = save_and_load_setting(&paths, "maxRecentPaths", "25")

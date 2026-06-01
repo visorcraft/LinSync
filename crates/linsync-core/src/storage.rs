@@ -41,6 +41,8 @@ pub struct Settings {
     pub confirm_on_close: bool,
     pub persist_recent_paths: bool,
     pub recent_limit: usize,
+    #[serde(default)]
+    pub reduce_motion: bool,
     pub default_recursive_folder_compare: bool,
     #[serde(default)]
     pub detect_moves: bool,
@@ -84,6 +86,7 @@ impl Default for Settings {
             confirm_on_close: true,
             persist_recent_paths: true,
             recent_limit: 20,
+            reduce_motion: false,
             default_recursive_folder_compare: true,
             detect_moves: false,
             delete_preference: DeletePreference::MoveToTrash,
@@ -907,6 +910,7 @@ mod tests {
         let store = SettingsStore::new(fixture.path.join("settings.json"));
         let settings = Settings {
             theme_preference: ThemePreference::Dark,
+            reduce_motion: true,
             window_size: Some(WindowSize {
                 width: 1280,
                 height: 720,
@@ -918,6 +922,7 @@ mod tests {
         assert_eq!(store.load_or_default().unwrap(), settings);
         let persisted = fs::read_to_string(&store.path).unwrap();
         assert!(persisted.contains(r#""theme_preference": 2"#));
+        assert!(persisted.contains(r#""reduce_motion": true"#));
         assert!(persisted.contains(r#""window_size""#));
         assert!(persisted.contains(r#""width": 1280"#));
         assert!(!persisted.contains(r#""x""#));

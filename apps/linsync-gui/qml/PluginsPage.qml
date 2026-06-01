@@ -13,6 +13,7 @@ Kirigami.ScrollablePage {
     property var plugins: page.builtinPlugins
     property string filterText: ""
     property bool bridgeConnected: false
+    property bool reduceMotion: false
     property var discoveryErrors: []
     property var discoveryRoots: []
     // Cache once per (plugins, filterText) change so the count label and the
@@ -633,7 +634,7 @@ Kirigami.ScrollablePage {
                                     color: "#ffffff"
                                     border.color: Kirigami.ColorUtils.tintWithAlpha(page.themeBg, page.themeText, 0.25)
                                     border.width: 1
-                                    Behavior on x { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+                                    Behavior on x { NumberAnimation { duration: page.reduceMotion ? 0 : 120; easing.type: Easing.OutCubic } }
                                 }
                             }
                         }
