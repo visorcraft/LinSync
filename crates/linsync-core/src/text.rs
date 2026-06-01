@@ -1846,7 +1846,9 @@ fn patience_diff(
         }
     }
 
-    unique_pairs.sort_by_key(|(_, ri)| *ri);
+    // `unique_pairs` is collected in left-side order. Patience diff then keeps
+    // the longest increasing sequence of right-side positions; sorting by right
+    // first can select crossing anchors and later produce reversed gap slices.
     let lis = longest_increasing_subsequence(&unique_pairs);
     let mut anchors: Vec<(usize, usize)> = lis.iter().map(|&(li, ri)| (li, ri)).collect();
     anchors.sort_by_key(|(li, _)| *li);
@@ -2014,17 +2016,17 @@ fn myers_diff(
     }
 
     let max = n + m;
-    let mut v = vec![0i64; 2 * max + 1];
+    let offset = max as i64;
+    let mut v = vec![-1i64; 2 * max + 1];
+    v[(offset + 1) as usize] = 0;
     let mut trace: Vec<Vec<i64>> = Vec::new();
 
     for d in 0..=max {
         if should_cancel() {
             return None;
         }
-        let mut snapshot = vec![0i64; 2 * max + 1];
-        snapshot.copy_from_slice(&v);
         for k in (-(d as i64)..=d as i64).step_by(2) {
-            let idx = (k + max as i64) as usize;
+            let idx = (k + offset) as usize;
             let mut x = if k == -(d as i64) || (k != d as i64 && v[idx - 1] < v[idx + 1]) {
                 v[idx + 1]
             } else {
@@ -2037,8 +2039,8 @@ fn myers_diff(
             }
             v[idx] = x;
             if x >= n as i64 && y >= m as i64 {
-                trace.push(snapshot);
-                let edits = myers_backtrack(&trace, left, right, max, n, m);
+                trace.push(v.clone());
+                let edits = myers_backtrack(&trace, max, n, m);
                 return Some(myers_edits_to_diff_lines(
                     left_document,
                     right_document,
@@ -2048,36 +2050,29 @@ fn myers_diff(
                 ));
             }
         }
-        trace.push(snapshot);
+        trace.push(v.clone());
     }
     Some(Vec::new())
 }
 
-fn myers_backtrack(
-    trace: &[Vec<i64>],
-    _left: &[ComparableLine],
-    _right: &[ComparableLine],
-    max: usize,
-    n: usize,
-    m: usize,
-) -> Vec<MyersEdit> {
+fn myers_backtrack(trace: &[Vec<i64>], max: usize, n: usize, m: usize) -> Vec<MyersEdit> {
     let mut edits = Vec::new();
     let mut x = n as i64;
     let mut y = m as i64;
+    let offset = max as i64;
 
-    for (d_idx, snapshot) in trace.iter().enumerate().rev() {
+    for d_idx in (1..trace.len()).rev() {
+        let previous = &trace[d_idx - 1];
         let d = d_idx as i64;
         let k = x - y;
         let prev_k = if k == -(d)
-            || (k != d
-                && snapshot[(k - 1 + max as i64) as usize]
-                    < snapshot[(k + 1 + max as i64) as usize])
+            || (k != d && previous[(k - 1 + offset) as usize] < previous[(k + 1 + offset) as usize])
         {
             k + 1
         } else {
             k - 1
         };
-        let prev_x = snapshot[(prev_k + max as i64) as usize];
+        let prev_x = previous[(prev_k + offset) as usize];
         let prev_y = prev_x - prev_k;
 
         while x > prev_x && y > prev_y {
@@ -2086,15 +2081,19 @@ fn myers_backtrack(
             y -= 1;
         }
 
-        if d > 0 {
-            if x == prev_x {
-                edits.push(MyersEdit::Insert);
-                y -= 1;
-            } else {
-                edits.push(MyersEdit::Delete);
-                x -= 1;
-            }
+        if x == prev_x {
+            edits.push(MyersEdit::Insert);
+            y -= 1;
+        } else {
+            edits.push(MyersEdit::Delete);
+            x -= 1;
         }
+    }
+
+    while x > 0 && y > 0 {
+        edits.push(MyersEdit::Keep);
+        x -= 1;
+        y -= 1;
     }
 
     edits.reverse();
@@ -3847,6 +3846,137 @@ mod tests {
                 "algorithm {algorithm:?} should pair changed lines"
             );
         }
+    }
+
+    /// Assert the structural invariants every diff must satisfy: each side
+    /// reconstructs from the lines that carry it, line numbers are strictly
+    /// increasing, and `Equal` lines carry identical text on both sides.
+    /// Returns the number of `Equal` lines so callers can cross-check
+    /// minimality against a reference algorithm.
+    fn assert_diff_invariants(left: &str, right: &str, result: &TextCompareResult) -> usize {
+        let expected_left: Vec<&str> = if left.is_empty() {
+            Vec::new()
+        } else {
+            left.trim_end_matches('\n').split('\n').collect()
+        };
+        let expected_right: Vec<&str> = if right.is_empty() {
+            Vec::new()
+        } else {
+            right.trim_end_matches('\n').split('\n').collect()
+        };
+
+        let recon_left: Vec<&str> = result
+            .lines
+            .iter()
+            .filter(|l| l.left_line.is_some())
+            .map(|l| l.left.as_deref().unwrap_or_default())
+            .collect();
+        let recon_right: Vec<&str> = result
+            .lines
+            .iter()
+            .filter(|l| l.right_line.is_some())
+            .map(|l| l.right.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            recon_left, expected_left,
+            "left side must reconstruct in order"
+        );
+        assert_eq!(
+            recon_right, expected_right,
+            "right side must reconstruct in order"
+        );
+
+        let mut last_left = 0;
+        let mut last_right = 0;
+        let mut equal = 0;
+        for line in &result.lines {
+            if let Some(ll) = line.left_line {
+                assert!(
+                    ll > last_left,
+                    "left_line must strictly increase: {:#?}",
+                    result.lines
+                );
+                last_left = ll;
+            }
+            if let Some(rl) = line.right_line {
+                assert!(
+                    rl > last_right,
+                    "right_line must strictly increase: {:#?}",
+                    result.lines
+                );
+                last_right = rl;
+            }
+            if line.kind == DiffLineKind::Equal {
+                assert_eq!(line.left, line.right, "Equal line must match on both sides");
+                equal += 1;
+            }
+        }
+        equal
+    }
+
+    #[test]
+    fn myers_diff_handles_repeated_line_ambiguity() {
+        let opts = TextCompareOptions {
+            diff_algorithm: DiffAlgorithm::Myers,
+            ..TextCompareOptions::default()
+        };
+        // Repeated-line inputs where Myers may anchor either duplicate. The
+        // result must stay a valid, minimal, in-order diff regardless of which
+        // duplicate is chosen as the equal anchor. `a\nb` vs `a\na` is the
+        // case a previous post-processing pass corrupted into reversed line
+        // numbers (left rendered line 2 above line 1).
+        let cases = [
+            ("b\nb\n", "a\nb\n"),
+            ("a\nb\n", "b\nb\n"),
+            ("a\nb\n", "a\na\n"),
+            ("c\nb\nc\n", "a\nc\n"),
+            ("c\nc\nc\n", "b\nc\nc\n"),
+            ("p\na\nb\n", "p\np\n"),
+        ];
+        for (left, right) in cases {
+            let result = compare_text("left", left, "right", right, &opts);
+            let equal = assert_diff_invariants(left, right, &result);
+
+            // Myers is an optimal-distance algorithm: it must keep exactly as
+            // many lines equal as the LCS reference (i.e. produce a minimal
+            // edit script), just possibly anchored at a different duplicate.
+            let reference = compare_text(
+                "left",
+                left,
+                "right",
+                right,
+                &TextCompareOptions {
+                    diff_algorithm: DiffAlgorithm::Lcs,
+                    ..TextCompareOptions::default()
+                },
+            );
+            let reference_equal = reference
+                .lines
+                .iter()
+                .filter(|l| l.kind == DiffLineKind::Equal)
+                .count();
+            assert_eq!(
+                equal, reference_equal,
+                "Myers must be minimal for {left:?} vs {right:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn patience_diff_handles_crossed_unique_lines() {
+        let opts = TextCompareOptions {
+            diff_algorithm: DiffAlgorithm::Patience,
+            ..TextCompareOptions::default()
+        };
+        let result = compare_text("left", "a\nc\n", "right", "c\na\n", &opts);
+
+        assert_eq!(result.difference_count(), 2);
+        assert!(
+            result
+                .lines
+                .iter()
+                .any(|line| line.kind == DiffLineKind::Equal)
+        );
     }
 
     #[test]
