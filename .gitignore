@@ -31,6 +31,9 @@
 # Long-form project roadmap, kept local-only (not source-tracked).
 /PLAN.md
 
+# Superpowers planning artifacts, kept local-only (not source-tracked).
+/docs/superpowers/
+
 # Local secrets / credentials. Should never be committed. If you need
 # to share configuration with collaborators, put it under packaging/
 # or docs/ and review it explicitly.

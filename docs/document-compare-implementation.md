@@ -1,13 +1,12 @@
 # Document & OCR Compare Implementation Design
 
-> Status: design — supersedes `docs/document-ocr-compare.md`'s deferral.
+> Status: implemented — document, OCR, and rendered document compare shipped in 1.9.0.
 
 ## Goals
 
 Enable `.pdf`, `.docx`, `.odt`, and image-format compare via three new unpacker
 plugins (system-discovered, not bundled). OCR-as-text via Tesseract. All helpers
 run inside the Phase 6 sandbox; no network access; no new Cargo dependencies.
-Satisfies all seven prerequisites from `docs/document-ocr-compare.md`.
 
 ## Non-goals
 
