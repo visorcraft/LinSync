@@ -850,6 +850,30 @@ pub fn resolve_webpage_options(
 /// [`resolve_webpage_options`]. The caller is responsible for the consent gate —
 /// the profile's `confirmed_by_user` is intentionally ignored (always forced to
 /// `true` here) so that a persisted profile cannot bypass the fresh user dialog.
+/// Serialize a webpage resource-tree (`FolderCompareResult`) into the compact
+/// `{path, state, leftSize, rightSize}` entry list the GUI renders, capping the
+/// count to keep the bridge payload bounded. Returns `(entries, truncated)`.
+fn webpage_tree_entries_json(
+    cmp: &linsync_core::FolderCompareResult,
+) -> (Vec<serde_json::Value>, bool) {
+    const MAX_ENTRIES: usize = 4000;
+    let truncated = cmp.entries.len() > MAX_ENTRIES;
+    let entries = cmp
+        .entries
+        .iter()
+        .take(MAX_ENTRIES)
+        .map(|entry| {
+            serde_json::json!({
+                "path": entry.relative_path.display().to_string(),
+                "state": serde_json::to_value(entry.state).unwrap_or(serde_json::Value::Null),
+                "leftSize": entry.left_size,
+                "rightSize": entry.right_size,
+            })
+        })
+        .collect();
+    (entries, truncated)
+}
+
 pub fn webpage_compare_bridge_response_with_profile(
     query: &str,
     paths: &linsync_core::AppPaths,
@@ -929,7 +953,15 @@ pub fn webpage_compare_bridge_response_with_profile(
                     cmp.summary.different_count
                 )
             };
-            json_with_schema(serde_json::json!({"summary": summary, "equal": equal}))
+            // Emit the resource entries so the GUI can render a sortable /
+            // filterable tree instead of a summary line.
+            let (entries, truncated) = webpage_tree_entries_json(&cmp);
+            json_with_schema(serde_json::json!({
+                "summary": summary,
+                "equal": equal,
+                "truncated": truncated,
+                "entries": entries,
+            }))
         }
         #[cfg(feature = "web-engine")]
         Ok(linsync_core::WebpageCompareResult::Rendered(r)) => {
@@ -953,5 +985,51 @@ pub fn webpage_clear_cache_bridge_response(paths: &linsync_core::AppPaths) -> St
     match linsync_core::clear_webcompare_cache(&paths.cache_dir) {
         Ok(()) => json_with_schema(serde_json::json!({"ok": true})),
         Err(e) => error_json(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod webpage_tree_tests {
+    use super::webpage_tree_entries_json;
+    use linsync_core::{VirtualNode, compare_virtual_trees};
+
+    #[test]
+    fn tree_entries_carry_path_and_state() {
+        // A network-free resource tree: build two VirtualNode trees that differ,
+        // compare them, and confirm the serialized entries carry path + state.
+        let vn = |path: &str, sha: Option<&str>| VirtualNode {
+            path: path.to_string(),
+            kind: "file".to_string(),
+            size: None,
+            sha256: sha.map(str::to_string),
+        };
+        let left = vec![
+            vn("index.html", Some("aaa")),
+            vn("only-left.css", Some("c")),
+        ];
+        let right = vec![
+            vn("index.html", Some("bbb")),
+            vn("only-right.js", Some("d")),
+        ];
+        let result = compare_virtual_trees(&left, &right);
+
+        let (entries, truncated) = webpage_tree_entries_json(&result);
+        assert!(!truncated);
+        assert!(!entries.is_empty(), "tree entries should be emitted");
+        // Each entry exposes a path string and a recognized state.
+        for e in &entries {
+            assert!(e["path"].is_string(), "entry needs a path: {e}");
+            let state = e["state"].as_str().unwrap_or("");
+            assert!(
+                matches!(state, "Identical" | "Different" | "LeftOnly" | "RightOnly"),
+                "entry has a recognized state, got {state:?}: {e}"
+            );
+        }
+        // The changed index.html is reported as Different.
+        let index = entries
+            .iter()
+            .find(|e| e["path"] == "index.html")
+            .expect("index.html present");
+        assert_eq!(index["state"], "Different");
     }
 }

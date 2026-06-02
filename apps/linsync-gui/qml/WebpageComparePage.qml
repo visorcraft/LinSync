@@ -41,6 +41,10 @@ Controls.Pane {
     property bool resultEqual: false
     property bool resultTruncated: false
     property bool resultError: false
+    // Resource-tree entries [{path, state, leftSize, rightSize}] for tree mode,
+    // and a free-text path filter over them.
+    property var resourceEntries: []
+    property string resourceFilter: ""
     // Left/right rows derived from resultRows, in the {text,state,number}
     // shape the DiffEditorPane expects.
     property var leftDiffRows: []
@@ -143,6 +147,7 @@ Controls.Pane {
             root.resultEqual = payload.equal === true;
             root.resultTruncated = payload.truncated === true;
             root.resultRows = payload.rows ?? [];
+            root.resourceEntries = payload.entries ?? [];
             if (payload.session)
                 root.sessionUpdated(payload);
             root.rebuildDiffRows();
@@ -154,6 +159,27 @@ Controls.Pane {
         root.rightUrl = right;
         root.pendingNewTab = !!newTab;
         confirmDialog.open();
+    }
+
+    // Resource entries filtered by the path search and sorted by path. The diff
+    // state ("Different"/"LeftOnly"/"RightOnly"/...) comes straight from the
+    // core FolderEntryState serialization.
+    function filteredResourceEntries() {
+        var needle = root.resourceFilter.toLowerCase();
+        var out = (root.resourceEntries || []).filter(function (e) {
+            return needle === "" || String(e.path || "").toLowerCase().indexOf(needle) !== -1;
+        });
+        out.sort(function (a, b) { return String(a.path).localeCompare(String(b.path)); });
+        return out;
+    }
+
+    function resourceStateColor(state) {
+        switch (String(state)) {
+            case "LeftOnly":  return Kirigami.Theme.negativeTextColor;
+            case "RightOnly": return Kirigami.Theme.positiveTextColor;
+            case "Different": return Kirigami.Theme.neutralTextColor;
+            default:          return root.activeDisabledText;
+        }
     }
 
     Timer {
@@ -452,9 +478,90 @@ Controls.Pane {
                     }
                 }
 
+                // ── Resource-tree view (tree mode with differences) ──────────
+                ColumnLayout {
+                    visible: !root.busy && root.resourceEntries.length > 0
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: 6
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.margins: 8
+                        spacing: 8
+                        AppTextField {
+                            id: resourceFilterField
+                            implicitHeight: 32
+                            Layout.preferredWidth: 240
+                            text: root.resourceFilter
+                            placeholderText: qsTr("Filter resources…")
+                            color: root.activeText
+                            placeholderTextColor: root.activeDisabledText
+                            background: Rectangle {
+                                color: root.activeBg
+                                border.color: root.separatorColor
+                                border.width: 1
+                                radius: 4
+                            }
+                            Accessible.name: qsTr("Filter webpage resources by path")
+                            onTextChanged: root.resourceFilter = text
+                        }
+                        Item { Layout.fillWidth: true }
+                        Controls.Label {
+                            text: qsTr("%1 resources").arg(root.filteredResourceEntries().length)
+                            color: root.activeText
+                            opacity: 0.6
+                            font.pixelSize: 11
+                            font.family: "monospace"
+                        }
+                    }
+
+                    Controls.ScrollView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        ListView {
+                            model: root.filteredResourceEntries()
+                            delegate: Rectangle {
+                                required property var modelData
+                                required property int index
+                                width: ListView.view ? ListView.view.width : 0
+                                height: 30
+                                color: index % 2 === 0 ? root.activeBg : root.activeBgAlt
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 12
+                                    anchors.rightMargin: 12
+                                    spacing: 10
+                                    Rectangle {
+                                        Layout.preferredWidth: 9
+                                        Layout.preferredHeight: 9
+                                        radius: 4.5
+                                        color: root.resourceStateColor(modelData.state)
+                                    }
+                                    Controls.Label {
+                                        Layout.fillWidth: true
+                                        text: modelData.path
+                                        elide: Text.ElideMiddle
+                                        color: root.activeText
+                                        font.family: "monospace"
+                                        font.pixelSize: 12
+                                    }
+                                    Controls.Label {
+                                        text: String(modelData.state)
+                                        color: root.resourceStateColor(modelData.state)
+                                        font.pixelSize: 11
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ── Summary-only fallback (identical, tree mode, or error) ───
                 Item {
-                    visible: !root.busy && root.resultRows.length === 0 && root.resultSummary.length > 0
+                    visible: !root.busy && root.resultRows.length === 0
+                        && root.resourceEntries.length === 0 && root.resultSummary.length > 0
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     ColumnLayout {
