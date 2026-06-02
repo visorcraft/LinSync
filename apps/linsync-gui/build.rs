@@ -34,7 +34,16 @@ fn main() {
         rust_sources.push("src/cxxqt_smoke.rs");
     }
 
-    CxxQtBuilder::new_qml_module(module)
+    let mut builder = CxxQtBuilder::new_qml_module(module);
+    // Make the bundled C++ shim headers (e.g. linsync_translator.h) resolvable
+    // by the `include!("…")` declarations in the cxx-qt bridges.
+    // SAFETY: only adds an include path to the internal cc::Build.
+    builder = unsafe {
+        builder.cc_builder(|cc| {
+            cc.include(concat!(env!("CARGO_MANIFEST_DIR"), "/cpp"));
+        })
+    };
+    builder
         .qrc_resources(
             QResources::new().resource(
                 QResource::new()

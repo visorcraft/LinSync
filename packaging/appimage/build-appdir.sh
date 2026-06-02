@@ -45,6 +45,14 @@ if qml6_bin="$(command -v qml6 2>/dev/null)"; then
 fi
 mkdir -p "${appdir}/usr/share/linsync"
 cp -R "${root}/apps/linsync-gui/qml" "${appdir}/usr/share/linsync/qml"
+
+# Compile + bundle UI translation catalogs next to the qml tree (the in-process
+# host loads linsync_<locale>.qm from qml's sibling i18n/ dir).
+_lrelease=$(command -v lrelease6 || command -v lrelease-qt6 || command -v lrelease || echo /usr/lib/qt6/bin/lrelease)
+mkdir -p "${appdir}/usr/share/linsync/i18n"
+for _ts in "${root}"/apps/linsync-gui/i18n/*.ts; do
+    "$_lrelease" "$_ts" -qm "${appdir}/usr/share/linsync/i18n/$(basename "${_ts%.ts}").qm" || true
+done
 install -Dm644 "${root}/packaging/distro/git-mergetool.gitconfig" \
     "${appdir}/usr/share/linsync/git-mergetool.gitconfig"
 install -Dm644 "${root}/packaging/com.visorcraft.LinSync.desktop" "${appdir}/usr/share/applications/com.visorcraft.LinSync.desktop"

@@ -6809,6 +6809,19 @@ fn run_cxxqt_host(
     app.pin_mut()
         .set_organization_domain(&QString::from("visorcraft.com"));
 
+    // Install a UI translation catalog for the active locale, if one ships
+    // alongside the QML (sibling `i18n/` dir holding `linsync_<locale>.qm`).
+    // No-op when no catalog matches the locale, so the English source strings
+    // remain. Must run before the engine loads QML so qsTr() resolves.
+    if let Some(i18n_dir) = qml_root.parent().map(|p| p.join("i18n")) {
+        let loaded = crate::cxxqt_session::ffi::linsync_install_translator(&QString::from(
+            i18n_dir.to_string_lossy().as_ref(),
+        ));
+        if loaded {
+            tracing::info!(dir = %i18n_dir.display(), "installed UI translation catalog");
+        }
+    }
+
     let mut engine = QQmlApplicationEngine::new();
     engine
         .pin_mut()

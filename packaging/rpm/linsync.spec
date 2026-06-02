@@ -27,6 +27,8 @@ BuildRequires:  qt6-qtbase-devel
 BuildRequires:  qt6-qtdeclarative-devel
 BuildRequires:  kf6-kirigami-devel
 BuildRequires:  pkgconf-pkg-config
+# lrelease, to compile the UI translation catalogs (linsync_*.ts -> .qm).
+BuildRequires:  qt6-qttools-devel
 
 Requires:       qt6-qtbase
 Requires:       qt6-qtdeclarative
@@ -66,6 +68,14 @@ cp -R apps/linsync-gui/qml %{buildroot}%{_datadir}/linsync/qml
 install -Dm644 packaging/distro/git-mergetool.gitconfig \
     %{buildroot}%{_datadir}/linsync/git-mergetool.gitconfig
 
+# Compile + install UI translation catalogs next to the qml tree (the host
+# loads linsync_<locale>.qm from qml's sibling i18n/ dir).
+_lrelease=$(command -v lrelease-qt6 || command -v lrelease6 || command -v lrelease || echo /usr/lib64/qt6/bin/lrelease)
+install -d %{buildroot}%{_datadir}/linsync/i18n
+for _ts in apps/linsync-gui/i18n/*.ts; do
+    "$_lrelease" "$_ts" -qm "%{buildroot}%{_datadir}/linsync/i18n/$(basename "${_ts%.ts}").qm"
+done
+
 install -Dm644 packaging/com.visorcraft.LinSync.desktop      %{buildroot}%{_datadir}/applications/com.visorcraft.LinSync.desktop
 install -Dm644 packaging/com.visorcraft.LinSync.metainfo.xml %{buildroot}%{_datadir}/metainfo/com.visorcraft.LinSync.metainfo.xml
 install -Dm644 packaging/com.visorcraft.LinSync.mime.xml     %{buildroot}%{_datadir}/mime/packages/com.visorcraft.LinSync.xml
@@ -89,6 +99,7 @@ done
 %{_bindir}/linsync
 %{_bindir}/linsync-cli
 %{_datadir}/linsync/qml
+%{_datadir}/linsync/i18n
 %{_datadir}/linsync/git-mergetool.gitconfig
 %{_datadir}/applications/com.visorcraft.LinSync.desktop
 %{_datadir}/metainfo/com.visorcraft.LinSync.metainfo.xml

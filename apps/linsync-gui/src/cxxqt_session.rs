@@ -30,6 +30,12 @@ pub mod ffi {
         type QString = cxx_qt_lib::QString;
         include!("cxx-qt-lib/qvariant.h");
         type QVariant = cxx_qt_lib::QVariant;
+
+        // Install a QTranslator for the active locale (cxx-qt-lib does not
+        // expose QTranslator). Implemented inline in the bundled C++ shim.
+        include!("linsync_translator.h");
+        #[doc(hidden)]
+        fn linsync_install_translator(dir: &QString) -> bool;
     }
 
     extern "RustQt" {
