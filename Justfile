@@ -37,6 +37,29 @@ deny:
 audit:
     cargo audit
 
+# Regenerate the authoritative third-party crate/license table for the shipped
+# feature set (cxxqt-app + web-engine, Linux target: build deps included, dev
+# deps excluded). Prints a `| crate | version | license |` Markdown table and
+# the total count. Update all three credit surfaces from it:
+# docs/third-party-notices.md, apps/linsync-gui/qml/CreditsPage.qml (crates
+# array), and apps/linsync-gui/qml/LicensesPage.qml (Cargo Dependencies table).
+credits:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rows=$( {
+        cargo tree -p linsync --no-default-features \
+            --features cxxqt,cxxqt-app,web-engine -e no-dev \
+            --target x86_64-unknown-linux-gnu --format '{p}|{l}'
+        cargo tree -p linsync-cli --features web-engine -e no-dev \
+            --target x86_64-unknown-linux-gnu --format '{p}|{l}'
+      } | sed -E 's/^[^a-zA-Z0-9]*//; s/ \(proc-macro\)//; s/ \(\*\)$//' \
+        | grep -E '^[a-zA-Z0-9_-]+ v[0-9]' \
+        | grep -vE '^(linsync|linsync-core|linsync-cli|linsync-sandbox|linsync-webengine) ' \
+        | awk -F'|' '{ split($1,a," v"); printf "| %s | %s | %s |\n", a[1], a[2], $2 }' \
+        | sort -u )
+    echo "$rows"
+    echo "third-party crates distributed in the release build: $(echo "$rows" | wc -l)"
+
 # Build the release binaries and bundle a self-contained AppImage via
 # linuxdeploy + linuxdeploy-plugin-qt. Falls
 # back to staging the AppDir when linuxdeploy isn't on PATH.

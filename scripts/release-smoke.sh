@@ -31,5 +31,8 @@ test -s "${prefix}/share/icons/hicolor/512x512/apps/com.visorcraft.LinSync.png"
 
 test -s docs/third-party-notices.md
 grep -q "## Source Offer" docs/third-party-notices.md
+# Fail the release if any of the three credit surfaces drift from the shipped
+# dependency graph (missing or extra third-party crates).
+bash scripts/check-credits.sh
 python3 scripts/check-parity-acceptance.py
 bash scripts/gui-smoke.sh
