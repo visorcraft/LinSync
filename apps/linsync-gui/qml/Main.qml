@@ -1859,19 +1859,35 @@ Kirigami.ApplicationWindow {
         root.bridgeGet("/copy-clipboard?text=" + encodeURIComponent(text))
     }
 
+    // Holds the fetched report so the user can review it before it leaves the
+    // app (copied to the clipboard) — preview-before-export.
+    property string exportPreviewContent: ""
+    property string exportPreviewFormat: "unified"
+
     function exportReport() {
         if (!root.bridgeUrl || root.leftPath === "")
             return
+        root.fetchExportPreview(root.exportPreviewFormat)
+        exportPreviewDialog.open()
+    }
+
+    function fetchExportPreview(format) {
+        root.exportPreviewFormat = format
+        root.exportPreviewContent = qsTr("Generating preview…")
         var req = new XMLHttpRequest()
         req.onreadystatechange = function () {
-            if (req.readyState === XMLHttpRequest.DONE && req.status === 200) {
+            if (req.readyState !== XMLHttpRequest.DONE)
+                return
+            if (req.status === 200) {
                 var payload = JSON.parse(req.responseText)
-                if (payload && payload.content)
-                    root.copyToClipboard(payload.content)
-                root.statusText = payload && payload.content ? "Report copied to clipboard" : "Export failed"
+                root.exportPreviewContent = (payload && payload.content)
+                    ? payload.content
+                    : qsTr("(empty report)")
+            } else {
+                root.exportPreviewContent = qsTr("Failed to generate report (status %1)").arg(req.status)
             }
         }
-        req.open("GET", root.bridgeUrl + "/report?format=unified")
+        req.open("GET", root.bridgeUrl + "/report?format=" + encodeURIComponent(format))
         req.send()
     }
 
@@ -2117,6 +2133,70 @@ Kirigami.ApplicationWindow {
                         pluginsPage.showActionResult(qsTr("Plugin install failed"))
                     }
                 })
+        }
+    }
+
+    // Preview-before-export: review the generated report (and pick a format)
+    // before it is copied to the clipboard, so privacy-sensitive content is
+    // never exported without a look.
+    Controls.Dialog {
+        id: exportPreviewDialog
+        modal: true
+        title: qsTr("Export report — preview")
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(root.width - 80, 900)
+        height: Math.min(root.height - 120, 640)
+        standardButtons: Controls.Dialog.Close
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 8
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Controls.Label {
+                    text: qsTr("Format:")
+                    color: root.activeText
+                }
+                Controls.ComboBox {
+                    id: exportFormatCombo
+                    model: ["unified", "json", "summary"]
+                    Accessible.name: qsTr("Report format")
+                    currentIndex: Math.max(0, model.indexOf(root.exportPreviewFormat))
+                    onActivated: root.fetchExportPreview(currentText)
+                }
+                Item { Layout.fillWidth: true }
+                Controls.Button {
+                    text: qsTr("Copy to clipboard")
+                    icon.name: "edit-copy"
+                    onClicked: {
+                        root.copyToClipboard(root.exportPreviewContent)
+                        root.statusText = qsTr("Report copied to clipboard")
+                        exportPreviewDialog.close()
+                    }
+                }
+            }
+
+            Controls.ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                Controls.TextArea {
+                    id: exportPreviewArea
+                    readOnly: true
+                    wrapMode: TextEdit.NoWrap
+                    font.family: "monospace"
+                    font.pixelSize: 12
+                    color: root.activeText
+                    text: root.exportPreviewContent
+                    background: Rectangle {
+                        color: root.activeBg
+                        border.color: root.separatorColor
+                        border.width: 1
+                    }
+                }
+            }
         }
     }
 
