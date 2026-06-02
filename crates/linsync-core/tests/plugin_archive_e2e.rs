@@ -9,7 +9,9 @@
 
 mod common;
 
-use linsync_core::plugin::{PluginExecutionOptions, PluginManifest, run_unpack_folder_plugin};
+use linsync_core::plugin::{
+    PluginExecutionOptions, PluginManifest, extract_archive_member, run_unpack_folder_plugin,
+};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Once;
@@ -116,6 +118,76 @@ fn zip_unpack_plugin_lists_archive_contents() {
         "expected sub/ dir in tree, got: {:?}",
         result.tree
     );
+}
+
+#[test]
+fn zip_extract_member_returns_file_content() {
+    if !common::tools_available(&["python3", "zip", "bash"]) {
+        eprintln!("SKIP: python3, zip, or bash not on PATH");
+        return;
+    }
+    let dir = archive_dir();
+    build_fixtures(&dir);
+
+    let plugin_dir = common::workspace_root().join("packaging/plugins/zip-unpacker");
+    let manifest = load_plugin_manifest(&plugin_dir);
+    let source = dir.join("sample.zip");
+    let out_dir =
+        std::env::temp_dir().join(format!("linsync-extract-member-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out_dir);
+
+    // Extract a nested member and confirm its content.
+    let extracted = extract_archive_member(
+        &plugin_dir,
+        &manifest,
+        source.to_str().unwrap(),
+        "sub/beta.txt",
+        &out_dir,
+        &plugin_execution_options(),
+    )
+    .expect("extract_archive_member failed");
+    assert_eq!(std::fs::read_to_string(&extracted).unwrap(), "beta\n");
+
+    // A missing member surfaces an error rather than a bogus file.
+    let missing = extract_archive_member(
+        &plugin_dir,
+        &manifest,
+        source.to_str().unwrap(),
+        "does/not/exist.txt",
+        &out_dir,
+        &plugin_execution_options(),
+    );
+    assert!(missing.is_err(), "extracting a missing member should error");
+
+    let _ = std::fs::remove_dir_all(&out_dir);
+}
+
+#[test]
+fn tar_extract_member_returns_file_content() {
+    if !common::tools_available(&["python3", "tar", "bash"]) {
+        eprintln!("SKIP: python3, tar, or bash not on PATH");
+        return;
+    }
+    let dir = archive_dir();
+    build_fixtures(&dir);
+
+    let plugin_dir = common::workspace_root().join("packaging/plugins/tar-unpacker");
+    let manifest = load_plugin_manifest(&plugin_dir);
+    let source = dir.join("sample.tar");
+    let out_dir = std::env::temp_dir().join(format!("linsync-tar-extract-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out_dir);
+
+    let extracted = extract_archive_member(
+        &plugin_dir,
+        &manifest,
+        source.to_str().unwrap(),
+        "sub/gamma.txt",
+        &out_dir,
+        &plugin_execution_options(),
+    )
+    .expect("tar extract_archive_member failed");
+    assert_eq!(std::fs::read_to_string(&extracted).unwrap(), "gamma\n");
+    let _ = std::fs::remove_dir_all(&out_dir);
 }
 
 #[test]

@@ -13,10 +13,11 @@ set -euo pipefail
 
 REQUEST=$(cat)
 
-python3 - "$REQUEST" <<'PY'
+python3 - "$REQUEST" "$LINSYNC_PLUGIN_TEMP_DIR" <<'PY'
 import sys, json, os, tarfile
 
 raw_request = sys.argv[1]
+temp_dir = sys.argv[2] if len(sys.argv) > 2 else "."
 try:
     req = json.loads(raw_request)
 except json.JSONDecodeError as e:
@@ -24,7 +25,7 @@ except json.JSONDecodeError as e:
     sys.exit(0)
 
 op = req.get("op", "")
-if op != "unpack_folder":
+if op not in ("unpack_folder", "extract_member"):
     print(json.dumps({"ok": False, "error": f"unsupported op: {op}"}))
     sys.exit(0)
 
@@ -35,6 +36,40 @@ if not src:
 
 if not os.path.isfile(src):
     print(json.dumps({"ok": False, "error": f"source not found: {src}"}))
+    sys.exit(0)
+
+if op == "extract_member":
+    member = req.get("member", "")
+    norm = os.path.normpath(member)
+    if not member or norm.startswith("..") or os.path.isabs(norm):
+        print(json.dumps({"ok": False, "error": f"unsafe member path: {member!r}"}))
+        sys.exit(0)
+    try:
+        with tarfile.open(src) as tf:
+            # `tar -cf . ` prefixes entries with "./"; the unpack_folder tree
+            # reports normalized paths, so accept both forms here.
+            ti = None
+            for name in (member, "./" + member, norm):
+                try:
+                    ti = tf.getmember(name)
+                    break
+                except KeyError:
+                    continue
+            if ti is None:
+                print(json.dumps({"ok": False, "error": f"member not found: {member}"}))
+                sys.exit(0)
+            extracted = tf.extractfile(ti)
+            if extracted is None:
+                print(json.dumps({"ok": False, "error": f"member not a file: {member}"}))
+                sys.exit(0)
+            data = extracted.read()
+    except tarfile.TarError as e:
+        print(json.dumps({"ok": False, "error": f"bad tar: {e}"}))
+        sys.exit(0)
+    out = os.path.join(temp_dir, os.path.basename(norm) or "member")
+    with open(out, "wb") as fh:
+        fh.write(data)
+    print(json.dumps({"ok": True, "path": out}))
     sys.exit(0)
 
 try:

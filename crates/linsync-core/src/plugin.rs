@@ -370,6 +370,7 @@ pub enum PluginOperation {
     ListVirtualFolder,
     UnpackFolder,
     RenderPages,
+    ExtractMember,
 }
 
 impl PluginOperation {
@@ -381,8 +382,20 @@ impl PluginOperation {
             Self::ListVirtualFolder => "list_virtual_folder",
             Self::UnpackFolder => "unpack_folder",
             Self::RenderPages => "render_pages",
+            Self::ExtractMember => "extract_member",
         }
     }
+}
+
+/// Response produced by the `extract_member` operation: the single member file
+/// the unpacker extracted into its temp dir.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExtractMemberResponse {
+    pub ok: bool,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Response produced by the `render_pages` operation: the page images the
@@ -1684,6 +1697,51 @@ pub fn run_render_pages_plugin(
         pages: copied,
         error: None,
     })
+}
+
+/// Extract a single `member` from `archive` via an unpacker plugin, into the
+/// persistent `output_dir`, returning the extracted file's path.
+///
+/// The request is `{"op":"extract_member","source":<archive>,"member":<rel>}`.
+/// The plugin writes the member into its sandbox-writable temp dir and responds
+/// with `{"ok":true,"path":"<temp>/..."}`; the host copies it into `output_dir`
+/// before the temp dir is reclaimed (same lifetime handling as render_pages).
+pub fn extract_archive_member(
+    plugin_dir: &Path,
+    manifest: &PluginManifest,
+    archive: &str,
+    member: &str,
+    output_dir: &Path,
+    options: &PluginExecutionOptions,
+) -> Result<PathBuf, PluginError> {
+    let req = serde_json::json!({
+        "op": "extract_member",
+        "source": archive,
+        "member": member,
+    });
+    let with_temp = run_plugin_helper_with_temp(plugin_dir, manifest, &req.to_string(), options)?;
+    let response: ExtractMemberResponse = serde_json::from_str(&with_temp.result.stdout)?;
+    let extracted = match (response.ok, response.path) {
+        (true, Some(path)) => path,
+        _ => {
+            return Err(PluginError::PluginResponseError {
+                code: "extract_failed".to_owned(),
+                message: response
+                    .error
+                    .unwrap_or_else(|| format!("plugin failed to extract '{member}'")),
+                diagnostics: Vec::new(),
+            });
+        }
+    };
+    fs::create_dir_all(output_dir)?;
+    // Name the output after the member's basename, falling back to "member".
+    let file_name = Path::new(member)
+        .file_name()
+        .map(|n| n.to_owned())
+        .unwrap_or_else(|| std::ffi::OsString::from("member"));
+    let dest = output_dir.join(file_name);
+    fs::copy(&extracted, &dest)?;
+    Ok(dest)
 }
 
 /// Compare two archives by unpacking each through a folder-virtualizer /

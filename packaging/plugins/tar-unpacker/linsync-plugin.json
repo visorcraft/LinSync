@@ -14,7 +14,7 @@
     "application/zstd"
   ],
   "extensions": ["tar", "tgz", "tar.gz", "tbz2", "tar.bz2", "txz", "tar.xz", "tzst", "tar.zst"],
-  "capabilities": ["unpack-folder"],
+  "capabilities": ["unpack-folder", "extract-member"],
   "deterministic": true,
   "sandbox": {
     "network": false,

@@ -13,7 +13,7 @@
     "application/vnd.android.package-archive"
   ],
   "extensions": ["zip", "jar", "war", "apk", "ipa"],
-  "capabilities": ["unpack-folder"],
+  "capabilities": ["unpack-folder", "extract-member"],
   "deterministic": true,
   "sandbox": {
     "network": false,
