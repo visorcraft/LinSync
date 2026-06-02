@@ -1,3 +1,34 @@
+linsync (1.8.1-1) unstable; urgency=medium
+
+  * Feature release completing roadmap Phases 4-10.
+  * Performance: lazy windowed rendering for large text diffs and large folder
+    comparisons (the view never loads an unbounded diff/tree at once); paged
+    core APIs and bridge endpoints (/compare/text/window, /folder/query with
+    sort/filter/state/paging).
+  * Specialized engines: rendered document compare (pdftoppm) with
+    --document-pages range selection; webpage rendered/screenshot compare via
+    an out-of-process Qt WebEngine renderer plus a filterable resource tree;
+    archive compare via unpacker/virtualizer plugins with nested-archive
+    recursion and member extraction; table date/time tolerance and per-column
+    case/trim/regex rules.
+  * Plugins: option-schema validation and an option/enabled store; install and
+    remove across core/CLI/GUI; first-run trust prompt; per-profile prediffer
+    routing and prediffer chaining; sandbox-confinement reporting and
+    per-plugin diagnostics.
+  * Merge: interactive Git mergetool that launches the GUI and validates the
+    saved output; conflict highlight/scroll by per-side line numbers.
+  * Reports: versioned save-result/from-json for text/folder/table/binary;
+    --relative-paths portable reports; preview-before-export.
+  * Sessions/projects: multi-tab session persistence and restore; CLI session
+    and project commands; per-entry compare profiles; recent-workspaces list;
+    persist-recent-paths privacy control.
+  * Accessibility: screen-reader status/error announcements and high-contrast
+    diff change bars. Localization: runtime QTranslator plus the
+    lupdate/lrelease string-catalog pipeline.
+  * Folder: extended-attribute (xattr) comparison mode.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Tue, 02 Jun 2026 12:00:00 -0500
+
 linsync (1.8.0-1) unstable; urgency=medium
 
   * Correctness, security, and robustness hardening release.

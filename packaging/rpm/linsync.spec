@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.8.0
+Version:        1.8.1
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -122,6 +122,27 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Tue Jun 02 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.8.1-1
+- Feature release completing roadmap Phases 4-10.
+- Performance: lazy windowed rendering for large text diffs and large folder
+  comparisons; paged core APIs and bridge endpoints (/compare/text/window,
+  /folder/query with sort/filter/state/paging).
+- Engines: rendered document compare (pdftoppm) with --document-pages range
+  selection; webpage rendered/screenshot via an out-of-process Qt WebEngine
+  renderer + filterable resource tree; archive compare via unpacker/virtualizer
+  plugins with nested-archive recursion; table date/time tolerance + per-column
+  case/trim/regex rules.
+- Plugins: option-schema validation + option/enabled store; install/remove
+  across core/CLI/GUI; trust prompt; per-profile prediffer routing + chaining;
+  sandbox-confinement reporting and per-plugin diagnostics.
+- Merge: interactive Git mergetool that launches the GUI and validates output.
+- Reports: versioned save-result/from-json for text/folder/table/binary;
+  --relative-paths portable reports; preview-before-export.
+- Sessions/projects: multi-tab persistence + restore; CLI session and project
+  commands; per-entry compare profiles; recent-workspaces; privacy control.
+- Accessibility: screen-reader status/error announcements and high-contrast
+  diff change bars. Localization: runtime QTranslator + lupdate/lrelease.
+
 * Mon Jun 01 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.8.0-1
 - Correctness, security, and robustness hardening release.
 - Folder sync: fix delete operations, which previously always failed without

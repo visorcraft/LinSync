@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.8.1" date="2026-06-02">
+      <description>
+        <p>Feature release completing the roadmap (Phases 4-10). Large text diffs and large folder comparisons now render lazily window-by-window so the view never loads an unbounded diff or tree at once, backed by paged core APIs and bridge endpoints. Adds rendered document compare (pdftoppm) with page-range selection, webpage rendered/screenshot compare via an out-of-process Qt WebEngine renderer with a filterable resource tree, and archive comparison through unpacker/virtualizer plugins with nested-archive recursion. The plugin layer gains option-schema validation, install/remove across core/CLI/GUI, a first-run trust prompt, per-profile prediffer routing and chaining, and sandbox-confinement reporting. Three-way merge can launch interactively as a Git mergetool; reports gain versioned JSON save/restore, relative-path portable bundles, and preview-before-export; sessions and projects persist multiple tabs with per-entry profiles and CLI commands. Accessibility adds screen-reader status/error announcements and high-contrast diff change bars, and the localization runtime is wired with a lupdate/lrelease string-catalog pipeline.</p>
+      </description>
+    </release>
     <release version="1.8.0" date="2026-06-01">
       <description>
         <p>Correctness, security, and robustness hardening release. Fixes folder delete operations (which previously always failed); makes three-way merge resolve from structured conflict regions instead of re-parsing marker text (content that looks like a conflict marker no longer corrupts the result), preserve CRLF/CR line endings on save, and write atomically. The plugin sandbox now grants helpers read-only access to $HOME, applies file-descriptor and process limits on the bubblewrap fallback, and blocks the full set of credential-changing syscalls. Image compare bounds decoder memory and dimensions to defeat decompression bombs and fixes an overlay-buffer integer overflow. Settings and sessions preserve unknown JSON keys across load and save, OCR language selection now reaches the extractor plugin, and there are further fixes across table, filter, trash, webpage, the CLI, and the GUI bridge.</p>
