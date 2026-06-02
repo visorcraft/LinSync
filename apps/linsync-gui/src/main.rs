@@ -8035,7 +8035,12 @@ mod tests {
             path: format!("file_{i:06}.txt"),
             is_dir: false,
             entry_type: "file".to_owned(),
-            state: if i.is_multiple_of(2) { "changed" } else { "equal" }.to_owned(),
+            state: if i.is_multiple_of(2) {
+                "changed"
+            } else {
+                "equal"
+            }
+            .to_owned(),
             left_size: Some(1),
             right_size: Some(2),
             left_modified: None,
