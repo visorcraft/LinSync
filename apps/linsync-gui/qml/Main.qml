@@ -1754,6 +1754,12 @@ Kirigami.ApplicationWindow {
     }
 
     function reloadCompare() {
+        // Reloading re-reads from disk and discards any unsaved edits, so prompt
+        // (Save-then-reload / Discard-and-reload) when a side is dirty.
+        if ((root.leftDirty || root.rightDirty) && root.confirmOnClose) {
+            reloadDirtyDialog.open()
+            return
+        }
         root.requestCompare(false)
     }
 
@@ -3312,12 +3318,7 @@ Kirigami.ApplicationWindow {
                     Controls.ToolTip.text: "Reload from disk"
                     Controls.ToolTip.visible: hovered
                     Accessible.name: "Reload"
-                    onClicked: {
-                        if ((root.leftDirty || root.rightDirty) && root.confirmOnClose)
-                            reloadDirtyDialog.open()
-                        else
-                            root.requestCompare(false)
-                    }
+                    onClicked: root.reloadCompare()
                 }
 
                 Controls.ToolButton {
