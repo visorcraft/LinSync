@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.9.1" date="2026-06-02">
+      <description>
+        <p>Completes and corrects third-party license attribution. The in-app Credits and Licenses pages and the bundled third-party notices now list every Rust crate distributed in the release build — previously only a subset was shown, omitting the cxx-qt bridge and image-decoder stacks — and the Licenses page bundles the full verbatim Apache-2.0 and Zlib license texts. A regeneration command and a release/CI drift-guard keep the attribution surfaces in sync with the dependency graph. Also includes documentation and internal tooling cleanup.</p>
+      </description>
+    </release>
     <release version="1.9.0" date="2026-06-02">
       <description>
         <p>Completes the previously-deferred roadmap niceties. Image compare now handles animated GIF, APNG, and WebP frame-by-frame (opt-in via an all-frames mode, with a per-frame breakdown), decodes Radiance HDR and OpenEXR sources (tone-mapped to 8-bit), and reports each side's decoded color type. OCR gains word-level positional data through an optional, backward-compatible plugin-protocol field parsed from Tesseract's TSV output. Plugins gain a per-profile enable/disable override (profile over global) wired into prediffer and archive-unpacker routing with a Plugins-page toggle, plus a conflict-resolution policy for overlapping prediffers. Image and document comparison results can now be saved as versioned JSON and re-rendered into HTML reports, matching the existing text/folder/table/binary round-trip.</p>

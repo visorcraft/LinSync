@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.9.0
+Version:        1.9.1
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -122,6 +122,15 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Tue Jun 02 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.9.1-1
+- Third-party attribution: the in-app Credits and Licenses pages and the
+  bundled third-party notices now list every crate distributed in the release
+  build (the cxx-qt bridge and image-decoder stacks were previously unlisted)
+  and bundle the full verbatim Apache-2.0 and Zlib license texts.
+- A `just credits` regenerator and a release/CI drift-guard keep the three
+  attribution surfaces in sync with the dependency graph.
+- Documentation and internal tooling cleanup.
+
 * Tue Jun 02 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.9.0-1
 - Completes the previously-deferred roadmap niceties.
 - Image: animated GIF/APNG/WebP frame-by-frame compare (--image-frames
