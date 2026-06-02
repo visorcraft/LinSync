@@ -1730,27 +1730,47 @@ wd!:target</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4754"/>
-        <source>Removed %1</source>
+        <location filename="../qml/Main.qml" line="4755"/>
+        <source>Added to profile prediffers</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4757"/>
-        <source>%1 is not installed</source>
+        <location filename="../qml/Main.qml" line="4756"/>
+        <source>Removed from profile prediffers</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../qml/Main.qml" line="4759"/>
+        <source>Select a user profile to edit its prediffers</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/Main.qml" line="4761"/>
+        <source>Could not update profile prediffers</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/Main.qml" line="4770"/>
+        <source>Removed %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/Main.qml" line="4773"/>
+        <source>%1 is not installed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/Main.qml" line="4775"/>
         <source>Could not remove %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="5345"/>
+        <location filename="../qml/Main.qml" line="5361"/>
         <source>Comparing %1/%2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="5347"/>
+        <location filename="../qml/Main.qml" line="5363"/>
         <source>Comparing — %1</source>
         <translation type="unfinished"></translation>
     </message>
@@ -1863,264 +1883,274 @@ wd!:target</source>
 <context>
     <name>PluginsPage</name>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="57"/>
+        <location filename="../qml/PluginsPage.qml" line="72"/>
         <source>Diagnostic for %1 failed</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="60"/>
+        <location filename="../qml/PluginsPage.qml" line="75"/>
         <source>healthy</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="60"/>
+        <location filename="../qml/PluginsPage.qml" line="75"/>
         <source>unhealthy</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="62"/>
+        <location filename="../qml/PluginsPage.qml" line="77"/>
         <source>no exit</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="62"/>
+        <location filename="../qml/PluginsPage.qml" line="77"/>
         <source>exit </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="63"/>
+        <location filename="../qml/PluginsPage.qml" line="78"/>
         <source>%1: %2 (%3)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="91"/>
+        <location filename="../qml/PluginsPage.qml" line="106"/>
         <source>Discovered from %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="223"/>
+        <location filename="../qml/PluginsPage.qml" line="242"/>
         <source>Plugin Settings: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="251"/>
+        <location filename="../qml/PluginsPage.qml" line="270"/>
         <source>This plugin has no configurable options.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="373"/>
+        <location filename="../qml/PluginsPage.qml" line="392"/>
         <source>Trust plugin?</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="385"/>
+        <location filename="../qml/PluginsPage.qml" line="404"/>
         <source>“%1” is an external helper process that will run on your files when enabled. Only enable plugins you trust.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="392"/>
+        <location filename="../qml/PluginsPage.qml" line="411"/>
         <source>Plugins run under the active sandbox (see the Sandbox line above). You can revoke trust later by disabling the plugin.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="422"/>
+        <location filename="../qml/PluginsPage.qml" line="441"/>
         <source>Plugins</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="428"/>
+        <location filename="../qml/PluginsPage.qml" line="447"/>
         <source>%1 plugin%2 listed · %3 enabled</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="436"/>
+        <location filename="../qml/PluginsPage.qml" line="455"/>
         <source>Sandbox: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="444"/>
+        <location filename="../qml/PluginsPage.qml" line="463"/>
         <source>Diagnostic — %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="458"/>
+        <location filename="../qml/PluginsPage.qml" line="477"/>
         <source>Install plugin…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="462"/>
+        <location filename="../qml/PluginsPage.qml" line="481"/>
         <source>Install a plugin from a local directory into the user plugins folder</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="463"/>
+        <location filename="../qml/PluginsPage.qml" line="482"/>
         <source>Installing plugins requires a bridge connection</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="465"/>
+        <location filename="../qml/PluginsPage.qml" line="484"/>
         <source>Install a plugin from a local directory</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="471"/>
+        <location filename="../qml/PluginsPage.qml" line="490"/>
         <source>Rescan</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="475"/>
-        <location filename="../qml/PluginsPage.qml" line="479"/>
+        <location filename="../qml/PluginsPage.qml" line="494"/>
+        <location filename="../qml/PluginsPage.qml" line="498"/>
         <source>Re-run plugin discovery against the user + system roots</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="476"/>
-        <location filename="../qml/PluginsPage.qml" line="480"/>
+        <location filename="../qml/PluginsPage.qml" line="495"/>
+        <location filename="../qml/PluginsPage.qml" line="499"/>
         <source>Plugin discovery is not connected in this build</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="495"/>
+        <location filename="../qml/PluginsPage.qml" line="514"/>
         <source>Discovery paths</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="496"/>
+        <location filename="../qml/PluginsPage.qml" line="515"/>
         <source>Plugin manifests use these install locations when discovery is enabled.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="500"/>
+        <location filename="../qml/PluginsPage.qml" line="519"/>
         <source>User plugins</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="501"/>
+        <location filename="../qml/PluginsPage.qml" line="520"/>
         <source>System plugins</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="502"/>
+        <location filename="../qml/PluginsPage.qml" line="521"/>
         <source>Local install</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="539"/>
+        <location filename="../qml/PluginsPage.qml" line="558"/>
         <source>Filter by name, id, or class…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="544"/>
+        <location filename="../qml/PluginsPage.qml" line="563"/>
         <source>%1 / %2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="605"/>
+        <location filename="../qml/PluginsPage.qml" line="624"/>
         <source>BUILT-IN</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="631"/>
+        <location filename="../qml/PluginsPage.qml" line="650"/>
         <source>TRUSTED</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="631"/>
+        <location filename="../qml/PluginsPage.qml" line="650"/>
         <source>UNTRUSTED</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="679"/>
+        <location filename="../qml/PluginsPage.qml" line="698"/>
         <source>Extensions: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="691"/>
+        <location filename="../qml/PluginsPage.qml" line="710"/>
         <source>by %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="696"/>
+        <location filename="../qml/PluginsPage.qml" line="715"/>
         <source>license: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="707"/>
+        <location filename="../qml/PluginsPage.qml" line="729"/>
+        <source>In profile</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/PluginsPage.qml" line="732"/>
+        <source>Route this prediffer in the active profile “%1”</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/PluginsPage.qml" line="739"/>
         <source>Diagnose</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="712"/>
+        <location filename="../qml/PluginsPage.qml" line="744"/>
         <source>Probe this plugin&apos;s helper and report its health</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="713"/>
+        <location filename="../qml/PluginsPage.qml" line="745"/>
         <source>Diagnostics require a bridge connection</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="720"/>
+        <location filename="../qml/PluginsPage.qml" line="752"/>
         <source>Remove</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="727"/>
+        <location filename="../qml/PluginsPage.qml" line="759"/>
         <source>Uninstall this plugin from the user plugins folder</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="728"/>
+        <location filename="../qml/PluginsPage.qml" line="760"/>
         <source>Removing plugins requires a bridge connection</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="735"/>
+        <location filename="../qml/PluginsPage.qml" line="767"/>
         <source>Settings…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="742"/>
+        <location filename="../qml/PluginsPage.qml" line="774"/>
         <source>Configure plugin options</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="743"/>
+        <location filename="../qml/PluginsPage.qml" line="775"/>
         <source>Plugin options require a bridge connection</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="754"/>
+        <location filename="../qml/PluginsPage.qml" line="786"/>
         <source>%1 (built-in, always enabled)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="756"/>
+        <location filename="../qml/PluginsPage.qml" line="788"/>
         <source>Disable %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="757"/>
+        <location filename="../qml/PluginsPage.qml" line="789"/>
         <source>Enable %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="759"/>
+        <location filename="../qml/PluginsPage.qml" line="791"/>
         <source>Built-in plugins cannot be disabled</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="760"/>
+        <location filename="../qml/PluginsPage.qml" line="792"/>
         <source>Disable</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="760"/>
+        <location filename="../qml/PluginsPage.qml" line="792"/>
         <source>Enable</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/PluginsPage.qml" line="817"/>
+        <location filename="../qml/PluginsPage.qml" line="849"/>
         <source>Plugins run as external helper processes communicating with LinSync over JSON-on-stdio (see docs/plugin-protocol.md). Windows-only in-process plugin formats are not supported on Linux.</source>
         <translation type="unfinished"></translation>
     </message>

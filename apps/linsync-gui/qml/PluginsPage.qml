@@ -34,6 +34,21 @@ Kirigami.ScrollablePage {
     // Ask Main.qml to mark a plugin trusted and then enable it (the user has
     // just confirmed the first-run trust prompt).
     signal pluginTrustAndEnableRequested(string id, string name)
+    // Ask Main.qml to add/remove a prediffer from the active profile's chain.
+    signal pluginProfilePrediffferToggled(string id, bool enabled)
+
+    // Active profile (from /plugins/list): whether it can be edited (user
+    // profile) and which prediffer plugin ids it currently routes.
+    property string activeProfileId: ""
+    property bool activeProfileEditable: false
+    property var activeProfilePrediffers: []
+
+    function isPrediffer(modelData) {
+        return modelData && modelData.classes && modelData.classes.indexOf("prediffer") !== -1
+    }
+    function inActiveProfile(id) {
+        return page.activeProfilePrediffers.indexOf(id) !== -1
+    }
 
     property string _trustPluginId: ""
     property string _trustPluginName: ""
@@ -97,6 +112,10 @@ Kirigami.ScrollablePage {
         const sandbox = payload.sandbox || {}
         page.sandboxLabel = sandbox.label || ""
         page.sandboxConfined = !!sandbox.confined
+        const ap = payload.active_profile || {}
+        page.activeProfileId = ap.id || ""
+        page.activeProfileEditable = !!ap.editable
+        page.activeProfilePrediffers = ap.prediffers || []
     }
 
     padding: 0
@@ -700,6 +719,19 @@ Kirigami.ScrollablePage {
                                 }
                                 Item { Layout.fillWidth: true }
                             }
+                        }
+
+                        // "In profile": add/remove this prediffer from the
+                        // active (editable) profile's prediffer chain.
+                        Controls.CheckBox {
+                            Layout.alignment: Qt.AlignVCenter
+                            visible: page.activeProfileEditable && page.isPrediffer(modelData)
+                            text: qsTr("In profile")
+                            checked: page.inActiveProfile(modelData.id)
+                            enabled: page.bridgeConnected
+                            Controls.ToolTip.text: qsTr("Route this prediffer in the active profile “%1”").arg(page.activeProfileId)
+                            Controls.ToolTip.visible: hovered
+                            onToggled: page.pluginProfilePrediffferToggled(modelData.id, checked)
                         }
 
                         Controls.Button {

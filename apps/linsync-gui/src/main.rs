@@ -3426,6 +3426,7 @@ fn bridge_response_with_token(
         "/profiles/list" => profiles_list_bridge_response(paths),
         "/profiles/active/get" => profiles_active_get_bridge_response(paths),
         "/profiles/active/set" => profiles_active_set_bridge_response(query, paths),
+        "/profiles/active/prediffer" => profiles_active_prediffer_bridge_response(query, paths),
         "/raw-compare" => raw_compare_bridge_response(query, paths, state),
         "/compare/image" => {
             let params = query_params(query);
@@ -3688,6 +3689,63 @@ fn profiles_active_set_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8>
         return bridge_error(500, "Internal Server Error", &err.to_string());
     }
     let body = serde_json::json!({ "active": id.to_string() }).to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
+}
+
+/// Add or remove a prediffer plugin from the active profile's prediffer chain
+/// (`?id=PLUGIN_ID&enabled=true|false`). Only user profiles are editable;
+/// built-in profiles (and "no active profile") are rejected with 409 so the
+/// caller can prompt the user to create/select a user profile first.
+fn profiles_active_prediffer_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(plugin_id) = query_value(&params, "id") else {
+        return bridge_error(400, "Bad Request", "missing id parameter");
+    };
+    let enabled = query_value(&params, "enabled")
+        .map(|v| v != "false")
+        .unwrap_or(true);
+
+    let store =
+        ProfileStore::with_builtins(paths.profiles_dir(), paths.active_profile_pointer_file());
+    let active_id = match store.load_active_pointer() {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return bridge_error(
+                409,
+                "Conflict",
+                "no active profile selected; select a user profile to edit its prediffers",
+            );
+        }
+        Err(err) => return bridge_error(500, "Internal Server Error", &err.to_string()),
+    };
+    if find_builtin(&active_id).is_some() {
+        return bridge_error(
+            409,
+            "Conflict",
+            "built-in profiles are read-only; copy to a user profile to edit prediffers",
+        );
+    }
+    let mut profile = match store.load(&active_id) {
+        Ok(p) => p,
+        Err(err) => return bridge_error(404, "Not Found", &err.to_string()),
+    };
+    // Apply the add/remove, keeping the list de-duplicated and order-stable.
+    profile
+        .text
+        .prediffer_plugins
+        .retain(|existing| existing != plugin_id);
+    if enabled {
+        profile.text.prediffer_plugins.push(plugin_id.to_owned());
+    }
+    if let Err(err) = store.save(&profile) {
+        return bridge_error(500, "Internal Server Error", &err.to_string());
+    }
+    let body = serde_json::json!({
+        "ok": true,
+        "profile": active_id.to_string(),
+        "prediffers": profile.text.prediffer_plugins,
+    })
+    .to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
 }
 
@@ -5565,14 +5623,44 @@ fn plugins_list_bridge_response(
     // Surface the sandbox confinement that helpers run under, so the Plugins
     // page can show whether plugin execution is confined or degraded.
     let sandbox = linsync_core::active_sandbox_status();
+    // The active profile's prediffer chain + whether it can be edited (user
+    // profiles only), so the page can show a per-prediffer "in profile" toggle.
+    let active_profile = active_profile_prediffer_info(paths);
     let body = serde_json::json!({
         "plugins": plugins,
         "errors": errors,
         "roots": roots,
         "sandbox": { "label": sandbox.label, "confined": sandbox.confined },
+        "active_profile": active_profile,
     })
     .to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
+}
+
+/// Describe the active profile for the Plugins page: its id, whether it is an
+/// editable (user) profile, and the prediffer plugin ids it currently routes.
+fn active_profile_prediffer_info(paths: &AppPaths) -> serde_json::Value {
+    let store =
+        ProfileStore::with_builtins(paths.profiles_dir(), paths.active_profile_pointer_file());
+    let Ok(Some(active_id)) = store.load_active_pointer() else {
+        return serde_json::json!({ "id": null, "editable": false, "prediffers": [] });
+    };
+    let editable = find_builtin(&active_id).is_none();
+    let prediffers = if editable {
+        store
+            .load(&active_id)
+            .map(|p| p.text.prediffer_plugins)
+            .unwrap_or_default()
+    } else {
+        find_builtin(&active_id)
+            .map(|p| p.text.prediffer_plugins.clone())
+            .unwrap_or_default()
+    };
+    serde_json::json!({
+        "id": active_id.to_string(),
+        "editable": editable,
+        "prediffers": prediffers,
+    })
 }
 
 fn plugins_toggle_bridge_response(
@@ -7393,6 +7481,89 @@ mod tests {
         );
         // Differing content → the member is reported different.
         assert!(tab["difference_count"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn active_profile_prediffer_toggle_round_trips() {
+        let paths = test_app_paths("profile-prediffer");
+        let store = linsync_core::ProfileStore::with_builtins(
+            paths.profiles_dir(),
+            paths.active_profile_pointer_file(),
+        );
+        let id = linsync_core::ProfileId::new("my-user-profile".to_owned()).unwrap();
+        store
+            .save(&linsync_core::CompareProfile::new(id.clone(), "My Profile"))
+            .unwrap();
+        store.save_active_pointer(&id).unwrap();
+        let state = test_bridge_state(None);
+
+        // Add a prediffer to the active user profile.
+        let add = json_response_body(
+            &String::from_utf8(bridge_response(
+                "GET /profiles/active/prediffer?id=org.example.norm&enabled=true HTTP/1.1\r\n",
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        assert_eq!(add["ok"], serde_json::json!(true), "add: {add}");
+        assert!(
+            add["prediffers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "org.example.norm")
+        );
+
+        // /plugins/list reflects the editable active profile + its prediffers.
+        let list = json_response_body(
+            &String::from_utf8(bridge_response(
+                "GET /plugins/list HTTP/1.1\r\n",
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        assert_eq!(list["active_profile"]["editable"], serde_json::json!(true));
+        assert!(
+            list["active_profile"]["prediffers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "org.example.norm")
+        );
+
+        // Removing it persists too.
+        let rm = json_response_body(
+            &String::from_utf8(bridge_response(
+                "GET /profiles/active/prediffer?id=org.example.norm&enabled=false HTTP/1.1\r\n",
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        assert!(
+            !rm["prediffers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "org.example.norm")
+        );
+
+        // A built-in active profile is read-only (409).
+        store
+            .save_active_pointer(&linsync_core::ProfileId::new("default".to_owned()).unwrap())
+            .unwrap();
+        let rejected = String::from_utf8(bridge_response(
+            "GET /profiles/active/prediffer?id=org.example.norm&enabled=true HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .unwrap();
+        assert!(
+            rejected.starts_with("HTTP/1.1 409"),
+            "editing a built-in profile should 409: {rejected}"
+        );
     }
 
     #[test]
