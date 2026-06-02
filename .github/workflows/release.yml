@@ -515,12 +515,20 @@ jobs:
           (cd dist && sha256sum * > sha256sums.txt)
           echo "Release payload:" && ls -la dist/
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" dist/* \
-            --title "LinSync $TAG" \
-            --generate-notes \
-            --verify-tag
+          # Idempotent so re-running the pipeline (e.g. after force-moving a
+          # tag to a fixed commit) doesn't fail on an existing release: upload
+          # and clobber its assets, leaving any hand-written notes intact.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — uploading assets (clobber)."
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "LinSync $TAG" \
+              --generate-notes \
+              --verify-tag
+          fi
