@@ -98,6 +98,14 @@ Kirigami.ApplicationWindow {
     property var serverDiffRowIndexes: []
     property var serverSearchRowIndexes: []
     property bool textWindowLoading: false
+    // Lazy folder paging. When a folder comparison exceeds the server window
+    // threshold the compare response embeds only the first page plus the full
+    // entry count (folderTotalEntries); further pages — and all sort / filter /
+    // search — are served by /folder/query so the whole tree never loads into
+    // the view. 0 means the folder is small enough to load + filter/sort
+    // entirely client-side (unchanged behavior).
+    property int folderTotalEntries: 0
+    property bool folderWindowLoading: false
     // Suppresses the pane's scroll-to-top reset when rows change because we are
     // appending a fetched window (vs. loading a fresh comparison).
     property bool suppressTextScrollReset: false
@@ -106,8 +114,11 @@ Kirigami.ApplicationWindow {
     property string folderSortColumn: ""
     property bool folderSortAscending: true
     onFolderFilterChanged: root.applyFolderFilter()
-    onFolderSearchChanged: root.rebuildFolderView()
-    onFolderTypeFilterChanged: root.rebuildFolderView()
+    // Route search/type changes through applyFolderFilter so a windowed folder
+    // re-queries /folder/query server-side instead of filtering only the loaded
+    // page (non-windowed folders still filter client-side via rebuildFolderView).
+    onFolderSearchChanged: root.applyFolderFilter()
+    onFolderTypeFilterChanged: root.applyFolderFilter()
     onFolderSortColumnChanged: root.applyFolderSort()
     onFolderSortAscendingChanged: root.applyFolderSort()
     property int pendingCloseTabId: 0
@@ -1405,7 +1416,15 @@ Kirigami.ApplicationWindow {
         root.serverDiffRowIndexes = (windowedTotal > 0 && tab.diff_row_indexes) ? tab.diff_row_indexes : []
         root.serverSearchRowIndexes = (windowedTotal > 0 && tab.search_row_indexes) ? tab.search_row_indexes : []
         root.folderEntries = tab.folder_entries || []
-        root.applyFolderFilter()
+        // Windowed large folder: the response embeds only the first page plus the
+        // full entry count; further pages (and any sort/filter/search) are served
+        // by /folder/query. A small folder has no folder_total, so
+        // folderTotalEntries stays 0 (loaded + sorted/filtered client-side).
+        root.folderTotalEntries = (root.compareMode === "Folder" && tab.folder_total)
+            ? Number(tab.folder_total) : 0
+        // Render the embedded page directly (no re-query — the first page is
+        // already here); sort/filter/search/scroll re-query when windowed.
+        root.rebuildFolderView()
         if (preferBridge && hasSessionBridge())
             root.bridgeModelRevision += 1
         const validation = tab.validation || {}
@@ -1728,6 +1747,7 @@ Kirigami.ApplicationWindow {
             root.textTotalRows = 0
             root.serverDiffRowIndexes = []
             root.serverSearchRowIndexes = []
+            root.folderTotalEntries = 0
             root.leftDirty = false
             root.rightDirty = false
             root.validationCompatible = false
@@ -1990,6 +2010,17 @@ Kirigami.ApplicationWindow {
             rebuildSearchRows()
             return
         }
+        // Windowed folder: /folder/query already filtered + sorted the page that
+        // populated folderEntries, so render it as-is (no client filter/sort over
+        // a partial set, which would be wrong).
+        if (root.folderTotalEntries > 0) {
+            root.visibleFolderEntries = root.folderEntries
+            root.leftRows = []
+            root.rightRows = []
+            rebuildDiffRows()
+            rebuildSearchRows()
+            return
+        }
         var entries = []
         for (var i = 0; i < root.folderEntries.length; i++) {
             if (folderEntryMatchesFilter(root.folderEntries[i]))
@@ -2031,7 +2062,11 @@ Kirigami.ApplicationWindow {
     }
 
     function applyFolderFilter() {
-        rebuildFolderView()
+        // Windowed folders sort/filter server-side: re-query from offset 0.
+        if (root.folderTotalEntries > 0)
+            root.queryFolderPage(0, false)
+        else
+            rebuildFolderView()
     }
 
     function toggleFolderSort(column) {
@@ -2044,7 +2079,67 @@ Kirigami.ApplicationWindow {
     }
 
     function applyFolderSort() {
-        rebuildFolderView()
+        if (root.folderTotalEntries > 0)
+            root.queryFolderPage(0, false)
+        else
+            rebuildFolderView()
+    }
+
+    // Map the folder view's current sort/filter/search state onto a
+    // /folder/query request and (re)populate folderEntries. `append` adds the
+    // page to the existing entries (lazy scroll); otherwise it replaces them
+    // (a fresh sort/filter/search). Used only for windowed (large) folders.
+    function queryFolderPage(offset, append) {
+        if (root.bridgeUrl === "" || root.compareMode !== "Folder" || root.folderWindowLoading)
+            return
+        root.folderWindowLoading = true
+        let url = root.bridgeUrl + "/folder/query?left=" + encodeURIComponent(root.leftPath)
+            + "&right=" + encodeURIComponent(root.rightPath)
+            + "&offset=" + offset + "&limit=5000"
+        if (root.folderFilter === "changed" || root.folderFilter === "diff")
+            url += "&state=changed"
+        else if (root.folderFilter === "left_only")
+            url += "&state=left_only"
+        else if (root.folderFilter === "right_only")
+            url += "&state=right_only"
+        if (root.folderSearch !== "")
+            url += "&search=" + encodeURIComponent(root.folderSearch)
+        if (root.folderTypeFilter !== "")
+            url += "&types=" + encodeURIComponent(root.folderTypeFilter)
+        if (root.folderSortColumn !== "")
+            url += "&sort=" + encodeURIComponent(root.folderSortColumn)
+        url += "&descending=" + (root.folderSortAscending ? "0" : "1")
+        const request = new XMLHttpRequest()
+        request.onreadystatechange = function () {
+            if (request.readyState !== XMLHttpRequest.DONE)
+                return
+            root.folderWindowLoading = false
+            if (request.status !== 200) {
+                root.statusText = qsTr("Failed to load folder entries")
+                return
+            }
+            const payload = JSON.parse(request.responseText)
+            const entries = payload.entries || []
+            root.folderEntries = append ? root.folderEntries.concat(entries) : entries
+            if (payload.totalMatched !== undefined)
+                root.folderTotalEntries = Math.max(Number(payload.totalMatched), root.folderEntries.length)
+            root.visibleFolderEntries = root.folderEntries
+            rebuildDiffRows()
+            rebuildSearchRows()
+        }
+        request.open("GET", url)
+        request.send()
+    }
+
+    // Prefetch the next folder page when the table nears the bottom of the
+    // loaded entries (windowed folders only).
+    function maybeLoadMoreFolderRows(view) {
+        if (root.folderTotalEntries <= 0 || root.folderWindowLoading || !view)
+            return
+        if (root.folderEntries.length >= root.folderTotalEntries)
+            return
+        if (view.contentHeight - (view.contentY + view.height) < view.height)
+            root.queryFolderPage(root.folderEntries.length, true)
     }
 
     function copyToClipboard(text) {
@@ -4506,6 +4601,9 @@ Kirigami.ApplicationWindow {
                         model: root.visibleFolderEntries
                         boundsBehavior: Flickable.StopAtBounds
                         reuseItems: true
+                        // Lazily fetch the next page of a windowed (large)
+                        // folder as the table nears the bottom.
+                        onContentYChanged: root.maybeLoadMoreFolderRows(folderTable)
 
                         delegate: Rectangle {
                             required property var modelData

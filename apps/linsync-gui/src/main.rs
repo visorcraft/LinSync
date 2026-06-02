@@ -269,6 +269,13 @@ struct GuiCompareTab {
     search_row_indexes: Vec<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     folder_entries: Vec<GuiFolderEntry>,
+    /// When a folder comparison exceeds [`FOLDER_WINDOW_THRESHOLD`] entries it is
+    /// served windowed: `folder_entries` carries only the first page and this is
+    /// the full entry count, so the GUI pages the rest through `/folder/query`
+    /// (sorting/filtering server-side). `None` (the default, omitted on the
+    /// wire) means every entry is embedded — small folders are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder_total: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     encoding_metadata: Option<EncodingSummary>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1335,6 +1342,7 @@ fn context_to_value(context: &GuiLaunchContext) -> Result<serde_json::Value, ser
         let mut windowed = context.clone();
         for tab in &mut windowed.session.tabs {
             apply_text_windowing(tab);
+            apply_folder_windowing(tab);
         }
         serde_json::to_value(&windowed)
     } else {
@@ -3147,6 +3155,7 @@ fn compare_tab(
         diff_row_indexes: Vec::new(),
         search_row_indexes: Vec::new(),
         folder_entries,
+        folder_total: None,
         encoding_metadata,
         table_cells,
         artifacts,
@@ -3160,11 +3169,31 @@ fn compare_tab(
 /// behavior change for the common case). Also the window size used per fetch.
 const TEXT_WINDOW_THRESHOLD: usize = 2000;
 
-/// Whether `tab` is a text comparison large enough to serve in windows. Folder/
-/// table/hex/image tabs are never windowed (they carry their own metadata and
-/// the GUI has no window-fetch wiring for them).
+/// Folder comparisons with more than this many entries are served to the GUI a
+/// page at a time: the compare response embeds only the first page, and the GUI
+/// pages + sorts + filters the rest through `/folder/query`. Kept high so the
+/// common small/medium folder loads whole (client-side sort/filter, unchanged).
+const FOLDER_WINDOW_THRESHOLD: usize = 5000;
+
+/// Whether `tab` is a comparison large enough to serve windowed — a text diff
+/// over [`TEXT_WINDOW_THRESHOLD`] rows or a folder over
+/// [`FOLDER_WINDOW_THRESHOLD`] entries. Table/hex/image tabs are never windowed
+/// (they carry their own metadata and the GUI has no window-fetch wiring).
 fn tab_needs_windowing(tab: &GuiCompareTab) -> bool {
-    tab.mode == "Text" && tab.left_rows.len().max(tab.right_rows.len()) > TEXT_WINDOW_THRESHOLD
+    (tab.mode == "Text" && tab.left_rows.len().max(tab.right_rows.len()) > TEXT_WINDOW_THRESHOLD)
+        || (tab.mode == "Folder" && tab.folder_entries.len() > FOLDER_WINDOW_THRESHOLD)
+}
+
+/// Window a large folder `tab` for transmission: record the full entry count and
+/// truncate the embedded entries to the first page. The GUI then pages the rest
+/// through `/folder/query`. The canonical server-side tab stays full. A no-op
+/// for folders below the threshold.
+fn apply_folder_windowing(tab: &mut GuiCompareTab) {
+    if tab.mode != "Folder" || tab.folder_entries.len() <= FOLDER_WINDOW_THRESHOLD {
+        return;
+    }
+    tab.folder_total = Some(tab.folder_entries.len());
+    tab.folder_entries.truncate(FOLDER_WINDOW_THRESHOLD);
 }
 
 /// Window a large text `tab` *for transmission to the GUI*: compute the full
@@ -4489,6 +4518,7 @@ fn raw_compare_bridge_response(
         diff_row_indexes: Vec::new(),
         search_row_indexes: Vec::new(),
         folder_entries: vec![],
+        folder_total: None,
         encoding_metadata: Some(result.encoding_summary()),
         table_cells: None,
         artifacts: Vec::new(),
@@ -7998,6 +8028,74 @@ mod tests {
         assert_eq!(page["totalMatched"].as_u64(), Some(total));
         assert_eq!(page["entries"].as_array().unwrap().len(), 1);
         assert_eq!(page["hasMore"], serde_json::json!(true));
+    }
+
+    fn dummy_folder_entry(i: usize) -> GuiFolderEntry {
+        GuiFolderEntry {
+            path: format!("file_{i:06}.txt"),
+            is_dir: false,
+            entry_type: "file".to_owned(),
+            state: if i.is_multiple_of(2) { "changed" } else { "equal" }.to_owned(),
+            left_size: Some(1),
+            right_size: Some(2),
+            left_modified: None,
+            right_modified: None,
+            method: "Content".to_owned(),
+        }
+    }
+
+    fn folder_tab_with(entries: Vec<GuiFolderEntry>) -> GuiCompareTab {
+        compare_tab(
+            "Folder",
+            ("/l".to_owned(), "/r".to_owned()),
+            "ok".to_owned(),
+            0,
+            GuiOpenValidation {
+                compatible: true,
+                path_kind: "Folders".to_owned(),
+                message: String::new(),
+            },
+            vec![],
+            (vec![], vec![]),
+            entries,
+            None,
+            None,
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn large_folder_response_is_windowed_on_the_wire() {
+        // A folder over FOLDER_WINDOW_THRESHOLD entries is windowed for the wire:
+        // folder_total carries the full count and only the first page is embedded
+        // (the GUI pages the rest via /folder/query). The canonical tab stays
+        // full — this windows a clone at serialization.
+        let total = FOLDER_WINDOW_THRESHOLD + 7;
+        let entries: Vec<GuiFolderEntry> = (0..total).map(dummy_folder_entry).collect();
+        let ctx = GuiLaunchContext::single_tab(folder_tab_with(entries));
+        let value = context_to_value(&ctx).expect("serialize");
+        let wire = &value["session"]["tabs"][0];
+        assert_eq!(
+            wire["folder_total"].as_u64(),
+            Some(total as u64),
+            "the full entry count is reported"
+        );
+        assert_eq!(
+            wire["folder_entries"].as_array().unwrap().len(),
+            FOLDER_WINDOW_THRESHOLD,
+            "only the first page is embedded"
+        );
+
+        // A small folder is NOT windowed (no folder_total; every entry embedded).
+        let small =
+            GuiLaunchContext::single_tab(folder_tab_with((0..3).map(dummy_folder_entry).collect()));
+        let small_value = context_to_value(&small).expect("serialize");
+        let small_wire = &small_value["session"]["tabs"][0];
+        assert!(
+            small_wire["folder_total"].is_null(),
+            "small folders are not windowed"
+        );
+        assert_eq!(small_wire["folder_entries"].as_array().unwrap().len(), 3);
     }
 
     #[test]
