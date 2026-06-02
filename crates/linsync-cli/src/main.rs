@@ -149,6 +149,7 @@ const COMPARE_FLAGS: &[&str] = &[
     "--image-delta-e",
     "--ocr-language",
     "--document-mode",
+    "--document-pages",
 ];
 const COMPARE3_FLAGS: &[&str] = &["--markers", "--json"];
 const CONFLICT_FLAGS: &[&str] = &["--json"];
@@ -247,7 +248,7 @@ fn compare_command(args: &[String]) -> Result<ExitCode, String> {
     let compare_args = split_compare_args(args)?;
     if compare_args.paths.len() != 2 {
         return Err(
-            "usage: linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--save-result FILE] LEFT RIGHT"
+            "usage: linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--document-pages FIRST-LAST] [--save-result FILE] LEFT RIGHT"
                 .to_owned(),
         );
     }
@@ -954,6 +955,7 @@ fn compare_document_command(
     let opts = DocumentCompareOptions {
         mode,
         ocr_language: args.document_options.ocr_language.clone(),
+        page_range: args.document_options.page_range,
         ..DocumentCompareOptions::default()
     };
 
@@ -4749,10 +4751,12 @@ impl Default for ImageCompareArgsOptions {
 }
 
 struct DocumentCompareArgsOptions {
-    /// "text" | "ocr_text" (default: "text")
+    /// "text" | "ocr_text" | "rendered" (default: "text")
     mode: String,
     /// ISO 639-2 language code for Tesseract (default: "eng")
     ocr_language: String,
+    /// 1-based inclusive page range for `rendered` mode (default: all pages).
+    page_range: Option<(usize, usize)>,
 }
 
 impl Default for DocumentCompareArgsOptions {
@@ -4760,6 +4764,7 @@ impl Default for DocumentCompareArgsOptions {
         Self {
             mode: "text".into(),
             ocr_language: "eng".into(),
+            page_range: None,
         }
     }
 }
@@ -4821,10 +4826,35 @@ fn compare_flag_value_count(flag: &str) -> Option<usize> {
         | "--image-delta-e"
         | "--document-mode"
         | "--ocr-language"
+        | "--document-pages"
         | "--save-result" => Some(1),
         "--substitute-regex" => Some(2),
         _ => None,
     }
+}
+
+/// Parse a 1-based inclusive page range like `2-4` (or a single page `3`).
+fn parse_page_range(value: &str) -> Result<(usize, usize), String> {
+    let parse = |s: &str| -> Result<usize, String> {
+        s.trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n >= 1)
+            .ok_or_else(|| format!("invalid page number '{s}' (use 1-based page numbers)"))
+    };
+    let (first, last) = match value.split_once('-') {
+        Some((a, b)) => (parse(a)?, parse(b)?),
+        None => {
+            let only = parse(value)?;
+            (only, only)
+        }
+    };
+    if last < first {
+        return Err(format!(
+            "--document-pages range {first}-{last} is empty (last page is before first)"
+        ));
+    }
+    Ok((first, last))
 }
 
 fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
@@ -4891,9 +4921,10 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
             document_options.mode = match profile.document.mode {
                 linsync_core::DocumentCompareMode::Text => "text".to_owned(),
                 linsync_core::DocumentCompareMode::OcrText => "ocr_text".to_owned(),
-                linsync_core::DocumentCompareMode::Rendered => "text".to_owned(),
+                linsync_core::DocumentCompareMode::Rendered => "rendered".to_owned(),
             };
             document_options.ocr_language = profile.document.ocr_language.clone();
+            document_options.page_range = profile.document.page_range;
             effective_profile = Some(profile.id.to_string());
             profile_seek += 2;
             continue;
@@ -5125,10 +5156,14 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
             }
             "--document-mode" => {
                 let Some(v) = args.get(index + 1) else {
-                    return Err("--document-mode requires a value: text | ocr_text".into());
+                    return Err(
+                        "--document-mode requires a value: text | ocr_text | rendered".into(),
+                    );
                 };
-                if !matches!(v.as_str(), "text" | "ocr_text") {
-                    return Err(format!("unknown --document-mode '{v}'"));
+                if !matches!(v.as_str(), "text" | "ocr_text" | "rendered") {
+                    return Err(format!(
+                        "unknown --document-mode '{v}' (expected text | ocr_text | rendered)"
+                    ));
                 }
                 document_options.mode = v.clone();
                 index += 1;
@@ -5138,6 +5173,15 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
                     return Err("--ocr-language requires a language code (e.g. eng)".into());
                 };
                 document_options.ocr_language = v.clone();
+                index += 1;
+            }
+            "--document-pages" => {
+                let Some(v) = args.get(index + 1) else {
+                    return Err(
+                        "--document-pages requires a 1-based inclusive range, e.g. 2-4".into(),
+                    );
+                };
+                document_options.page_range = Some(parse_page_range(v)?);
                 index += 1;
             }
             _ => paths.push(args[index].clone()),

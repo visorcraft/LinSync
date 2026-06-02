@@ -43,6 +43,12 @@ pub struct DocumentCompareOptions {
     pub retain_rendered_pages: bool,
     /// Per-side helper timeout in seconds (default: 30).
     pub timeout_secs: u64,
+    /// When set, only pages in this 1-based inclusive range are compared in
+    /// `Rendered` mode; pages outside it are skipped and the result reports just
+    /// the selected pages (by their 0-based absolute index). `None` (default)
+    /// compares every page. The renderer still produces every page; the range
+    /// narrows the diff, so the user can target a section of a long document.
+    pub page_range: Option<(usize, usize)>,
     /// Override for the plugin temp-dir root (normally `std::env::temp_dir()`).
     /// Used in tests to isolate temp-dir cleanup assertions.
     #[serde(skip, default)]
@@ -56,6 +62,7 @@ impl Default for DocumentCompareOptions {
             ocr_language: "eng".to_owned(),
             retain_rendered_pages: false,
             timeout_secs: 30,
+            page_range: None,
             temp_root: None,
         }
     }
@@ -409,8 +416,18 @@ fn compare_document_rendered(
 
     let img_opts = crate::image::ImageCompareOptions::default();
     let page_count = left_pages.len().max(right_pages.len());
-    let mut rendered_pages = Vec::with_capacity(page_count);
-    for index in 0..page_count {
+    // Restrict the compared pages to the requested 1-based inclusive range
+    // (clamped to the rendered page count); `None` compares every page.
+    let (start, end) = match options.page_range {
+        Some((first, last)) => {
+            let start = first.saturating_sub(1).min(page_count);
+            let end = last.min(page_count).max(start);
+            (start, end)
+        }
+        None => (0, page_count),
+    };
+    let mut rendered_pages = Vec::with_capacity(end.saturating_sub(start));
+    for index in start..end {
         match (left_pages.get(index), right_pages.get(index)) {
             (Some(lp), Some(rp)) => {
                 let cmp = crate::image::compare_images(Path::new(lp), Path::new(rp), &img_opts)
@@ -569,6 +586,51 @@ mod rendered_tests {
         assert_eq!(mismatch.rendered_pages.len(), 3);
         assert!(mismatch.rendered_pages[2].one_sided);
         assert!(!mismatch.is_equal());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rendered_page_range_compares_only_selected_pages() {
+        let tmp =
+            std::env::temp_dir().join(format!("linsync-rendered-range-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let plugins_root = tmp.join("plugins");
+        std::fs::create_dir_all(&plugins_root).unwrap();
+        install_renderer_plugin(&plugins_root);
+
+        // Two 5-page documents (5 lines each → 5 rendered pages per side).
+        let a = tmp.join("a.pdf");
+        let b = tmp.join("b.pdf");
+        std::fs::write(&a, "1\n2\n3\n4\n5\n").unwrap();
+        std::fs::write(&b, "1\n2\n3\n4\n5\n").unwrap();
+
+        // Compare only pages 2–4 (1-based inclusive).
+        let mut opts = rendered_options(&tmp);
+        opts.page_range = Some((2, 4));
+        let result = compare_document_files(&a, &b, &plugins_root, &opts).unwrap();
+        assert_eq!(
+            result.rendered_pages.len(),
+            3,
+            "only pages 2,3,4 are compared"
+        );
+        let pages: Vec<usize> = result.rendered_pages.iter().map(|p| p.page).collect();
+        assert_eq!(
+            pages,
+            vec![1, 2, 3],
+            "the result reports the selected pages by 0-based absolute index"
+        );
+
+        // A range past the end is clamped to the rendered page count.
+        opts.page_range = Some((4, 99));
+        let clamped = compare_document_files(&a, &b, &plugins_root, &opts).unwrap();
+        let clamped_pages: Vec<usize> = clamped.rendered_pages.iter().map(|p| p.page).collect();
+        assert_eq!(
+            clamped_pages,
+            vec![3, 4],
+            "clamped to pages 4,5 (indices 3,4)"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

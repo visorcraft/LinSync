@@ -128,3 +128,80 @@ fn document_compare_different_pdfs_exit_1() {
         "expected differing_lines > 0"
     );
 }
+
+#[test]
+fn document_compare_invalid_page_range_rejected() {
+    // Pure arg validation — needs no external tools or fixtures.
+    let out = Command::new(cli_bin())
+        .args([
+            "compare",
+            "--type",
+            "document",
+            "--document-mode",
+            "rendered",
+            "--document-pages",
+            "5-2",
+            "/tmp/a.pdf",
+            "/tmp/b.pdf",
+        ])
+        .output()
+        .expect("run linsync-cli");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an empty/backwards page range is a usage error (exit 2)"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("page"),
+        "error should explain the bad --document-pages value"
+    );
+}
+
+#[test]
+fn document_compare_rendered_mode_with_page_range() {
+    // Regression: `--document-mode rendered` must be accepted (it was rejected
+    // by an outdated flag validator), and `--document-pages` must select pages.
+    if !tools_available(&["pdftoppm", "bash"]) {
+        eprintln!("SKIP: pdftoppm or bash not on PATH");
+        return;
+    }
+    build_fixtures();
+    let pdf = document_fixture_dir().join("simple.pdf");
+    if !pdf.exists() {
+        eprintln!("SKIP: simple.pdf fixture missing");
+        return;
+    }
+
+    // Rendered compare of a document against itself: every page equal → exit 0,
+    // and the JSON reports rendered mode. Restrict to page 1 to exercise the
+    // page-range path on a possibly-single-page fixture.
+    let out = Command::new(cli_bin())
+        .args([
+            "compare",
+            "--type",
+            "document",
+            "--document-mode",
+            "rendered",
+            "--document-pages",
+            "1",
+            "--json",
+            pdf.to_str().unwrap(),
+            pdf.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run linsync-cli");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "rendered compare of identical pages must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON output");
+    assert_eq!(json["mode"], serde_json::json!("rendered"));
+    assert_eq!(json["equal"], serde_json::json!(true));
+    assert_eq!(
+        json["pages"].as_array().map(|a| a.len()),
+        Some(1),
+        "only the single selected page is reported"
+    );
+}

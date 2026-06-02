@@ -11,11 +11,13 @@ fn document_compare_types_are_accessible() {
         ocr_language: "eng".to_owned(),
         retain_rendered_pages: false,
         timeout_secs: 30,
+        page_range: None,
         temp_root: None,
     };
     assert_eq!(opts.ocr_language, "eng");
     assert!(!opts.retain_rendered_pages);
     assert_eq!(opts.timeout_secs, 30);
+    assert_eq!(opts.page_range, None);
 
     // DocumentCompareMode round-trips as expected
     let mode = DocumentCompareMode::OcrText;
