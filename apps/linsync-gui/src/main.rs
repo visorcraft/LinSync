@@ -1424,6 +1424,19 @@ fn record_recent_session(paths: &AppPaths, context: &GuiLaunchContext) {
         return;
     }
 
+    let mut session = session_file_from_tab(tab);
+    persist_multi_tab_snapshot(&mut session, context);
+
+    if let Err(err) =
+        RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths)).add(session)
+    {
+        tracing::warn!(error = %err, "failed to record recent GUI session");
+    }
+}
+
+/// Build a persisted [`SessionFile`] from a single GUI tab (paths, view mode,
+/// and — for Image/Document/Webpage — the per-tab view snapshot).
+fn session_file_from_tab(tab: &GuiCompareTab) -> SessionFile {
     let mut session = SessionFile::new(CompareSession {
         title: tab.title.clone(),
         left: PathBuf::from(&tab.left_path),
@@ -1433,13 +1446,7 @@ fn record_recent_session(paths: &AppPaths, context: &GuiLaunchContext) {
     });
     session.selected_view = compare_view_mode(&tab.mode);
     persist_tab_snapshot(&mut session, tab);
-    persist_multi_tab_snapshot(&mut session, context);
-
-    if let Err(err) =
-        RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths)).add(session)
-    {
-        tracing::warn!(error = %err, "failed to record recent GUI session");
-    }
+    session
 }
 
 /// Embed a snapshot of *every* persistable open tab into the session's
@@ -3394,6 +3401,8 @@ fn bridge_response_with_token(
         "/open-external" => open_external_bridge_response(query),
         "/copy-clipboard" => copy_clipboard_bridge_response(query),
         "/report" => report_bridge_response(query, state, paths),
+        "/project/save" => project_save_bridge_response(query, state, paths),
+        "/project/open" => project_open_bridge_response(query, paths),
         "/sessions/save" => sessions_save_bridge_response(query, paths, state),
         "/artifacts/list" => artifacts_list_bridge_response(state),
         "/artifacts/cleanup" => artifacts_cleanup_bridge_response(query, paths),
@@ -4651,6 +4660,102 @@ fn sessions_reopen_bridge_response(
     match context_to_json(&context) {
         Ok(body) => http_response(200, "OK", "application/json", body.into_bytes()),
         Err(err) => bridge_error(500, "Internal Server Error", &err),
+    }
+}
+
+/// Save the currently open tabs as a named project file at `?path=` (with an
+/// optional `?name=`). Each persistable tab becomes a `SessionFile` entry.
+fn project_save_bridge_response(
+    query: &str,
+    state: &Arc<Mutex<GuiBridgeState>>,
+    _paths: &AppPaths,
+) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(path) = query_value(&params, "path") else {
+        return bridge_error(400, "Bad Request", "missing project path");
+    };
+    let name = query_value(&params, "name").unwrap_or("Untitled project");
+
+    let (sessions, active_index) = match state.lock() {
+        Ok(s) => {
+            let sessions: Vec<linsync_core::SessionFile> = s
+                .session
+                .tabs
+                .iter()
+                .filter(|tab| tab_has_persistable_paths(tab))
+                .map(session_file_from_tab)
+                .collect();
+            let active_index = s
+                .session
+                .tabs
+                .iter()
+                .filter(|tab| tab_has_persistable_paths(tab))
+                .position(|tab| tab.id == s.session.active_tab_id);
+            (sessions, active_index)
+        }
+        Err(_) => return bridge_error(500, "Internal Server Error", "state unavailable"),
+    };
+    if sessions.is_empty() {
+        return bridge_error(404, "Not Found", "no comparable tabs to save");
+    }
+
+    let mut project = linsync_core::ProjectFile::new(name);
+    project.active_session_index = active_index;
+    project.sessions = sessions;
+
+    match linsync_core::ProjectFileStore::new(PathBuf::from(path)).save(&project) {
+        Ok(()) => {
+            let body = serde_json::json!({
+                "ok": true,
+                "name": name,
+                "sessions": project.sessions.len(),
+                "path": path,
+            })
+            .to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
+        }
+        Err(err) => bridge_error(500, "Internal Server Error", &err.to_string()),
+    }
+}
+
+/// Open a project file at `?path=` and return it as a launch-context JSON the
+/// QML can apply (`applySessionContextJson`): one tab per saved session.
+fn project_open_bridge_response(query: &str, _paths: &AppPaths) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(path) = query_value(&params, "path") else {
+        return bridge_error(400, "Bad Request", "missing project path");
+    };
+    let project = match linsync_core::ProjectFileStore::new(PathBuf::from(path)).load() {
+        Ok(p) => p,
+        Err(err) => return bridge_error(400, "Bad Request", &err.to_string()),
+    };
+    if project.sessions.is_empty() {
+        return bridge_error(404, "Not Found", "project has no comparisons");
+    }
+
+    let mut tabs: Vec<GuiCompareTab> = Vec::with_capacity(project.sessions.len());
+    for (index, session) in project.sessions.iter().enumerate() {
+        let mut tab = build_tab_for_session_file(session, &GuiCompareOptions::default());
+        tab.id = (index as u64) + 1;
+        tabs.push(tab);
+    }
+    let active_tab_id = (project.active_session_index.unwrap_or(0) as u64) + 1;
+    let context = GuiLaunchContext::from_tabs(tabs, active_tab_id);
+
+    match serde_json::to_value(&context) {
+        Ok(mut value) => {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("ok".to_owned(), serde_json::json!(true));
+                obj.insert("name".to_owned(), serde_json::json!(project.name));
+            }
+            http_response(
+                200,
+                "OK",
+                "application/json",
+                value.to_string().into_bytes(),
+            )
+        }
+        Err(err) => bridge_error(500, "Internal Server Error", &err.to_string()),
     }
 }
 
@@ -7414,6 +7519,71 @@ mod tests {
             .collect();
         assert!(restored_paths.contains(&l1.to_str().unwrap()));
         assert!(restored_paths.contains(&l2.to_str().unwrap()));
+    }
+
+    #[test]
+    fn project_save_and_open_round_trips_tabs() {
+        let paths = test_app_paths("project-save");
+        let files = test_file_root("project-save-files");
+        let (l1, r1) = (files.join("p1a.txt"), files.join("p1b.txt"));
+        let (l2, r2) = (files.join("p2a.txt"), files.join("p2b.txt"));
+        fs::write(&l1, "one\n").unwrap();
+        fs::write(&r1, "ONE\n").unwrap();
+        fs::write(&l2, "two\n").unwrap();
+        fs::write(&r2, "TWO\n").unwrap();
+        let mut tab1 = build_tab_for_paths(&l1, &r1);
+        let mut tab2 = build_tab_for_paths(&l2, &r2);
+        tab1.id = 1;
+        tab2.id = 2;
+        let context = GuiLaunchContext::from_tabs(vec![tab1, tab2], 2);
+        let state = test_bridge_state(Some(context));
+
+        let project_path = files.join("workspace.linsync-project");
+        // Save the open tabs as a project.
+        let save = String::from_utf8(bridge_response(
+            &format!(
+                "GET /project/save?path={}&name=Demo HTTP/1.1\r\n",
+                urlencoding::encode(project_path.to_str().unwrap())
+            ),
+            &paths,
+            &state,
+        ))
+        .unwrap();
+        let save_body = json_response_body(&save);
+        assert_eq!(
+            save_body["ok"],
+            serde_json::json!(true),
+            "save: {save_body}"
+        );
+        assert_eq!(save_body["sessions"], serde_json::json!(2));
+        assert!(project_path.exists(), "project file should be written");
+
+        // Open it back: the response is a launch context with both tabs.
+        let open = String::from_utf8(bridge_response(
+            &format!(
+                "GET /project/open?path={} HTTP/1.1\r\n",
+                urlencoding::encode(project_path.to_str().unwrap())
+            ),
+            &paths,
+            &state,
+        ))
+        .unwrap();
+        let open_body = json_response_body(&open);
+        assert_eq!(open_body["name"], "Demo");
+        let tabs = open_body["session"]["tabs"].as_array().expect("tabs array");
+        assert_eq!(tabs.len(), 2, "both comparisons should reopen: {open_body}");
+
+        // Opening a missing project is a 400.
+        let missing = String::from_utf8(bridge_response(
+            "GET /project/open?path=/no/such/workspace.linsync-project HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .unwrap();
+        assert!(
+            missing.starts_with("HTTP/1.1 400"),
+            "missing project: {missing}"
+        );
     }
 
     #[test]

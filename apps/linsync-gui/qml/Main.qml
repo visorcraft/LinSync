@@ -1915,6 +1915,14 @@ Kirigami.ApplicationWindow {
         return decodeURIComponent(value)
     }
 
+    // Derive a human project name from a file path: basename without the
+    // .linsync-project extension.
+    function projectNameFromPath(path) {
+        const parts = String(path).split("/")
+        let base = parts[parts.length - 1] || String(path)
+        return base.replace(/\.linsync-project$/, "") || "Untitled project"
+    }
+
     function copyCurrentDifference(direction) {
         if (root.currentDiffRow < 0)
             return
@@ -2197,6 +2205,44 @@ Kirigami.ApplicationWindow {
                     }
                 }
             }
+        }
+    }
+
+    Dialogs.FileDialog {
+        id: projectSaveDialog
+        title: qsTr("Save project as…")
+        fileMode: Dialogs.FileDialog.SaveFile
+        nameFilters: ["LinSync project (*.linsync-project)", "All files (*)"]
+        onAccepted: {
+            const localPath = root.urlToLocalPath(selectedFile)
+            root.bridgeGet("/project/save?path=" + encodeURIComponent(localPath) + "&name=" + encodeURIComponent(root.projectNameFromPath(localPath)),
+                function (ok, payload) {
+                    if (ok && payload && payload.ok)
+                        sessionsPage.projectStatus = qsTr("Saved %1 comparison(s)").arg(payload.sessions)
+                    else
+                        sessionsPage.projectStatus = qsTr("Project save failed")
+                })
+        }
+    }
+
+    Dialogs.FileDialog {
+        id: projectOpenDialog
+        title: qsTr("Open project")
+        nameFilters: ["LinSync project (*.linsync-project)", "All files (*)"]
+        onAccepted: {
+            const localPath = root.urlToLocalPath(selectedFile)
+            root.bridgeGet("/project/open?path=" + encodeURIComponent(localPath),
+                function (ok, payload, status) {
+                    if (ok && payload && payload.session) {
+                        root.applySessionContextJson(JSON.stringify(payload))
+                        root.activeSection = 0
+                        sessionsPage.projectStatus = qsTr("Opened %1").arg(payload.name || "project")
+                    } else {
+                        sessionsPage.projectStatus = (status === 400 || status === 404)
+                            ? qsTr("Not a valid project file")
+                            : qsTr("Project open failed")
+                    }
+                })
         }
     }
 
@@ -4551,6 +4597,8 @@ Kirigami.ApplicationWindow {
                         sessionsPage.recentSessions = items
                     })
                 }
+                onSaveProjectRequested: projectSaveDialog.open()
+                onOpenProjectRequested: projectOpenDialog.open()
             }
 
             FiltersPage {

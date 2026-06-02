@@ -20,6 +20,12 @@ Kirigami.ScrollablePage {
     signal reopenRecentRequested(int index)
     signal refreshRecentRequested()
     signal saveCurrentSessionRequested()
+    // Ask Main.qml to pick a path and save the open tabs as a project file, or
+    // open a project file and restore its comparisons as tabs.
+    signal saveProjectRequested()
+    signal openProjectRequested()
+    // Transient status line for project save/open outcomes.
+    property string projectStatus: ""
 
     required property string bridgeUrl
 
@@ -100,19 +106,41 @@ Kirigami.ScrollablePage {
                     opacity: 0.6
                     font.pixelSize: 12
                 }
-                AppButton {
-                    visible: page.tabs.length > 0
-                    icon.name: "document-save"
-                    text: qsTr("Save session")
-                    onClicked: {
-                        var req = new XMLHttpRequest()
-                        var title = "Session " + new Date().toLocaleString()
-                        req.onreadystatechange = function () {
-                            if (req.readyState === XMLHttpRequest.DONE && req.status === 200)
-                                page.refreshRecentRequested()
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    AppButton {
+                        visible: page.tabs.length > 0
+                        icon.name: "document-save"
+                        text: qsTr("Save session")
+                        onClicked: {
+                            var req = new XMLHttpRequest()
+                            var title = "Session " + new Date().toLocaleString()
+                            req.onreadystatechange = function () {
+                                if (req.readyState === XMLHttpRequest.DONE && req.status === 200)
+                                    page.refreshRecentRequested()
+                            }
+                            req.open("GET", page.bridgeUrl + "/sessions/save?title=" + encodeURIComponent(title))
+                            req.send()
                         }
-                        req.open("GET", page.bridgeUrl + "/sessions/save?title=" + encodeURIComponent(title))
-                        req.send()
+                    }
+                    AppButton {
+                        visible: page.tabs.length > 0
+                        icon.name: "project-development-new-template"
+                        text: qsTr("Save project…")
+                        onClicked: page.saveProjectRequested()
+                    }
+                    AppButton {
+                        icon.name: "document-open"
+                        text: qsTr("Open project…")
+                        onClicked: page.openProjectRequested()
+                    }
+                    Item { Layout.fillWidth: true }
+                    Controls.Label {
+                        visible: page.projectStatus.length > 0
+                        text: page.projectStatus
+                        opacity: 0.75
+                        font.pixelSize: 12
                     }
                 }
             }
