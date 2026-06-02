@@ -4681,6 +4681,36 @@ fn folder_query_from_params(params: &[(String, String)]) -> linsync_core::Folder
             query.types = filter;
         }
     }
+    if let Some(state) = query_value(params, "state") {
+        use linsync_core::FolderEntryFilter;
+        query.state = match state {
+            "changed" | "differences" | "diff" => FolderEntryFilter::Differences,
+            "left_only" => FolderEntryFilter::LeftOnly,
+            "right_only" => FolderEntryFilter::RightOnly,
+            "identical" | "equal" => FolderEntryFilter::Identical,
+            "different" => FolderEntryFilter::Different,
+            "errors" => FolderEntryFilter::Errors,
+            // "all" / "" / anything else keeps the default (everything).
+            _ => FolderEntryFilter::All,
+        };
+    }
+    if let Some(sort) = query_value(params, "sort") {
+        use linsync_core::FolderSortKey;
+        query.sort = match sort {
+            "name" => FolderSortKey::Name,
+            "state" => FolderSortKey::State,
+            "type" => FolderSortKey::Type,
+            // The GUI's left/right size columns both map to the core's
+            // "larger of the two sides" size key.
+            "size" | "leftSize" | "rightSize" => FolderSortKey::Size,
+            "modified" => FolderSortKey::Modified,
+            // "path" / anything else keeps the default (relative path).
+            _ => FolderSortKey::Path,
+        };
+    }
+    if let Some(descending) = query_value(params, "descending").and_then(parse_bool_query_param) {
+        query.descending = descending;
+    }
     if let Some(offset) = query_value(params, "offset").and_then(|v| v.parse::<usize>().ok()) {
         query.offset = offset;
     }
@@ -4690,7 +4720,7 @@ fn folder_query_from_params(params: &[(String, String)]) -> linsync_core::Folder
     query
 }
 
-/// `/folder/query?left=&right=&search=&types=&offset=&limit=` — compare two
+/// `/folder/query?left=&right=&search=&types=&offset=&limit=&state=&sort=&descending=` — compare two
 /// folders and return the entries filtered/paged through the core `FolderQuery`,
 /// so the GUI folder table can search + type-filter + paginate via the core API.
 fn folder_query_bridge_response(query: &str) -> Vec<u8> {
@@ -7968,6 +7998,57 @@ mod tests {
         assert_eq!(page["totalMatched"].as_u64(), Some(total));
         assert_eq!(page["entries"].as_array().unwrap().len(), 1);
         assert_eq!(page["hasMore"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn folder_query_honors_state_filter_and_sort_direction() {
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let left = fixture_root.join("tests/fixtures/folders/left");
+        let right = fixture_root.join("tests/fixtures/folders/right");
+        let paths = test_app_paths("folder-query-sort");
+        let state = test_bridge_state(None);
+
+        let query = |q: &str| -> serde_json::Value {
+            json_response_body(
+                &String::from_utf8(bridge_response(
+                    &format!(
+                        "GET /folder/query?left={}&right={}&{q} HTTP/1.1\r\n",
+                        urlencoding::encode(left.to_str().unwrap()),
+                        urlencoding::encode(right.to_str().unwrap())
+                    ),
+                    &paths,
+                    &state,
+                ))
+                .expect("utf-8"),
+            )
+        };
+
+        // `state=changed` returns only differing entries (fewer than the total).
+        let all = query("");
+        let changed = query("state=changed");
+        let total = all["totalMatched"].as_u64().unwrap();
+        let changed_total = changed["totalMatched"].as_u64().unwrap();
+        assert!(
+            changed_total > 0 && changed_total <= total,
+            "state filter narrows to differing entries ({changed_total} of {total})"
+        );
+        for entry in changed["entries"].as_array().unwrap() {
+            let s = entry["state"].as_str().unwrap_or("");
+            assert!(
+                matches!(s, "left_only" | "right_only" | "changed"),
+                "state=changed must exclude equal entries, saw '{s}'"
+            );
+        }
+
+        // `sort=path&descending=1` reverses the path order of the first page.
+        let asc = query("sort=path");
+        let desc = query("sort=path&descending=1");
+        let first_asc = asc["entries"][0]["path"].as_str().unwrap_or("");
+        let first_desc = desc["entries"][0]["path"].as_str().unwrap_or("");
+        assert_ne!(
+            first_asc, first_desc,
+            "descending sort should change which entry is first"
+        );
     }
 
     #[test]
