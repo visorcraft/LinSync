@@ -2424,7 +2424,10 @@ fn mergetool_subcommand_json_reports_auto_resolve_summary() {
 }
 
 #[test]
-fn mergetool_subcommand_json_reports_deferred_interactive_summary() {
+fn mergetool_interactive_launches_gui_and_validates_output() {
+    // Interactive mergetool launches the GUI (here a fake stand-in via
+    // LINSYNC_GUI) and decides success from the *written* output, not the GUI's
+    // exit status: a marker-free file → 0, conflict markers → 1, nothing → 2.
     let dir = TempFixture::new();
     let base = dir.path.join("base.txt");
     fs::write(&base, "a\nb\nc\n").unwrap();
@@ -2433,9 +2436,23 @@ fn mergetool_subcommand_json_reports_deferred_interactive_summary() {
     let remote = dir.path.join("remote.txt");
     fs::write(&remote, "a\nb_remote\nc\n").unwrap();
     let merged = dir.path.join("merged.txt");
-    fs::write(&merged, "").unwrap();
 
-    let output = run(&[
+    // Fake GUI: write whatever $MERGE_TEST_OUTPUT contains to the merged path.
+    let fake_gui = dir.path.join("fake-gui.sh");
+    fs::write(
+        &fake_gui,
+        "#!/bin/sh\nprintf '%s' \"$MERGE_TEST_OUTPUT\" > \"$LINSYNC_MERGE_MERGED\"\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&fake_gui).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_gui, perms).unwrap();
+    }
+
+    let args = [
         "mergetool",
         "--base",
         base.to_str().unwrap(),
@@ -2445,24 +2462,99 @@ fn mergetool_subcommand_json_reports_deferred_interactive_summary() {
         remote.to_str().unwrap(),
         "--merged",
         merged.to_str().unwrap(),
-        "--json",
-    ]);
+    ];
 
-    assert_eq!(output.status.code(), Some(2));
-    assert!(
-        String::from_utf8(output.stderr)
-            .unwrap()
-            .contains("interactive mergetool mode not yet implemented")
+    // Resolved (marker-free) output → success.
+    let resolved = run_with_str_env(
+        &args,
+        &[
+            ("LINSYNC_GUI", fake_gui.to_str().unwrap()),
+            ("MERGE_TEST_OUTPUT", "a\nb_merged\nc\n"),
+        ],
+        &[],
     );
-    assert_eq!(fs::read_to_string(&merged).unwrap(), "");
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["status"], "unsupported_interactive");
+    assert_eq!(resolved.status.code(), Some(0));
+    assert_eq!(fs::read_to_string(&merged).unwrap(), "a\nb_merged\nc\n");
+
+    // Output left with conflict markers → unresolved (exit 1).
+    let conflict = run_with_str_env(
+        &args,
+        &[
+            ("LINSYNC_GUI", fake_gui.to_str().unwrap()),
+            (
+                "MERGE_TEST_OUTPUT",
+                "<<<<<<< LOCAL\nx\n=======\ny\n>>>>>>> REMOTE\n",
+            ),
+        ],
+        &[],
+    );
+    assert_eq!(conflict.status.code(), Some(1));
+
+    // GUI writes nothing → no resolved output (exit 2).
+    fs::remove_file(&merged).ok();
+    let nothing = run_with_str_env(
+        &args,
+        &[
+            ("LINSYNC_GUI", fake_gui.to_str().unwrap()),
+            ("MERGE_TEST_OUTPUT", ""),
+        ],
+        &[],
+    );
+    // The fake still creates an empty file, which is marker-free → treated as
+    // resolved; to test the "missing" path, point at a GUI that writes nothing.
+    let _ = nothing;
+    let noop_gui = dir.path.join("noop-gui.sh");
+    fs::write(&noop_gui, "#!/bin/sh\ntrue\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&noop_gui).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&noop_gui, perms).unwrap();
+    }
+    let missing_merged = dir.path.join("never-written.txt");
+    let missing = run_with_str_env(
+        &[
+            "mergetool",
+            "--base",
+            base.to_str().unwrap(),
+            "--local",
+            local.to_str().unwrap(),
+            "--remote",
+            remote.to_str().unwrap(),
+            "--merged",
+            missing_merged.to_str().unwrap(),
+        ],
+        &[("LINSYNC_GUI", noop_gui.to_str().unwrap())],
+        &[],
+    );
+    assert_eq!(missing.status.code(), Some(2));
+
+    // --json reports the resolved status.
+    let json_out = run_with_str_env(
+        &[
+            "mergetool",
+            "--base",
+            base.to_str().unwrap(),
+            "--local",
+            local.to_str().unwrap(),
+            "--remote",
+            remote.to_str().unwrap(),
+            "--merged",
+            merged.to_str().unwrap(),
+            "--json",
+        ],
+        &[
+            ("LINSYNC_GUI", fake_gui.to_str().unwrap()),
+            ("MERGE_TEST_OUTPUT", "a\nb_merged\nc\n"),
+        ],
+        &[],
+    );
+    assert_eq!(json_out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(json["status"], "resolved");
     assert_eq!(json["mode"], "interactive");
-    assert_eq!(json["conflicts"], 1);
-    assert_eq!(json["resolved_conflicts"], 0);
-    assert_eq!(json["unresolved_conflicts"], 1);
-    assert_eq!(json["written"], false);
-    assert_eq!(json["items"][0]["id"], 0);
+    assert_eq!(json["written"], true);
 }
 
 impl Drop for TempFixture {

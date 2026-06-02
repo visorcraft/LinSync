@@ -32,6 +32,9 @@ Item {
     property string basePath: ""
     property string leftPath: ""
     property string rightPath: ""
+    // Predetermined output path (Git mergetool). When non-empty, a one-click
+    // "Save merge" writes straight here instead of prompting.
+    property string outputPath: ""
 
     // ── Internal state ────────────────────────────────────────────────────────
 
@@ -262,6 +265,15 @@ Item {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                Controls.Button {
+                    // Git-mergetool one-click save to the predetermined $MERGED.
+                    visible: root.outputPath !== ""
+                    text: qsTr("Save merge")
+                    palette.button: root.activeBgAlt
+                    palette.buttonText: root.activeText
+                    onClicked: root.saveTo(root.outputPath)
+                }
 
                 Controls.Button {
                     text: qsTr("Save to…")

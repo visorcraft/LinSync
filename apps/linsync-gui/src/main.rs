@@ -102,6 +102,14 @@ fn run(paths: &AppPaths, args: Vec<OsString>) -> Result<ExitCode, String> {
         }
     }
 
+    // A Git-mergetool launch (LINSYNC_MERGE_* env) takes priority: open the
+    // Merge workspace with the three inputs and the predetermined output path.
+    if let Some(merge) = merge_launch_from_env() {
+        let ctx = launch_context.get_or_insert_with(GuiLaunchContext::empty);
+        ctx.startup_section = Some("merge".to_owned());
+        ctx.merge = Some(merge);
+    }
+
     // Bridge LINSYNC_STARTUP_SECTION into the launch context so QML can read
     // it on Component.onCompleted. This is the canonical path for screenshot
     // capture (post-`--` argv to qml6 gets eaten as file paths, see #1).
@@ -193,6 +201,24 @@ struct GuiLaunchContext {
     /// LINSYNC_STARTUP_SECTION env var when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     startup_section: Option<String>,
+    /// Three-way merge launch (Git mergetool). When present, Main.qml opens the
+    /// Merge workspace with these inputs and a predetermined output path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    merge: Option<GuiMergeLaunch>,
+}
+
+/// A Git-mergetool launch request: the three inputs plus the output path the
+/// resolved merge must be written to (so `linsync-cli mergetool` can validate
+/// it after the GUI exits).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GuiMergeLaunch {
+    base: String,
+    /// "local" side (Git's $LOCAL) — shown as the left column.
+    left: String,
+    /// "remote" side (Git's $REMOTE) — shown as the right column.
+    right: String,
+    /// Where the resolved output must be written ($MERGED).
+    output: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -451,6 +477,7 @@ impl GuiLaunchContext {
                 recent_paths,
             },
             startup_section: None,
+            merge: None,
         }
     }
 
@@ -473,6 +500,7 @@ impl GuiLaunchContext {
                 recent_paths,
             },
             startup_section: None,
+            merge: None,
         }
     }
 
@@ -484,6 +512,7 @@ impl GuiLaunchContext {
                 recent_paths: vec![],
             },
             startup_section: None,
+            merge: None,
         }
     }
 
@@ -535,6 +564,7 @@ impl GuiBridgeState {
         GuiLaunchContext {
             session,
             startup_section: None,
+            merge: None,
         }
     }
 
@@ -1571,6 +1601,19 @@ fn compare_view_mode_label(mode: CompareViewMode) -> &'static str {
 fn build_launch_context(args: &[OsString]) -> Option<GuiLaunchContext> {
     let paths = positional_paths(args)?;
     Some(build_context_for_paths(&paths[0], &paths[1]))
+}
+
+/// Read a Git-mergetool launch from the `LINSYNC_MERGE_*` environment, set by
+/// `linsync-cli mergetool` when it launches the GUI for interactive resolution.
+/// All four paths must be present; otherwise this returns `None`.
+fn merge_launch_from_env() -> Option<GuiMergeLaunch> {
+    let read = |key: &str| env::var(key).ok().filter(|v| !v.is_empty());
+    Some(GuiMergeLaunch {
+        base: read("LINSYNC_MERGE_BASE")?,
+        left: read("LINSYNC_MERGE_LOCAL")?,
+        right: read("LINSYNC_MERGE_REMOTE")?,
+        output: read("LINSYNC_MERGE_MERGED")?,
+    })
 }
 
 fn build_context_for_paths(left: &Path, right: &Path) -> GuiLaunchContext {

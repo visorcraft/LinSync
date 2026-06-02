@@ -97,6 +97,9 @@ Kirigami.ApplicationWindow {
     property string mergeBasePath:  ""
     property string mergeLeftPath:  ""
     property string mergeRightPath: ""
+    // Predetermined output path for a Git-mergetool launch (empty = ad-hoc merge
+    // opened from the toolbar, which prompts for a save location instead).
+    property string mergeOutputPath: ""
 
     // -- Theming --------------------------------------------------------
     // The user-chosen Grex/Grexa theme integer. 0 follows the host palette;
@@ -1293,6 +1296,17 @@ Kirigami.ApplicationWindow {
             if (context.startup_section in sectionMap) {
                 root.activeSection = sectionMap[context.startup_section]
             }
+        }
+
+        // Git-mergetool launch: open the Merge workspace with the three inputs
+        // and a predetermined output path, then start the three-way session.
+        if (context.merge && context.merge.base && context.merge.left && context.merge.right) {
+            root.mergeBasePath = context.merge.base
+            root.mergeLeftPath = context.merge.left
+            root.mergeRightPath = context.merge.right
+            root.mergeOutputPath = context.merge.output || ""
+            root.activeSection = 8
+            mergePage.start()
         }
     }
 
@@ -4844,6 +4858,7 @@ Kirigami.ApplicationWindow {
                 basePath:       root.mergeBasePath
                 leftPath:       root.mergeLeftPath
                 rightPath:      root.mergeRightPath
+                outputPath:     root.mergeOutputPath
                 activeBg:             root.activeBg
                 activeBgAlt:          root.activeBgAlt
                 activeText:           root.activeText

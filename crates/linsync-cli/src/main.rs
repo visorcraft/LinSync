@@ -1299,30 +1299,67 @@ fn mergetool_command(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // No --auto-resolve: launch the GUI for interactive resolution. It opens
+    // the Merge workspace on the three inputs (via LINSYNC_MERGE_* env) and
+    // writes the resolved output to `merged` on save. We wait for it to exit,
+    // then verify a fully-resolved file was written.
+    let gui = resolve_gui_binary();
+    let status = Command::new(&gui)
+        .env("LINSYNC_MERGE_BASE", &base)
+        .env("LINSYNC_MERGE_LOCAL", &local)
+        .env("LINSYNC_MERGE_REMOTE", &remote)
+        .env("LINSYNC_MERGE_MERGED", &merged)
+        .env("LINSYNC_STARTUP_SECTION", "merge")
+        .status()
+        .map_err(|err| {
+            format!(
+                "failed to launch GUI '{}' for mergetool: {err}",
+                gui.display()
+            )
+        })?;
+
+    // Success is determined by the written output, not the GUI's exit status:
+    // the resolved file must exist and contain no conflict markers.
+    let outcome = match fs::read_to_string(&merged) {
+        Ok(text) if !merge_output_has_conflicts(&text) => "resolved",
+        Ok(_) => "unresolved",
+        Err(_) => "missing",
+    };
     if json {
         println!(
             "{}",
             serde_json::json!({
-                "status": "unsupported_interactive",
+                "status": outcome,
                 "mode": "interactive",
                 "base": base,
                 "local": local,
                 "remote": remote,
                 "merged": merged,
                 "conflicts": initial_conflicts.len(),
-                "resolved_conflicts": 0,
-                "unresolved_conflicts": state.unresolved_count(),
-                "written": false,
-                "items": merge_conflicts_json(&initial_conflicts),
+                "gui_exit_success": status.success(),
+                "written": outcome == "resolved",
             })
         );
     }
+    match outcome {
+        "resolved" => Ok(ExitCode::SUCCESS),
+        "unresolved" => {
+            eprintln!("merge left unresolved conflict markers in {merged}");
+            Ok(ExitCode::from(1))
+        }
+        _ => {
+            eprintln!("no resolved output was written to {merged}");
+            Ok(ExitCode::from(2))
+        }
+    }
+}
 
-    // No --auto-resolve: interactive GUI mode not yet implemented in v1.
-    eprintln!(
-        "interactive mergetool mode not yet implemented; use --auto-resolve <left|right|base>"
-    );
-    Ok(ExitCode::from(2))
+/// Whether merged output still contains Git conflict markers (an unresolved
+/// merge). Checks line starts for the canonical 7-character markers.
+fn merge_output_has_conflicts(text: &str) -> bool {
+    text.lines().any(|line| {
+        line.starts_with("<<<<<<<") || line.starts_with("=======") || line.starts_with(">>>>>>>")
+    })
 }
 
 fn completions_command(args: &[String]) -> Result<ExitCode, String> {
@@ -6507,8 +6544,10 @@ Generate this manual page.
 .B mergetool --base BASE --local LOCAL --remote REMOTE --merged MERGED [--auto-resolve left|right|base] [--json]
 Invoke linsync-cli as a Git mergetool. With --auto-resolve, all conflicts are resolved to
 the chosen side and the result is written to the MERGED file. With --json, a
-machine-readable merge summary is printed. Without --auto-resolve, the command exits
-with code 2 (interactive GUI integration is deferred to a future release).
+machine-readable merge summary is printed. Without --auto-resolve, the GUI is launched for
+interactive resolution (opening the Merge workspace on the three inputs); after it exits the
+command checks the MERGED file and exits 0 only when a fully-resolved, conflict-marker-free
+result was written, 1 if conflict markers remain, or 2 if no output was written.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -6560,8 +6599,9 @@ mergetool:
     Run linsync-cli as a Git mergetool. Requires --base, --local, --remote, and --merged.
     With --auto-resolve <left|right|base>, all conflicts are resolved automatically and
     the result is written to --merged. Add --json to print a machine-readable merge
-    summary. Without --auto-resolve, returns exit code 2 (GUI integration deferred to a
-    future release).
+    summary. Without --auto-resolve, the GUI opens for interactive resolution and the
+    command exits 0 only once a conflict-marker-free result is written to --merged
+    (1 if markers remain, 2 if nothing was written).
 
 plugin:
     Manage discovered plugins. `list [--json]` shows installed plugins and their
