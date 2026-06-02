@@ -68,9 +68,10 @@ Kirigami.Page {
         "\n" +
         "## Licenses in use\n" +
         "\n" +
-        " - Apache License 2.0           (30 crates)\n" +
-        " - MIT License                   (38 crates)\n" +
+        " - Apache License 2.0           (32 crates)\n" +
+        " - MIT License                   (42 crates)\n" +
         " - BSD 2-Clause                  (1 crate)\n" +
+        " - BSD 3-Clause                  (2 crates)\n" +
         " - Unicode-3.0                   (1 crate)\n" +
         " - Unlicense / CC0-1.0 / MIT-0   (public-domain equivalents)\n" +
         "\n" +
@@ -81,14 +82,19 @@ Kirigami.Page {
         "| aho-corasick         | 1.1.4    | Unlicense OR MIT |\n" +
         "| arrayref             | 0.3.9    | BSD-2-Clause |\n" +
         "| arrayvec             | 0.7.6    | MIT OR Apache-2.0 |\n" +
+        "| bit_field            | 0.10.3   | MIT |\n" +
         "| blake3               | 1.8.5    | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |\n" +
         "| cc                   | 1.2.62   | MIT OR Apache-2.0 |\n" +
         "| cfg-if               | 1.0.4    | MIT OR Apache-2.0 |\n" +
+        "| color_quant          | 1.1.0    | MIT |\n" +
         "| constant_time_eq     | 0.4.2    | CC0-1.0 OR MIT-0 OR Apache-2.0 |\n" +
         "| cpufeatures          | 0.3.0    | MIT OR Apache-2.0 |\n" +
+        "| exr                  | 1.74.0   | BSD-3-Clause |\n" +
         "| find-msvc-tools      | 0.1.9    | MIT OR Apache-2.0 |\n" +
+        "| gif                  | 0.14.2   | MIT OR Apache-2.0 |\n" +
         "| itoa                 | 1.0.18   | MIT OR Apache-2.0 |\n" +
         "| lazy_static          | 1.5.0    | MIT OR Apache-2.0 |\n" +
+        "| lebe                 | 0.5.3    | BSD-3-Clause |\n" +
         "| libc                 | 0.2.186  | MIT OR Apache-2.0 |\n" +
         "| log                  | 0.4.29   | MIT OR Apache-2.0 |\n" +
         "| memchr               | 2.8.0    | Unlicense OR MIT |\n" +
@@ -121,6 +127,7 @@ Kirigami.Page {
         "| windows-link         | 0.2.1    | MIT OR Apache-2.0 |\n" +
         "| windows-sys          | 0.61.2   | MIT OR Apache-2.0 |\n" +
         "| zmij                 | 1.0.21   | MIT |\n" +
+        "| zune-inflate         | 0.2.54   | MIT OR Apache-2.0 |\n" +
         "\n" +
         "Where a crate offers multiple licenses, LinSync selects the option\n" +
         "compatible with GPL-3.0-only.  No third-party copyleft Cargo crates\n" +
@@ -184,6 +191,31 @@ Kirigami.Page {
         "    notice, this list of conditions and the following disclaimer in\n" +
         "    the documentation and/or other materials provided with the\n" +
         "    distribution.\n" +
+        "\n" +
+        "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n" +
+        "\"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\n" +
+        "LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS\n" +
+        "FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE\n" +
+        "COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,\n" +
+        "INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES.\n" +
+        "\n" +
+        "### BSD 3-Clause License\n" +
+        "\n" +
+        "Redistribution and use in source and binary forms, with or without\n" +
+        "modification, are permitted provided that the following conditions\n" +
+        "are met:\n" +
+        "\n" +
+        " 1. Redistributions of source code must retain the above copyright\n" +
+        "    notice, this list of conditions and the following disclaimer.\n" +
+        "\n" +
+        " 2. Redistributions in binary form must reproduce the above copyright\n" +
+        "    notice, this list of conditions and the following disclaimer in\n" +
+        "    the documentation and/or other materials provided with the\n" +
+        "    distribution.\n" +
+        "\n" +
+        " 3. Neither the name of the copyright holder nor the names of its\n" +
+        "    contributors may be used to endorse or promote products derived\n" +
+        "    from this software without specific prior written permission.\n" +
         "\n" +
         "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n" +
         "\"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\n" +

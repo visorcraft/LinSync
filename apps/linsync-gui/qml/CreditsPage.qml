@@ -38,14 +38,19 @@ Kirigami.ScrollablePage {
         { name: "aho-corasick",       version: "1.1.4",   license: "Unlicense OR MIT" },
         { name: "arrayref",           version: "0.3.9",   license: "BSD-2-Clause" },
         { name: "arrayvec",           version: "0.7.6",   license: "MIT OR Apache-2.0" },
+        { name: "bit_field",          version: "0.10.3",  license: "MIT" },
         { name: "blake3",             version: "1.8.5",   license: "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception" },
         { name: "cc",                 version: "1.2.62",  license: "MIT OR Apache-2.0" },
         { name: "cfg-if",             version: "1.0.4",   license: "MIT OR Apache-2.0" },
+        { name: "color_quant",        version: "1.1.0",   license: "MIT" },
         { name: "constant_time_eq",   version: "0.4.2",   license: "CC0-1.0 OR MIT-0 OR Apache-2.0" },
         { name: "cpufeatures",        version: "0.3.0",   license: "MIT OR Apache-2.0" },
+        { name: "exr",                version: "1.74.0",  license: "BSD-3-Clause" },
         { name: "find-msvc-tools",    version: "0.1.9",   license: "MIT OR Apache-2.0" },
+        { name: "gif",                version: "0.14.2",  license: "MIT OR Apache-2.0" },
         { name: "itoa",               version: "1.0.18",  license: "MIT OR Apache-2.0" },
         { name: "lazy_static",        version: "1.5.0",   license: "MIT OR Apache-2.0" },
+        { name: "lebe",               version: "0.5.3",   license: "BSD-3-Clause" },
         { name: "libc",               version: "0.2.186", license: "MIT OR Apache-2.0" },
         { name: "log",                version: "0.4.29",  license: "MIT OR Apache-2.0" },
         { name: "memchr",             version: "2.8.0",   license: "Unlicense OR MIT" },
@@ -74,7 +79,8 @@ Kirigami.ScrollablePage {
         { name: "tracing-serde",      version: "0.2.0",   license: "MIT" },
         { name: "tracing-subscriber", version: "0.3.23",  license: "MIT" },
         { name: "unicode-ident",      version: "1.0.24",  license: "(MIT OR Apache-2.0) AND Unicode-3.0" },
-        { name: "zmij",               version: "1.0.21",  license: "MIT" }
+        { name: "zmij",               version: "1.0.21",  license: "MIT" },
+        { name: "zune-inflate",       version: "0.2.54",  license: "MIT OR Apache-2.0" }
     ]
 
     property string filterText: ""
