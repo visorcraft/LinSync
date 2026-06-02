@@ -20,13 +20,18 @@ cd "$(dirname "$0")/.."
 
 TARGET="x86_64-unknown-linux-gnu"
 
+# Names are read with `--format '{p}'` (package id from the resolved lockfile)
+# rather than '{p}|{l}': the license field forces cargo to read each crate's
+# manifest, which fails on a CI runner whose CARGO_HOME has not fetched the
+# feature-gated (web-engine) crate sources. The guard only needs the name set,
+# and {p} comes straight from Cargo.lock without any manifest read.
 authoritative_names() {
     {
         cargo tree -p linsync --no-default-features \
             --features cxxqt,cxxqt-app,web-engine -e no-dev \
-            --target "${TARGET}" --format '{p}|{l}'
+            --target "${TARGET}" --format '{p}'
         cargo tree -p linsync-cli --features web-engine -e no-dev \
-            --target "${TARGET}" --format '{p}|{l}'
+            --target "${TARGET}" --format '{p}'
     } | sed -E 's/^[^a-zA-Z0-9]*//; s/ \(proc-macro\)//; s/ \(\*\)$//' \
       | grep -E '^[a-zA-Z0-9_-]+ v[0-9]' \
       | grep -vE '^(linsync|linsync-core|linsync-cli|linsync-sandbox|linsync-webengine) ' \
@@ -57,8 +62,16 @@ licenses_names() {
 }
 
 EXPECTED="$(authoritative_names)"
-expected_count="$(echo "${EXPECTED}" | wc -l)"
+expected_count="$(echo "${EXPECTED}" | grep -c . || true)"
 echo "Authoritative distributed crates (shipped build): ${expected_count}"
+
+# Guard against a cargo/resolve hiccup producing a short or empty list, which
+# would otherwise masquerade as "everything drifted". The real set is ~113.
+if [[ "${expected_count}" -lt 80 ]]; then
+    echo "ERROR: cargo tree returned only ${expected_count} crates (expected ~113)." >&2
+    echo "This is a resolve/toolchain failure, not attribution drift. Aborting." >&2
+    exit 2
+fi
 
 fail=0
 check_surface() {
