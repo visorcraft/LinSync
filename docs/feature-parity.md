@@ -14,9 +14,9 @@ before a parity-complete release.
 | File compare | Side-by-side text comparison, inline highlights, navigation, merge-copy actions, save safety, encoding and EOL handling | Partial |
 | Folder compare | Recursive and non-recursive comparison, selectable methods, filters, row states, copy/delete/rename plans, refresh and cancel behavior | Partial |
 | Three-way merge | Base/left/right comparison, conflict markers, conflict navigation, result save workflow | Partial |
-| Specialized compare — image | Pixel-level exact / tolerance / perceptual (CIEDE2000) compare with bounding-box reporting, padded dimension mismatches, diff-region navigation, and a real saveable diff overlay | Partial — advanced color/HDR/animation handling is deferred |
-| Specialized compare — document | Text extraction and OCR via helper plugins; rendered-document compare | Partial — rendered mode is not implemented |
-| Specialized compare — webpage | Source HTML, extracted text, resource-tree, rendered DOM, screenshot | Partial — rendered / screenshot stubbed |
+| Specialized compare — image | Pixel-level exact / tolerance / perceptual (CIEDE2000) compare with bounding-box reporting, padded dimension mismatches, diff-region navigation, a real saveable diff overlay, animated GIF/APNG/WebP frame-by-frame compare, and Radiance HDR / OpenEXR decode (tone-mapped to RGBA8) | Complete — full ICC color-management interpretation remains an explicit out-of-scope carve-out |
+| Specialized compare — document | Text extraction and OCR (with per-word positions) via helper plugins; rendered-document compare | Complete |
+| Specialized compare — webpage | Source HTML, extracted text, resource-tree, rendered DOM, screenshot | Complete — rendered / screenshot via out-of-process Qt WebEngine |
 | Specialized compare — archive | Archive-as-folder compare via plugin virtual-folder pipeline | Partial — CLI uses unzip / tar subprocesses |
 | Filters | Portable wildcard, regex, and metadata-expression filters with clear diagnostics for unsupported rule families | Complete for current grammar |
 | Reports and patches | Unified/context/normal patches, HTML reports, JSON/CSV automation output, preview-before-write | Partial |

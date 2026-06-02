@@ -15,7 +15,8 @@
 # filter has something to show. The windowing logic itself is unit-tested
 # (`folder_query_paginates_a_large_windowed_folder` in apps/linsync-gui);
 # this script is for manual/visual confirmation on a real desktop session,
-# which the headless no-WM review harness cannot do (see PLAN.md Phase 10).
+# which the headless no-WM review harness cannot do (the folder ListView does
+# not paint without a window manager).
 set -euo pipefail
 
 COUNT="${1:-5050}"

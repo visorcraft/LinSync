@@ -1,8 +1,9 @@
 # LinSync Scope Gates
 
-This document defines the release gates used by `PLAN.md`. A gate is complete
-only when the listed behavior is implemented, documented where user-visible, and
-covered by the relevant unit, integration, smoke, fixture, or screenshot checks.
+This document defines LinSync's release gates. A gate is complete only when the
+listed behavior is implemented, documented where user-visible, and covered by the
+relevant unit, integration, smoke, fixture, or screenshot checks. For the
+implemented status of each gate, see `docs/feature-matrix.md`.
 
 ## MVP Gate
 
@@ -71,26 +72,34 @@ Exit criteria:
 
 ## Post-1.0 Gate
 
-Post-1.0 tracks features that need deeper safety, licensing, performance, or UI
-design before they should be promised as stable.
+Post-1.0 tracked features that needed deeper safety, licensing, performance, or
+UI design before they could be promised as stable. Each was held to the exit
+criterion below before being promoted into a release. As of 1.9.0 every
+candidate listed here has shipped (see `docs/feature-matrix.md`); the gate is
+retained as a record of the promotion bar.
 
-Candidates:
+Promoted:
 
-- Three-way file/folder merge UX beyond inspection and marker export.
+- Three-way file/folder merge UX beyond inspection and marker export, including
+  the interactive Git mergetool launched from the GUI.
 - Folder tree view, virtualized huge-tree performance gates, cancellation with
   preserved partial results, and staged folder sync execution.
-- Image compare, archive-as-folder compare, document/OCR compare, webpage
-  compare, and writable archive-member workflows.
-- Hex editing, binary save behavior, and corruption-warning UX.
+- Image compare (pixel/perceptual diff with overlay, animated frame and HDR
+  decode), archive-as-folder compare (nested recursion + member extraction),
+  document/OCR compare (including per-word positional data), and webpage compare
+  (out-of-process Qt WebEngine rendered/screenshot plus a filterable resource
+  tree). Writable archive-member editing remains a deliberate non-goal.
+- Read-only hex/binary compare and corruption-warning UX. Freeform hex/binary
+  editing remains a deliberate non-goal.
 - Full legacy filter expression grammar and migration diagnostics.
 - Plugin sandboxing decisions for Flatpak portals, Bubblewrap, distributor trust,
-  or explicit user trust.
-- Localization breadth, AT-SPI coverage, and the per-mode performance/memory
-  budgets in `docs/performance-budgets.md` for very large files and folder
-  trees.
+  and explicit user trust.
+- Localization breadth, AT-SPI coverage (screen-reader announcements,
+  high-contrast change bars), and the per-mode performance/memory budgets in
+  `docs/performance-budgets.md` for very large files and folder trees.
 
 Exit criteria:
 
-- Each promoted post-1.0 feature has a security/licensing decision, fixtures or
-  controlled test data, user documentation, and regression tests before it moves
-  into a release gate.
+- Each promoted feature had a security/licensing decision, fixtures or controlled
+  test data, user documentation, and regression tests before it moved into a
+  release gate.

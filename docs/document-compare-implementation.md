@@ -37,8 +37,7 @@ passed by path, outputs written to the assigned temp dir.
 
 Not a new code path: render pages to PNG with `pdftoppm` (Poppler) as a
 pre-processing step inside the `pdf-to-text` plugin, then hand the image pair to
-the future Phase 7 image compare engine. No additional helper or plugin is needed
-for v1.
+the image compare engine. No additional helper or plugin is needed.
 
 ### OCR-as-text
 

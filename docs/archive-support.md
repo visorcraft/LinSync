@@ -1,8 +1,14 @@
 # Archive Support Decision
 
-Archive compare is a post-MVP specialized view. The first implementation must be
-read-only and must present archives as virtual folders; writable archive-member
-editing is deferred until a separate safety design exists.
+> Status: the read-only archive-as-virtual-folder pipeline (nested-archive
+> recursion + member extraction) has shipped. Writable archive-member editing
+> remains an explicit out-of-scope carve-out; the rest of this document records
+> the design constraints it shipped under and the bar a future writable
+> milestone would have to clear.
+
+Archive compare is a specialized view. The shipped implementation is read-only
+and presents archives as virtual folders; writable archive-member editing is
+deferred until a separate safety design exists.
 
 ## Helper Strategy
 
@@ -58,8 +64,8 @@ disabled for virtual archive folders.
 
 ## Writable Archive Milestone
 
-Writable archive-member workflows are not non-applicable forever, but they are
-post-1.0. Before promotion, the project needs a separate design covering helper
+Writable archive-member workflows are not non-applicable forever, but they
+remain an out-of-scope carve-out. Before promotion, the project needs a separate design covering helper
 capability detection, atomic update behavior where possible, backup/restore
 behavior, failed-update recovery, conflict handling, Flatpak limitations, and
 clear corruption warnings.

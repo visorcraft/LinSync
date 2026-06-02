@@ -99,10 +99,9 @@ Pre-existing bridge-URL parsing warnings from
 `qml6 -- --linsync-bridge <url>` are harmless and unrelated to the
 sidebar pages.
 
-> **Note:** The Compare toolbar's Stop button is disabled in this
-> release. Long compares cannot yet be cancelled from the GUI; use
-> process termination of the bridge if you need to abort. See
-> `docs/known-limitations-1.0.md`.
+The Compare toolbar's Stop button cancels an in-flight compare from the
+GUI: it flips the bridge-side cancel flag via `/cancel?id=X`, and the
+compare reports "Compare cancelled" while preserving any partial result.
 
 ## File Compare
 
@@ -261,8 +260,8 @@ cargo run -p linsync-cli -- webpage --sub-mode tree --depth 2 --accept-network-f
 `webpage` requires the explicit `--accept-network-fetch` flag because
 it performs outbound HTTP requests. Source HTML, extracted visible
 text, and resource-tree sub-modes work end-to-end. Rendered DOM diff
-and screenshot diff require the `web-engine` feature and currently
-return `NotImplemented` (see known-limitations).
+and screenshot diff are produced by an out-of-process Qt WebEngine
+renderer; they require a build with the `web-engine` feature enabled.
 
 ## Merge
 
@@ -287,12 +286,9 @@ cargo run -p linsync-cli -- conflict --json src/file-with-conflicts.txt
 ```
 
 The GUI Merge page presents a base/left/right/result layout with
-choose-side controls and per-conflict navigation.
-
-> **Note:** GUI conflict navigation currently indexes line *text* as if
-> it were a line number — next/previous still cycles through conflicts
-> but the scroll-to-line behavior is broken. CLI compare3/conflict
-> output is correct. See `docs/known-limitations-1.0.md`.
+choose-side controls and per-conflict navigation. Conflict
+highlight/scroll uses each side's own line ranges, so next/previous both
+cycles through conflicts and scrolls each pane to the matching lines.
 
 ## Filters
 
@@ -370,9 +366,11 @@ cargo run -p linsync-cli -- archive left.zip right.zip
 cargo run -p linsync-cli -- archive left.tar.zst right.tar.zst
 ```
 
-The current `archive` command extracts via `unzip`/`tar` subprocesses
-before running a folder compare; routing through the plugin
-virtual-folder pipeline is tracked in PLAN.md Phase 5 "Archive".
+The `archive` command can route each archive through a folder-virtualizer
+/ unpacker plugin (`--unpacker PLUGIN_ID`), which handles nested-archive
+recursion and member extraction into a virtual folder before the folder
+compare. Without a plugin it falls back to extracting via `unzip`/`tar`
+subprocesses for the built-in archive formats.
 
 Self-compare:
 
@@ -482,8 +480,9 @@ cargo run -p linsync-cli -- man --output linsync-cli.1
 
 Use LinSync as a Git difftool or mergetool through the CLI commands
 documented in `docs/git-integration.md`. The difftool path is usable
-for text comparisons. The mergetool path supports `--auto-resolve`;
-interactive (GUI-driven) mergetool is tracked in PLAN.md Phase 7.
+for text comparisons. The mergetool path supports `--auto-resolve` and
+can launch the GUI Merge workspace interactively for hands-on conflict
+resolution, validating the saved output before returning.
 
 ## Troubleshooting
 
@@ -509,5 +508,5 @@ If Flatpak packaging is used later, filesystem access, external
 editors, and helper/plugin execution may require portals or extra
 permissions.
 
-For current project status, check `PLAN.md` and
+For current project status, see `docs/feature-matrix.md` and
 `docs/known-limitations-1.0.md`.

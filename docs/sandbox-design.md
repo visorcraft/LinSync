@@ -1,6 +1,9 @@
 # Plugin Sandbox Foundation Design
 
-> Status: design — implementation pending follow-up plan.
+> Status: implemented — the `linsync-sandbox` crate (Landlock + seccompiler with
+> a bubblewrap fallback) ships and is consumed by `linsync-core::plugin`. This
+> document is retained as the design record; the "Open issues to resolve before
+> implementation" below are kept for historical context.
 
 ## Goals
 
@@ -118,8 +121,8 @@ calls. `AF_UNIX` (for D-Bus, Wayland, etc.) is allowed because some helper
 runtimes need it. The bwrap fallback adds `--unshare-net` which provides the
 same guarantee at the namespace level.
 
-`sandbox.network: true` lifts the socket block. Only the future `web-fetch`
-plugin class is expected to declare this.
+`sandbox.network: true` lifts the socket block. Only the `web-fetch` plugin
+(used by webpage compare) is expected to declare this.
 
 ## Crate organization
 

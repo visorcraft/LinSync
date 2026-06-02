@@ -1,13 +1,18 @@
 # Webpage Compare Decision
 
-Webpage compare is a post-MVP specialized comparison feature. It must not become the
+> Status: webpage compare has shipped. Rendered and screenshot modes run via an
+> out-of-process Qt WebEngine wrapper (the `web-engine` cargo feature), and the
+> source/text/resource-tree modes work without it. This document records the
+> scope, browser-engine boundary, and privacy constraints it shipped under.
+
+Webpage compare is a specialized comparison feature. It must not become the
 application shell: LinSync remains a native Qt/Kirigami desktop app, and any
 browser engine is limited to the compare surface that explicitly needs rendered
 web content.
 
 ## Scope
 
-Planned webpage compare modes:
+Webpage compare modes:
 
 - Rendered page compare for visual differences.
 - Screenshot compare by sending captured viewports or full pages to image
@@ -48,5 +53,4 @@ Required controls before enabling it:
 - Tests using controlled local servers or fixtures instead of live third-party
   websites.
 
-Until these controls exist, URL/webpage compare remains disabled and documented
-as pending.
+These controls are in place; webpage compare is enabled.

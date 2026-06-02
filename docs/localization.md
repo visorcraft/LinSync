@@ -3,7 +3,7 @@
 LinSync's GUI strings are marked with Qt's `qsTr(...)` in the QML
 (`apps/linsync-gui/qml/`). Translation flows through the standard Qt Linguist
 toolchain; no third-party translation data is bundled (see the licensing
-boundary in `AGENTS.md`).
+boundary in `docs/licensing.md`).
 
 ## Source catalog
 
@@ -37,12 +37,13 @@ just l10n-release   # compile every i18n/*.ts -> i18n/*.qm
    `just l10n-release` compiles the `.qm`.
 4. Commit the `.ts`; the `.qm` is rebuilt by packaging.
 
-## Runtime wiring (remaining GUI step)
+## Runtime wiring
 
-Loading a compiled `.qm` for the active locale and installing it
-(`QCoreApplication::installTranslator`) must happen in the GUI host before the
-QML engine loads. `cxx-qt-lib` does not currently expose `QTranslator`, so the
-in-process `cxxqt-app` host needs a small `cxx` bridge (or the external `qml6`
-host a `--translation` argument) to install the translator. That wiring, and the
-packaging step that installs `i18n/*.qm` into the runtime data dir, are GUI/
-packaging tasks verified by running the app under a non-default `LANG`/`LC_ALL`.
+A compiled `.qm` for the active locale is loaded and installed
+(`QCoreApplication::installTranslator`) in the GUI host before the QML engine
+loads. `cxx-qt-lib` does not expose `QTranslator`, so the in-process `cxxqt-app`
+host installs it through a small `cxx` bridge (`linsync_install_translator` in
+`apps/linsync-gui/src/cxxqt_session.rs`, called from `main.rs` at startup),
+which loads `linsync_<locale>.qm` from the `i18n/` dir installed alongside the
+QML in the runtime data dir. Verify by running the app under a non-default
+`LANG`/`LC_ALL`.

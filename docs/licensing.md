@@ -66,8 +66,10 @@ not bundle helpers before review.
 
 OCR engines, Poppler/PDF renderers, SVG/PDF/image renderers, codecs, and media
 helpers need explicit license and security review before becoming build or
-runtime dependencies. Planned document/OCR compare paths and helper review
-requirements are recorded in `docs/document-ocr-compare.md`.
+runtime dependencies. The shipped document/OCR compare paths use
+system-discovered helper processes (no new Cargo dependency); the design and
+helper review requirements are recorded in
+`docs/document-compare-implementation.md`.
 
 ## Assets And Examples
 

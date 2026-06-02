@@ -13,7 +13,7 @@ Initial rules:
   temp-file-backed unpacker and prediffer text operation MVPs, and rejects
   plugin output paths outside the assigned temp directory.
 - Webpage/URL compare must be opt-in and document network/cache/cookie behavior.
-  The detailed post-MVP privacy boundary is in `docs/webpage-compare.md`. The
+  The detailed privacy boundary is in `docs/webpage-compare.md`. The
   bundled `packaging/plugins/web-fetch/web-fetch` helper enforces an SSRF
   policy: only `http` / `https` schemes are honoured, the host must resolve
   to a publicly-routable address (no private, loopback, link-local,
@@ -24,9 +24,9 @@ Initial rules:
   `httptest` fixture servers; it relaxes loopback (127.0.0.0/8 and ::1)
   while keeping every other restriction in place. Do not set this in any
   production install or release-build environment.
-- Document/OCR helpers must be local by default and must document temporary-file
-  cleanup, privacy behavior, and helper limits before they are enabled. The
-  planned paths are in `docs/document-ocr-compare.md`.
+- Document/OCR helpers are local by default and document their temporary-file
+  cleanup, privacy behavior, and helper limits. The implemented design is in
+  `docs/document-compare-implementation.md`.
 - Folder sync and merge operations must stage a plan before destructive writes.
 - Delete operations must prefer FreeDesktop Trash and clearly confirm permanent
   deletion when Trash is unavailable.

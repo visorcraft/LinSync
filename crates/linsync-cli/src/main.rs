@@ -4961,8 +4961,8 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
     // First pass: resolve --profile so the per-mode options are seeded
     // from the profile *before* the rest of the flag parsing overrides
     // individual fields. This ordering means CLI flags always win over
-    // profile values, matching PLAN.md's "CLI flags override profile
-    // values predictably" rule.
+    // profile values, the documented "CLI flags override profile values
+    // predictably" rule.
     let mut filtered: Vec<&String> = Vec::with_capacity(args.len());
     let mut profile_seek = 0;
     while profile_seek < args.len() {

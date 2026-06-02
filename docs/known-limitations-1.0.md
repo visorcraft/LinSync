@@ -1,99 +1,96 @@
 # Known Limitations
 
 This document is the user-facing summary of what LinSync does *not* do
-in the current release (1.1.1). It is not a substitute for `PLAN.md` —
-that file tracks the long-form project plan. Items here fall into two
+in the current release (1.9.0). For the shipped feature record, see
+`docs/feature-matrix.md`. Items here fall into two
 categories:
 
 1. **Currently unavailable** features that may ship in a future release.
 2. **Permanent non-goals** that LinSync will not pursue.
 
-This file is updated each release. The 1.0 polish backlog, the 1.0.1
-pre-tag punch list (three-pane merge, filter-grammar migrator, plugin
-`unpack_folder` op, accessibility audit, real-screenshot capture), and
-the 1.1.0 specialized-engine scaffolds (image, document, webpage
-compare entry points; `linsync-sandbox` crate) have all shipped; they
-are no longer listed here. The `linsync-sandbox` crate ships and is
-consumed by the plugin host, but `linsync-cli archive` does not yet
-route through it (see "Archive compare" below).
+This file is updated each release. As of 1.9.0 all roadmap phases (0–10)
+are shipped: the image, document, and webpage compare surfaces, the
+three-pane merge, the filter-grammar migrator, the plugin host with
+sandboxed helpers, sessions/projects, accessibility (screen-reader
+announcements, high-contrast change bars), localization, and lazy-render
+windowing are all complete and no longer listed here. `linsync-cli
+archive` now routes through the core plugin / virtual-folder pipeline
+(see "Archive compare" below).
 
-## Specialized compare — partial implementations
+## Specialized compare — remaining gaps
 
-The image, document, and webpage compare surfaces are present end-to-end
-but several pieces are still summary-only or stubbed. See
-`docs/feature-matrix.md` for a per-mode status table.
+The image, document, and webpage compare surfaces are implemented
+end-to-end. See `docs/feature-matrix.md` for a per-mode status table.
+The only remaining gaps are noted below.
 
 ### Image compare
 
-- Image comparison is based on decoded RGBA8 samples. ICC profile
-  conversion, HDR/high-bit-depth fidelity, and animation timeline
-  comparison are not implemented. Exact and tolerance modes include the
-  alpha channel; perceptual mode currently compares RGB only. See
-  `docs/image-compare-design.md` for the detailed limitation contract.
+- Image comparison is based on decoded RGBA8 samples. Animated
+  GIF/APNG/WebP frame-by-frame compare (`--image-frames first|all`,
+  bridge `?frames=`) and Radiance HDR + OpenEXR decode (tone-mapped to
+  RGBA8) ship, with the decoded color type reported on each result.
+  Exact and tolerance modes include the alpha channel; perceptual mode
+  compares RGB only. **Full ICC color-management interpretation is out
+  of scope** — pixels are compared in their decoded color space without
+  profile conversion. See `docs/image-compare-design.md` for the
+  detailed contract.
 
 ### Document compare
 
-- The bridge returns only summary fields (`equal`, `left_extractor`,
-  `right_extractor`, `differing_lines`, `mode`). **Extracted left/right
-  text** is not yet exposed to the GUI, so the Document Compare page
-  shows only counts, not the side-by-side extracted content.
-- Rendered document comparison (PDF/DOCX → image diff) is not
-  implemented — only the text-extraction and OCR-text modes route
-  through the plugin host.
+- Text, OCR-text, and rendered (PDF/DOCX → per-page image diff) modes
+  are all available. Text and OCR-text modes return the extracted
+  `left_text`/`right_text` to the GUI side-by-side; rendered mode (via a
+  `pdf_renderer` plugin) reports per-page pixel equality with a
+  page-range field. OCR mode also returns per-word positional data
+  (`word_positions`).
+- A **visual word-box overlay drawn over a rendered source page** is out
+  of scope: OCR word positions are returned as structured data, but
+  LinSync does not paint bounding boxes onto a rendered page image.
 - OCR language defaults to `eng` if the GUI does not pass one through;
-  the bridge accepts an `ocr_language` query parameter but per-plugin
-  OCR options beyond language are not yet plumbed.
+  the bridge accepts an `ocr_language` query parameter. Per-plugin OCR
+  options beyond language are left to the helper plugin.
 
 ### Webpage compare
 
-- `crates/linsync-webengine` is an **explicit stub** that returns
-  `WebEngineError::NotImplemented` for every render/screenshot call.
-  Rendered DOM diff and screenshot diff modes are accessible in the
-  QML toolbar but currently return an unsupported-mode error.
+- Rendered DOM diff and screenshot diff modes work end-to-end through
+  `crates/linsync-webengine`, which rasterizes pages out-of-process via a
+  short-lived headless `qml6` `WebEngineView`. These sub-modes require
+  the `web-engine` build feature and a Qt 6 QML runner on the host; when
+  no runner is found `render_url` returns `WebEngineError::NotImplemented`
+  so callers fall back to HTML-source compare.
 - Source HTML, extracted visible text, and resource-tree modes work
-  end-to-end against the core webpage compare functions.
-- The HTTP bridge currently hard-codes `confirmed_by_user: true` on
-  every `/compare/webpage` request rather than threading an explicit
-  user-consent gate through the GUI. The CLI honours
-  `WebpageCompareOptions::confirmed_by_user` correctly; bridge parity is
-  tracked in PLAN.md Phase 5 "Webpage".
+  end-to-end against the core webpage compare functions regardless of the
+  `web-engine` feature.
 
-## GUI surface — partial wiring
+## GUI surface
 
-- The **Stop button** in the Compare toolbar (`Main.qml`) is present but
-  disabled in this release. Long-running compares cannot currently be
-  cancelled from the GUI; the core cancellation hooks exist
-  (`linsync-core::folder` and `linsync-core::merge`) but are not wired
-  through the HTTP or cxx-qt bridges. Re-enabling the button requires
-  the bridge-side `/cancel` endpoint and per-request tokens tracked in
-  PLAN.md Phase 3.
+- The **Stop button** in the Compare toolbar (`Main.qml`) cancels an
+  in-flight compare: each `/compare` carries a per-request id and the
+  bridge `/cancel?id=X` endpoint flips its cancel flag, after which the
+  response handler reports "Compare cancelled".
 - **Text compare options** sent by QML (case/whitespace/blank-line
-  ignores, substitutions) are not yet applied by the HTTP bridge —
-  `compare_text_files` is invoked with `TextCompareOptions::default()`
-  in the current bridge code. The CLI honours all options correctly;
-  parity work is tracked in PLAN.md Phase 1.
-- **Folder operations** (copy, delete, rename, refresh) re-compare with
-  `FolderCompareOptions::default()`, ignoring the user's active filters,
-  walk depth, symlink policy, and large-file threshold. Plan and execute
-  operations are correct on the entries selected, but the underlying
-  comparison they consult for plan validation is unfiltered.
-- The **Merge page** conflict navigation indexes line *text* as if it
-  were a line number (`c.left_lines[0] - 1` where `left_lines` is
-  `Vec<String>` in the bridge response). Conflict next/previous still
-  works because the index moves through the conflict array, but the
-  scroll-to-line behavior is broken.
-- Folder rows in the Compare page are capped to a fixed row count and
-  rendered as text rows rather than a sortable/filterable folder table.
+  ignores, substitutions) are applied by the HTTP bridge via
+  `resolve_profile_for_request`, which merges per-request query overrides
+  (`?ignore_case`, `?ignore_whitespace`, …) over the active profile. The
+  CLI honours all options too.
+- **Folder operations** (copy, delete, rename, refresh) and the folder
+  result view are served by `/folder/query`, which applies the user's
+  active filters, sort, type filter, and path search server-side and
+  pages the tree so it never loads in full.
+- The **Merge page** conflict navigation uses per-side numeric line
+  ranges (`currentConflictStart`/`End` derive from each side's `*_lines`
+  array), so conflict next/previous scrolls each pane to the correct
+  line.
 
-## Archive compare — not yet using the plugin pipeline
+## Archive compare
 
-- `linsync-cli archive` extracts archives by shelling out to `unzip` and
-  `tar` directly, then running a folder compare on the extracted trees.
-  It does **not** route through the core plugin / virtual-folder
-  architecture even though plugin scaffolds exist under
-  `packaging/plugins/`. Until that wiring lands, archive compare is
-  unaffected by plugin sandbox policy and cannot be invoked from the
-  GUI as a virtual-folder source.
+- `linsync-cli archive` routes through the core plugin / virtual-folder
+  pipeline: with `--unpacker PLUGIN_ID` (or when a matching `unpacker`
+  plugin is discovered) it extracts via the sandboxed helper and runs a
+  folder compare on the resulting virtual folder, including nested-archive
+  recursion. For archive types the built-in extractor recognizes it still
+  falls back to the direct `unzip`/`tar` path. The same archive→virtual-
+  folder source is available from the GUI.
 
 ## Packaging caveats
 
@@ -102,10 +99,12 @@ but several pieces are still summary-only or stubbed. See
   builds against Debian trixie (which does ship it). Ubuntu users need
   either a KDE neon source for the Kirigami package or to install via
   AppImage / Flatpak until the dependency lands in noble-updates.
-- **Webpage compare** requires the `webengine` feature, which depends
-  on the Qt WebEngine package on the host. The default `.deb` / `.rpm`
-  / `.pkg.tar.zst` builds *do not* enable it; even when enabled, the
-  rendered/screenshot sub-modes return `NotImplemented` (see above).
+- **Webpage rendered/screenshot compare** requires the `web-engine`
+  feature, which depends on the Qt WebEngine package and a Qt 6 QML
+  runner on the host. The Arch, RPM, AppImage, and Flatpak recipes
+  enable it; the Debian `.deb` does not (it builds the external QML host
+  against Debian's stable Qt). Source/text/resource-tree webpage compare
+  works without the feature.
 - **Document compare** requires Tesseract OCR, Poppler utilities, and
   LibreOffice on the host (used by helper plugins under
   `packaging/plugins/`). Installation is best-effort: distro repos
@@ -115,12 +114,12 @@ but several pieces are still summary-only or stubbed. See
 ## Accessibility
 
 - The automated a11y CI gate (focus order grep, `Accessible.name`
-  presence) passes. A formal **Orca screen reader walkthrough** of every
-  sidebar section is not yet logged as a release artifact — see
-  issue #3.
-- Post-1.0 a11y polish work is tracked separately (overview-pane
-  keyboard nav, Swap-sides action, broader `Accessible.description`
-  coverage) — see issue #4.
+  presence) passes, and the shipped a11y work includes screen-reader
+  announcements (`Accessible.announce`), high-contrast diff change bars,
+  verified keyboard focus order, a Swap-sides action, and broad
+  `Accessible.name`/`description` coverage. A formal **Orca screen reader
+  walkthrough** of every sidebar section is not yet logged as a release
+  artifact.
 
 ## Filters
 

@@ -13,7 +13,7 @@ Current fixture families under `tests/fixtures/`:
 - `folders/`: project-created folder trees for left-only, right-only,
   identical, different, skipped, and error-state coverage.
 - `merge/`: tiny base/left/right examples for three-way conflict tests.
-- `image/`: a generated PPM checker pattern for future image smoke coverage.
+- `image/`: a generated PPM checker pattern for image smoke coverage.
 - `archive/`: placeholder member-list text used only to reserve archive fixture
   structure until real archive-helper tests exist.
 - `symlink/` and `permissions/`: placeholders because platform-specific symlink

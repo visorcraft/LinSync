@@ -1,22 +1,27 @@
 # Document And OCR Compare Decision
 
-Document, PDF, SVG, image-as-rendered, and OCR compare are post-MVP specialized
-workflows. They are not enabled until helper licensing, sandbox behavior, privacy
-controls, and fixtures are in place.
+> Status: historical decision record. The licensing, sandbox, privacy, and
+> fixture prerequisites it sets out are all met and document/PDF/image-rendered
+> and OCR compare have shipped — see `docs/document-compare-implementation.md`
+> for the implemented design.
+
+Document, PDF, SVG, image-as-rendered, and OCR compare were post-MVP specialized
+workflows. They were gated until helper licensing, sandbox behavior, privacy
+controls, and fixtures were in place.
 
 ## Compare Paths
 
-Planned paths:
+The shipped paths:
 
 - Document-as-text: use unpacker plugins/helpers to extract text from office
   documents, PDFs, or other structured formats, then compare through the text
   engine.
 - Rendered document/image compare: render PDF/SVG/document pages to images and
-  compare through the future image compare path.
+  compare through the image compare path.
 - OCR-as-text: run an OCR helper against image/PDF inputs and compare extracted
   text through the text engine.
-- OCR with positions: optionally produce line or word position data later so the
-  UI can correlate text differences back to rendered pages.
+- OCR with positions: per-word position data (image-pixel bounding boxes) is
+  surfaced so the UI can correlate text differences back to source pages.
 
 ## Licensing Boundary
 

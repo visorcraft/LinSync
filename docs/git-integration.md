@@ -1,10 +1,9 @@
 # Git Integration
 
-LinSync can be used from Git today through `linsync-cli`. The current CLI is
-best suited for scripted checks and terminal reports. The GUI binary can launch
-the QML/Kirigami shell and receive an initial two-path compare summary, but
-these examples intentionally avoid promising a full visual Git workflow before
-the shell has editor panes, merge controls, and result writing.
+LinSync can be used from Git today through `linsync-cli`. The CLI is well suited
+for scripted checks and terminal reports, and `linsync-cli mergetool` (without
+`--auto-resolve`) launches the GUI's three-pane Merge workspace for interactive
+conflict resolution with result writing back to `$MERGED`.
 
 ## Diff Tool
 
@@ -86,9 +85,10 @@ Valid choices for `--auto-resolve` are `left`, `right`, and `base`.
 
 ### Interactive GUI mode
 
-Running `mergetool` without `--auto-resolve` currently exits with code 2 and
-prints an explanatory message. The three-pane merge editor is planned for a
-future release.
+Running `mergetool` without `--auto-resolve` launches the GUI's three-pane
+Merge workspace on the base/local/remote inputs and writes the resolved output
+to `$MERGED` on save. `linsync-cli` waits for the GUI to exit and then verifies
+that a fully-resolved file (no remaining conflict markers) was written.
 
 ### Manual conflict inspection
 

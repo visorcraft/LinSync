@@ -10680,7 +10680,7 @@ mod tests {
     //
     // These tests describe the contracts the GUI bridge *should* uphold.
     // Several of them are #[ignore]'d because the drift is not yet fixed —
-    // they will turn green when the corresponding PLAN.md phase ships and
+    // they will turn green when the corresponding feature ships and
     // serve as the regression guard from then on.
     // ────────────────────────────────────────────────────────────────────────
 

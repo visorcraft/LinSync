@@ -1,6 +1,8 @@
 # Image Compare Design
 
-> Status: implemented with remaining limitations tracked in `PLAN.md` Phase 5.
+> Status: implemented. Animated (GIF/APNG/WebP) frame-by-frame compare, Radiance
+> HDR, and OpenEXR all ship; the only deliberate carve-out that remains is full
+> ICC color-management interpretation (see the limitations section).
 
 ## Goals
 
@@ -263,5 +265,9 @@ New fixtures: `tests/fixtures/image/{same-a.png, same-b.png, recompressed.jpg, g
    after decode, but still materializes RGBA buffers first. True decoder-level
    streaming remains future work, including for AVIF when `image-avif` is
    enabled.
-2. **ICC/HDR fidelity:** Documented limitation. A follow-up can add explicit ICC
-   conversion, high-bit-depth compare paths, or alpha-aware perceptual metrics.
+2. **ICC color management:** Full ICC profile interpretation stays out of scope —
+   the engine compares decoded RGBA8 samples, not a common working color space
+   (see the limitations section). HDR/EXR and high-bit-depth inputs already decode
+   and compare (tone-mapped to 8-bit RGBA8); optional follow-ups could add explicit
+   ICC conversion, native high-bit-depth compare paths, or alpha-aware perceptual
+   metrics.
