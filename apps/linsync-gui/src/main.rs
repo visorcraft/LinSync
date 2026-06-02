@@ -35,6 +35,8 @@ use serde::{Deserialize, Serialize};
 const BRIDGE_VERSION: u32 = 1;
 const RESPONSE_SCHEMA_VERSION: u32 = 1;
 const GUI_TAB_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+/// Key under `SessionLayout.extra` holding the multi-tab snapshot JSON.
+const GUI_TABS_SNAPSHOT_KEY: &str = "gui_tabs_snapshot";
 
 #[cfg(feature = "cxxqt-app")]
 mod cxxqt_session;
@@ -91,8 +93,12 @@ fn run(paths: &AppPaths, args: Vec<OsString>) -> Result<ExitCode, String> {
         if let Ok(recent) = recent_store.load_or_default()
             && let Some(session) = recent.sessions.first()
         {
-            let tab = build_tab_for_session_file(session, &GuiCompareOptions::default());
-            launch_context = Some(GuiLaunchContext::single_tab(tab));
+            // Prefer restoring the full multi-tab workspace; fall back to the
+            // single active tab when no multi-tab snapshot is present.
+            launch_context = Some(restore_multi_tab_context(session).unwrap_or_else(|| {
+                let tab = build_tab_for_session_file(session, &GuiCompareOptions::default());
+                GuiLaunchContext::single_tab(tab)
+            }));
         }
     }
 
@@ -231,6 +237,17 @@ struct GuiCompareTab {
 struct GuiTabSnapshot {
     schema_version: u32,
     tab: GuiCompareTab,
+}
+
+/// Snapshot of every open tab, persisted in the recent session's
+/// `layout.extra["gui_tabs_snapshot"]` so the GUI can restore a multi-tab
+/// workspace (not just the active tab) on next launch. Stored in the
+/// forward-compat extra map, so it needs no core storage-schema change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GuiMultiTabSnapshot {
+    schema_version: u32,
+    active_tab_id: u64,
+    tabs: Vec<GuiCompareTab>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -431,6 +448,28 @@ impl GuiLaunchContext {
             session: GuiSessionState {
                 active_tab_id: tab.id,
                 tabs: vec![tab],
+                recent_paths,
+            },
+            startup_section: None,
+        }
+    }
+
+    /// Build a multi-tab context from a saved snapshot. `active_tab_id` is
+    /// clamped to the first tab when it does not match any restored tab.
+    fn from_tabs(tabs: Vec<GuiCompareTab>, active_tab_id: u64) -> Self {
+        let recent_paths = unique_recent_paths(
+            tabs.iter()
+                .flat_map(|tab| [tab.left_path.clone(), tab.right_path.clone()]),
+        );
+        let active_tab_id = if tabs.iter().any(|tab| tab.id == active_tab_id) {
+            active_tab_id
+        } else {
+            tabs.first().map(|tab| tab.id).unwrap_or(0)
+        };
+        Self {
+            session: GuiSessionState {
+                active_tab_id,
+                tabs,
                 recent_paths,
             },
             startup_section: None,
@@ -1394,12 +1433,62 @@ fn record_recent_session(paths: &AppPaths, context: &GuiLaunchContext) {
     });
     session.selected_view = compare_view_mode(&tab.mode);
     persist_tab_snapshot(&mut session, tab);
+    persist_multi_tab_snapshot(&mut session, context);
 
     if let Err(err) =
         RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths)).add(session)
     {
         tracing::warn!(error = %err, "failed to record recent GUI session");
     }
+}
+
+/// Embed a snapshot of *every* persistable open tab into the session's
+/// forward-compat `layout.extra` map, so the next launch can restore the whole
+/// workspace rather than only the active tab. Only stores the snapshot when
+/// more than one persistable tab is open (a single tab already round-trips
+/// through the `session` + `selected_view_state` fields).
+fn persist_multi_tab_snapshot(session: &mut SessionFile, context: &GuiLaunchContext) {
+    let tabs: Vec<GuiCompareTab> = context
+        .session
+        .tabs
+        .iter()
+        .filter(|tab| tab_has_persistable_paths(tab))
+        .cloned()
+        .collect();
+    if tabs.len() < 2 {
+        return;
+    }
+    let snapshot = GuiMultiTabSnapshot {
+        schema_version: GUI_TAB_SNAPSHOT_SCHEMA_VERSION,
+        active_tab_id: context.session.active_tab_id,
+        tabs,
+    };
+    match serde_json::to_value(&snapshot) {
+        Ok(value) => {
+            session
+                .layout
+                .extra
+                .insert(GUI_TABS_SNAPSHOT_KEY.to_owned(), value);
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to serialize multi-tab snapshot");
+        }
+    }
+}
+
+/// Rebuild a multi-tab launch context from a recent session's snapshot, if it
+/// carries one. Returns `None` when there is no (valid) multi-tab snapshot, so
+/// the caller can fall back to single-tab restore.
+fn restore_multi_tab_context(session: &SessionFile) -> Option<GuiLaunchContext> {
+    let value = session.layout.extra.get(GUI_TABS_SNAPSHOT_KEY)?;
+    let snapshot: GuiMultiTabSnapshot = serde_json::from_value(value.clone()).ok()?;
+    if snapshot.schema_version != GUI_TAB_SNAPSHOT_SCHEMA_VERSION || snapshot.tabs.len() < 2 {
+        return None;
+    }
+    Some(GuiLaunchContext::from_tabs(
+        snapshot.tabs,
+        snapshot.active_tab_id,
+    ))
 }
 
 fn tab_has_persistable_paths(tab: &GuiCompareTab) -> bool {
@@ -7276,6 +7365,78 @@ mod tests {
                 .is_empty(),
             "a recent session should be stored once persistence is on"
         );
+    }
+
+    #[test]
+    fn multi_tab_session_persists_and_restores_all_tabs() {
+        let paths = test_app_paths("multitab");
+        let _ = fs::remove_dir_all(
+            env::temp_dir().join(format!("linsync-gui-test-multitab-{}", process::id())),
+        );
+        let files = test_file_root("multitab-files");
+        // Two independent comparable pairs → two tabs.
+        let (l1, r1) = (files.join("a1.txt"), files.join("b1.txt"));
+        let (l2, r2) = (files.join("a2.txt"), files.join("b2.txt"));
+        fs::write(&l1, "one\n").unwrap();
+        fs::write(&r1, "ONE\n").unwrap();
+        fs::write(&l2, "two\n").unwrap();
+        fs::write(&r2, "TWO\n").unwrap();
+
+        let mut tab1 = build_tab_for_paths(&l1, &r1);
+        let mut tab2 = build_tab_for_paths(&l2, &r2);
+        tab1.id = 1;
+        tab2.id = 2;
+        assert!(tab1.validation.compatible && tab2.validation.compatible);
+        let context = GuiLaunchContext::from_tabs(vec![tab1, tab2], 2);
+
+        record_recent_session(&paths, &context);
+
+        // Load the recent session and restore the full multi-tab workspace.
+        let recent = RecentSessionStore::new(paths.recent_sessions_file(), 20)
+            .load_or_default()
+            .expect("recent sessions load");
+        let session = recent
+            .sessions
+            .first()
+            .expect("a recent session was recorded");
+        let restored =
+            restore_multi_tab_context(session).expect("a multi-tab snapshot should be restored");
+        assert_eq!(restored.session.tabs.len(), 2, "both tabs should restore");
+        assert_eq!(
+            restored.session.active_tab_id, 2,
+            "the active tab id should round-trip"
+        );
+        let restored_paths: Vec<&str> = restored
+            .session
+            .tabs
+            .iter()
+            .map(|t| t.left_path.as_str())
+            .collect();
+        assert!(restored_paths.contains(&l1.to_str().unwrap()));
+        assert!(restored_paths.contains(&l2.to_str().unwrap()));
+    }
+
+    #[test]
+    fn single_tab_session_has_no_multi_tab_snapshot() {
+        let paths = test_app_paths("single-tab-nomulti");
+        let _ = fs::remove_dir_all(env::temp_dir().join(format!(
+            "linsync-gui-test-single-tab-nomulti-{}",
+            process::id()
+        )));
+        let files = test_file_root("single-tab-files");
+        let (l, r) = (files.join("a.txt"), files.join("b.txt"));
+        fs::write(&l, "x\n").unwrap();
+        fs::write(&r, "y\n").unwrap();
+        let context = build_context_for_paths(&l, &r);
+
+        record_recent_session(&paths, &context);
+        let recent = RecentSessionStore::new(paths.recent_sessions_file(), 20)
+            .load_or_default()
+            .unwrap();
+        let session = recent.sessions.first().unwrap();
+        // A single open tab keeps the snapshot out of the file (it round-trips
+        // through the normal session fields), so multi-tab restore declines.
+        assert!(restore_multi_tab_context(session).is_none());
     }
 
     #[cfg(unix)]
