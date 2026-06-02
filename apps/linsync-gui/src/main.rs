@@ -1990,6 +1990,89 @@ fn folder_tab_cancellable(
     })
 }
 
+/// If `left` and `right` are two files of the same archive extension for which
+/// an *enabled* unpacker/virtualizer plugin is installed, return that plugin.
+/// This is what lets the GUI auto-route an archive pair to a folder-style diff.
+fn archive_pair_unpacker(
+    left: &Path,
+    right: &Path,
+    paths: &AppPaths,
+) -> Option<linsync_core::DiscoveredPlugin> {
+    if !left.is_file() || !right.is_file() {
+        return None;
+    }
+    let ext = left
+        .extension()
+        .and_then(|e| e.to_str())?
+        .to_ascii_lowercase();
+    let right_ext = right
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    if right_ext.as_deref() != Some(ext.as_str()) {
+        return None;
+    }
+    linsync_core::resolve_enabled_virtualizer_for_extension(paths, &ext)
+}
+
+/// Compare two archives via `plugin` (unpack + nested recursion one level) and
+/// present the result through the folder view (tab mode "Folder"), titled as an
+/// archive compare. Nested-archive members appear as `"<member>!/…"` entries.
+fn archive_tab(
+    left_path: String,
+    right_path: String,
+    plugin: &linsync_core::DiscoveredPlugin,
+) -> GuiCompareTab {
+    let exec = PluginExecutionOptions {
+        timeout: std::time::Duration::from_secs(60),
+        ..PluginExecutionOptions::default()
+    };
+    match linsync_core::compare_archives_with_unpacker_recursive(
+        &plugin.root,
+        &plugin.manifest,
+        &left_path,
+        &right_path,
+        1,
+        &exec,
+    ) {
+        Ok(result) => {
+            let difference_count = result.summary.different_count
+                + result.summary.one_sided_count
+                + result.summary.errors_count
+                + result.summary.aborted_count;
+            let folder_entries = folder_entries_for_gui(&result.entries);
+            compare_tab(
+                "Folder",
+                (left_path, right_path),
+                "Archive compare complete".to_owned(),
+                difference_count,
+                GuiOpenValidation {
+                    compatible: true,
+                    path_kind: "Archives".to_owned(),
+                    message: "Compared two archives as folders".to_owned(),
+                },
+                vec![
+                    summary_item("Compared", result.summary.compared_count),
+                    summary_item("Identical", result.summary.identical_count),
+                    summary_item("Different", result.summary.different_count),
+                    summary_item("One-sided", result.summary.one_sided_count),
+                ],
+                (Vec::new(), Vec::new()),
+                folder_entries,
+                None,
+                None,
+                Vec::new(),
+            )
+        }
+        Err(err) => invalid_compare_tab(
+            "Text",
+            left_path,
+            right_path,
+            format!("Archive compare failed: {err}"),
+        ),
+    }
+}
+
 fn folder_entries_for_gui(entries: &[FolderEntryDiff]) -> Vec<GuiFolderEntry> {
     entries
         .iter()
@@ -4047,6 +4130,30 @@ fn compare_bridge_response(
         Err(err) => return bridge_error(400, "Bad Request", &err),
     };
     let new_tab = query_bool(&params, "new_tab");
+
+    // Archive-as-folder: with no explicit mode (or an explicit "Archive"), if the
+    // two inputs are an archive pair with an enabled unpacker, compare them as a
+    // folder of their unpacked contents (nested archives recurse one level).
+    // Any other explicit mode (Hex, Text, …) overrides this auto-routing.
+    let requested_mode = query_value(&params, "mode")
+        .map(str::trim)
+        .filter(|m| !m.is_empty());
+    if matches!(requested_mode, None | Some("Archive"))
+        && let Some(plugin) = archive_pair_unpacker(Path::new(left), Path::new(right), paths)
+    {
+        let tab = archive_tab(left.to_owned(), right.to_owned(), &plugin);
+        let context = match state.lock() {
+            Ok(mut state) => state.apply_compare(tab, new_tab),
+            Err(_) => {
+                return bridge_error(500, "Internal Server Error", "session state unavailable");
+            }
+        };
+        record_recent_context(paths, &context);
+        return match context_to_json(&context) {
+            Ok(body) => http_response(200, "OK", "application/json", body.into_bytes()),
+            Err(err) => bridge_error(500, "Internal Server Error", &err.to_string()),
+        };
+    }
 
     // Optional cancellation: when the QML supplies `?request_id=X`, register a
     // cancel flag so a concurrent `/cancel?id=X` can abort this compare. The
@@ -7216,6 +7323,76 @@ mod tests {
             tab.get("left_rows").is_none() && tab.get("right_rows").is_none(),
             "folder response should not duplicate virtual table data into text rows: {body}"
         );
+    }
+
+    #[test]
+    fn compare_auto_routes_archive_pair_to_folder_view() {
+        let paths = test_app_paths("archive-route");
+        // Install an enabled folder_virtualizer for the ".myarc" extension whose
+        // helper emits a one-file tree keyed by the source file's content.
+        let plugin_dir = paths.user_plugins_dir().join("test.myarc");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let helper = plugin_dir.join("v.sh");
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\nrequest=$(cat)\n\
+             source=$(printf '%s' \"$request\" | sed -n 's/.*\"source\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+             content=$(cat \"$source\")\n\
+             printf '{\"ok\":true,\"tree\":[{\"path\":\"entry.txt\",\"kind\":\"file\",\"sha256\":\"%s\"}]}\\n' \"$content\"\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&helper).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&helper, perms).unwrap();
+        }
+        std::fs::write(
+            plugin_dir.join("linsync-plugin.json"),
+            r#"{
+              "schema_version": 1, "id": "test.myarc", "name": "MyArc",
+              "version": "1.0.0", "license": "GPL-3.0-only", "entry": ["./v.sh"],
+              "classes": ["folder_virtualizer"], "mime_types": ["application/x-myarc"],
+              "extensions": ["myarc"], "capabilities": [], "deterministic": true,
+              "sandbox": { "network": false, "writes_input": false, "requires_home_access": false },
+              "options_schema": []
+            }"#,
+        )
+        .unwrap();
+
+        let files = test_file_root("archive-route-files");
+        let left = files.join("a.myarc");
+        let right = files.join("b.myarc");
+        std::fs::write(&left, "SAME").unwrap();
+        std::fs::write(&right, "DIFFERENT").unwrap();
+        let state = test_bridge_state(None);
+
+        // No explicit mode → auto-routed to archive-as-folder.
+        let body = json_response_body(
+            &String::from_utf8(bridge_response(
+                &format!(
+                    "GET /compare?left={}&right={} HTTP/1.1\r\n",
+                    urlencoding::encode(left.to_str().unwrap()),
+                    urlencoding::encode(right.to_str().unwrap())
+                ),
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        let tab = &body["session"]["tabs"][0];
+        // Rendered through the folder view, titled as an archive compare.
+        assert_eq!(
+            tab["mode"], "Folder",
+            "archive routes to the folder view: {tab}"
+        );
+        let entries = tab["folder_entries"].as_array().expect("folder entries");
+        assert!(
+            entries.iter().any(|e| e["path"] == "entry.txt"),
+            "the unpacked member should appear: {tab}"
+        );
+        // Differing content → the member is reported different.
+        assert!(tab["difference_count"].as_u64().unwrap() >= 1);
     }
 
     #[test]
