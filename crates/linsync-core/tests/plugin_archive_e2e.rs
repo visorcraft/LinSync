@@ -10,7 +10,8 @@
 mod common;
 
 use linsync_core::plugin::{
-    PluginExecutionOptions, PluginManifest, extract_archive_member, run_unpack_folder_plugin,
+    PluginExecutionOptions, PluginManifest, compare_archives_with_unpacker_recursive,
+    extract_archive_member, run_unpack_folder_plugin,
 };
 use std::path::PathBuf;
 use std::process::Command;
@@ -188,6 +189,79 @@ fn tar_extract_member_returns_file_content() {
     .expect("tar extract_archive_member failed");
     assert_eq!(std::fs::read_to_string(&extracted).unwrap(), "gamma\n");
     let _ = std::fs::remove_dir_all(&out_dir);
+}
+
+#[test]
+fn nested_zip_recursion_surfaces_inner_differences() {
+    if !common::tools_available(&["python3", "zip", "bash"]) {
+        eprintln!("SKIP: python3, zip, or bash not on PATH");
+        return;
+    }
+    // Build two outer zips that each contain an inner.zip; the inner data
+    // differs between the two sides, the top-level file is identical.
+    let work = std::env::temp_dir().join(format!("linsync-nested-zip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    let build_side = |name: &str, inner_data: &str| -> PathBuf {
+        let side = work.join(name);
+        std::fs::create_dir_all(&side).unwrap();
+        std::fs::write(side.join("data.txt"), inner_data).unwrap();
+        // inner.zip = { data.txt }
+        let st = Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "cd '{0}' && zip -X -q inner.zip data.txt && rm data.txt && printf same > top.txt && zip -X -q outer.zip inner.zip top.txt",
+                side.display()
+            ))
+            .status()
+            .expect("zip");
+        assert!(st.success(), "failed to build nested zip fixture");
+        side.join("outer.zip")
+    };
+    let left = build_side("left", "the-left-inner-content");
+    let right = build_side("right", "R");
+
+    let plugin_dir = common::workspace_root().join("packaging/plugins/zip-unpacker");
+    let manifest = load_plugin_manifest(&plugin_dir);
+
+    // Depth 0: no recursion — inner.zip appears only as a top-level member.
+    let shallow = compare_archives_with_unpacker_recursive(
+        &plugin_dir,
+        &manifest,
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        0,
+        &plugin_execution_options(),
+    )
+    .expect("shallow nested compare failed");
+    assert!(
+        !shallow
+            .entries
+            .iter()
+            .any(|e| e.relative_path.to_string_lossy().contains("inner.zip!/")),
+        "depth 0 must not recurse into inner.zip"
+    );
+
+    // Depth 1: recursion surfaces the differing inner member.
+    let deep = compare_archives_with_unpacker_recursive(
+        &plugin_dir,
+        &manifest,
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        1,
+        &plugin_execution_options(),
+    )
+    .expect("recursive nested compare failed");
+    let nested = deep
+        .entries
+        .iter()
+        .find(|e| e.relative_path.to_string_lossy() == "inner.zip!/data.txt")
+        .expect("expected nested inner.zip!/data.txt entry");
+    assert_eq!(
+        nested.state,
+        linsync_core::FolderEntryState::Different,
+        "inner data.txt differs between the two archives"
+    );
+    let _ = std::fs::remove_dir_all(&work);
 }
 
 #[test]

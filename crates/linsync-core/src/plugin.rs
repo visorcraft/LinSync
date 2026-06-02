@@ -1777,6 +1777,111 @@ pub fn compare_archives_with_unpacker(
     Ok(crate::folder::compare_virtual_trees(&left, &right))
 }
 
+/// Like [`compare_archives_with_unpacker`], but recurses into nested archives
+/// that the *same* unpacker can open (e.g. a zip inside a zip), up to
+/// `max_depth` levels (`0` disables recursion = the non-recursive behavior).
+///
+/// For each member present on both sides whose extension the unpacker supports,
+/// the member is extracted from each archive and compared recursively; the
+/// nested entries are merged into the parent result with a `"<member>!/"` path
+/// prefix so the flat result shows both the containing archive and its contents.
+pub fn compare_archives_with_unpacker_recursive(
+    plugin_dir: &Path,
+    manifest: &PluginManifest,
+    left_archive: &str,
+    right_archive: &str,
+    max_depth: u8,
+    options: &PluginExecutionOptions,
+) -> Result<crate::folder::FolderCompareResult, PluginError> {
+    use std::path::PathBuf;
+
+    let mut result =
+        compare_archives_with_unpacker(plugin_dir, manifest, left_archive, right_archive, options)?;
+    if max_depth == 0 {
+        return Ok(result);
+    }
+
+    // Members present on both sides that the same unpacker can open.
+    let nested_members: Vec<String> = result
+        .entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.state,
+                crate::folder::FolderEntryState::Identical
+                    | crate::folder::FolderEntryState::Different
+            )
+        })
+        .filter_map(|entry| entry.relative_path.to_str().map(str::to_owned))
+        .filter(|path| {
+            PathBuf::from(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| manifest.supports_extension(ext))
+        })
+        .collect();
+
+    if nested_members.is_empty() {
+        return Ok(result);
+    }
+
+    // Persistent scratch dir for the extracted nested archives.
+    let base = options
+        .temp_root
+        .clone()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("linsync-nested-archive-{}", std::process::id()));
+
+    let mut extra_entries: Vec<crate::folder::FolderEntryDiff> = Vec::new();
+    for (index, member) in nested_members.iter().enumerate() {
+        let left_dir = base.join(format!("{index}-left"));
+        let right_dir = base.join(format!("{index}-right"));
+        let left_member = match extract_archive_member(
+            plugin_dir,
+            manifest,
+            left_archive,
+            member,
+            &left_dir,
+            options,
+        ) {
+            Ok(path) => path,
+            Err(_) => continue, // best-effort: skip members we can't extract
+        };
+        let right_member = match extract_archive_member(
+            plugin_dir,
+            manifest,
+            right_archive,
+            member,
+            &right_dir,
+            options,
+        ) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+        if let Ok(nested) = compare_archives_with_unpacker_recursive(
+            plugin_dir,
+            manifest,
+            &left_member.to_string_lossy(),
+            &right_member.to_string_lossy(),
+            max_depth - 1,
+            options,
+        ) {
+            for mut nested_entry in nested.entries {
+                let prefixed = format!("{member}!/{}", nested_entry.relative_path.display());
+                nested_entry.relative_path = PathBuf::from(prefixed);
+                extra_entries.push(nested_entry);
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&base);
+
+    if !extra_entries.is_empty() {
+        result.entries.extend(extra_entries);
+        result.summary = crate::folder::recount_virtual_summary(&result.entries);
+    }
+    Ok(result)
+}
+
 /// The outcome of a plugin `probe` diagnostic: the helper's exit status (or a
 /// timeout), captured stdout/stderr, and the parsed protocol response when the
 /// helper emitted valid JSON. Execution-level failures (non-zero exit, timeout)

@@ -1534,6 +1534,30 @@ pub fn compare_virtual_trees(
     }
 }
 
+/// Recompute a virtual-tree summary (the counts `compare_virtual_trees`
+/// produces) from a final entry list. Used when nested-archive recursion merges
+/// extra entries into a virtual-tree result.
+pub(crate) fn recount_virtual_summary(entries: &[FolderEntryDiff]) -> FolderCompareSummary {
+    let mut summary = FolderCompareSummary::default();
+    for entry in entries {
+        match entry.state {
+            FolderEntryState::Identical => summary.identical_count += 1,
+            FolderEntryState::Different => summary.different_count += 1,
+            FolderEntryState::LeftOnly => {
+                summary.left_only_count += 1;
+                summary.one_sided_count += 1;
+            }
+            FolderEntryState::RightOnly => {
+                summary.right_only_count += 1;
+                summary.one_sided_count += 1;
+            }
+            _ => {}
+        }
+        summary.compared_count += 1;
+    }
+    summary
+}
+
 pub fn compare_folders(
     left: &Path,
     right: &Path,
