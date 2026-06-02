@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.8.1
+Version:        1.9.0
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -122,6 +122,21 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Tue Jun 02 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.9.0-1
+- Completes the previously-deferred roadmap niceties.
+- Image: animated GIF/APNG/WebP frame-by-frame compare (--image-frames
+  first|all); Radiance HDR and OpenEXR decode (tone-mapped to RGBA8); decoded
+  color-type metadata on every result.
+- Document/OCR: word-level positional data (optional, backward-compatible
+  word_positions plugin-protocol field) parsed from Tesseract TSV.
+- Plugins: per-profile enable/disable override map (profile > global >
+  default), threaded into prediffer/virtualizer routing with a GUI toggle and
+  bridge endpoint; overlapping-prediffer conflict policy
+  (--prediffer-conflict-policy chain|first-wins|last-wins).
+- Reports: image and document results round-trip as versioned JSON
+  (compare --save-result <-> report --from-json) with metadata HTML reports.
+- Fixes ImageCompareMode::Tolerance serialization (struct variant).
+
 * Tue Jun 02 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.8.1-1
 - Feature release completing roadmap Phases 4-10.
 - Performance: lazy windowed rendering for large text diffs and large folder

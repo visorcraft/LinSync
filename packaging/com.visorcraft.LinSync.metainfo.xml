@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.9.0" date="2026-06-02">
+      <description>
+        <p>Completes the previously-deferred roadmap niceties. Image compare now handles animated GIF, APNG, and WebP frame-by-frame (opt-in via an all-frames mode, with a per-frame breakdown), decodes Radiance HDR and OpenEXR sources (tone-mapped to 8-bit), and reports each side's decoded color type. OCR gains word-level positional data through an optional, backward-compatible plugin-protocol field parsed from Tesseract's TSV output. Plugins gain a per-profile enable/disable override (profile over global) wired into prediffer and archive-unpacker routing with a Plugins-page toggle, plus a conflict-resolution policy for overlapping prediffers. Image and document comparison results can now be saved as versioned JSON and re-rendered into HTML reports, matching the existing text/folder/table/binary round-trip.</p>
+      </description>
+    </release>
     <release version="1.8.1" date="2026-06-02">
       <description>
         <p>Feature release completing the roadmap (Phases 4-10). Large text diffs and large folder comparisons now render lazily window-by-window so the view never loads an unbounded diff or tree at once, backed by paged core APIs and bridge endpoints. Adds rendered document compare (pdftoppm) with page-range selection, webpage rendered/screenshot compare via an out-of-process Qt WebEngine renderer with a filterable resource tree, and archive comparison through unpacker/virtualizer plugins with nested-archive recursion. The plugin layer gains option-schema validation, install/remove across core/CLI/GUI, a first-run trust prompt, per-profile prediffer routing and chaining, and sandbox-confinement reporting. Three-way merge can launch interactively as a Git mergetool; reports gain versioned JSON save/restore, relative-path portable bundles, and preview-before-export; sessions and projects persist multiple tabs with per-entry profiles and CLI commands. Accessibility adds screen-reader status/error announcements and high-contrast diff change bars, and the localization runtime is wired with a lupdate/lrelease string-catalog pipeline.</p>
