@@ -292,10 +292,11 @@ pub fn document_compare_bridge_response(query: &str) -> String {
 /// Resolve the effective [`DocumentCompareOptions`](linsync_core::DocumentCompareOptions)
 /// for a single `/compare/document` request.
 ///
-/// The resolved profile supplies the defaults; `?mode` (`text` / `ocr_text`)
-/// and `?ocr_language` override `mode` / `ocr_language` field-by-field. Any
-/// unrecognised `?mode` value (e.g. `rendered`) and all other fields inherit
-/// from `profile_options`.
+/// The resolved profile supplies the defaults; `?mode` (`text` / `ocr_text` /
+/// `rendered`), `?ocr_language`, and `?pages` (a 1-based inclusive range like
+/// `2-4`, or a single page `3`, for rendered mode) override the matching
+/// fields. Unrecognised `?mode` values and all other fields inherit from
+/// `profile_options`.
 pub fn resolve_document_options(
     query: &str,
     profile_options: &linsync_core::DocumentCompareOptions,
@@ -304,15 +305,36 @@ pub fn resolve_document_options(
     let mode = match image_query_param(query, "mode").as_deref() {
         Some("ocr_text") => DocumentCompareMode::OcrText,
         Some("text") => DocumentCompareMode::Text,
+        Some("rendered") => DocumentCompareMode::Rendered,
         Some(_) | None => profile_options.mode,
     };
     let ocr_language = image_query_param(query, "ocr_language")
         .unwrap_or_else(|| profile_options.ocr_language.clone());
+    // `?pages=FIRST-LAST` (or a single page) overrides the rendered page range;
+    // a malformed value is ignored so it inherits the profile.
+    let page_range = image_query_param(query, "pages")
+        .and_then(|v| parse_pages_param(&v))
+        .or(profile_options.page_range);
     linsync_core::DocumentCompareOptions {
         mode,
         ocr_language,
+        page_range,
         ..profile_options.clone()
     }
+}
+
+/// Parse a 1-based inclusive `pages` query value (`"2-4"` or `"3"`) into a
+/// `(first, last)` range. Returns `None` for malformed or empty ranges.
+fn parse_pages_param(value: &str) -> Option<(usize, usize)> {
+    let parse = |s: &str| s.trim().parse::<usize>().ok().filter(|n| *n >= 1);
+    let (first, last) = match value.split_once('-') {
+        Some((a, b)) => (parse(a)?, parse(b)?),
+        None => {
+            let only = parse(value)?;
+            (only, only)
+        }
+    };
+    (last >= first).then_some((first, last))
 }
 
 /// Profile-aware variant of [`document_compare_bridge_response`].

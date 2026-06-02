@@ -49,6 +49,26 @@ fn resolve_document_options_query_overrides_win_over_profile() {
 }
 
 #[test]
+fn resolve_document_options_rendered_mode_and_page_range_override() {
+    let profile = DocumentCompareOptions::default();
+    // ?mode=rendered must be honoured (it was previously treated as unknown and
+    // silently fell back to the profile mode), and ?pages sets the range.
+    let got = resolve_document_options("left=a.pdf&right=b.pdf&mode=rendered&pages=2-4", &profile);
+    assert_eq!(got.mode, DocumentCompareMode::Rendered);
+    assert_eq!(got.page_range, Some((2, 4)));
+
+    // A single page parses as a one-page range; a malformed/backwards range is
+    // ignored so it inherits the profile (None here).
+    let single = resolve_document_options("left=a.pdf&right=b.pdf&pages=3", &profile);
+    assert_eq!(single.page_range, Some((3, 3)));
+    let bad = resolve_document_options("left=a.pdf&right=b.pdf&pages=5-2", &profile);
+    assert_eq!(
+        bad.page_range, None,
+        "backwards range ignored, inherits profile"
+    );
+}
+
+#[test]
 fn response_mode_reports_effective_profile_mode_when_query_omits_mode() {
     if !tools_available(&["pdftotext", "bash", "python3"]) {
         eprintln!("SKIP: pdftotext, bash, or python3 not on PATH");
