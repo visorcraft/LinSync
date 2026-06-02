@@ -516,11 +516,24 @@ pub struct SessionFile {
     /// to drive the comparison; `None` means use default options.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// Last-known comparison outcome for this entry (equal + difference count),
+    /// recorded when the session was saved so a recent-sessions / project list
+    /// can show it without recomparing. `None` for entries saved before a
+    /// compare ran. Omitted from JSON when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_result: Option<SessionResultSummary>,
     #[serde(default)]
     pub layout: SessionLayout,
     /// Unknown keys preserved across a load→save round-trip (forward-compat).
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// A compact, language-neutral snapshot of a comparison's outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionResultSummary {
+    pub equal: bool,
+    pub difference_count: usize,
 }
 
 impl SessionFile {
@@ -531,6 +544,7 @@ impl SessionFile {
             selected_view: CompareViewMode::default(),
             filter_names: Vec::new(),
             profile: None,
+            last_result: None,
             layout: SessionLayout::default(),
             extra: serde_json::Map::new(),
         }
@@ -1335,6 +1349,37 @@ mod tests {
         outside.left = PathBuf::from("/etc/hosts");
         relativize_session_paths_against(&mut outside, &proj_dir);
         assert_eq!(outside.left, PathBuf::from("/etc/hosts"));
+    }
+
+    #[test]
+    fn session_last_result_round_trips_and_omits_when_absent() {
+        let fixture = TempFixture::new();
+        let store = SessionFileStore::new(fixture.path.join("s.json"));
+        let mut session = SessionFile::new(sample_compare_session("Main"));
+        session.last_result = Some(SessionResultSummary {
+            equal: false,
+            difference_count: 7,
+        });
+        store.save(&session).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(
+            loaded.last_result,
+            Some(SessionResultSummary {
+                equal: false,
+                difference_count: 7
+            })
+        );
+
+        // Absent last_result is omitted from JSON (no `last_result` key) and
+        // loads back as None.
+        let bare = SessionFile::new(sample_compare_session("Bare"));
+        store.save(&bare).unwrap();
+        let text = std::fs::read_to_string(fixture.path.join("s.json")).unwrap();
+        assert!(
+            !text.contains("last_result"),
+            "absent result must be omitted: {text}"
+        );
+        assert_eq!(store.load().unwrap().last_result, None);
     }
 
     #[test]

@@ -1475,6 +1475,10 @@ fn session_file_from_tab(tab: &GuiCompareTab) -> SessionFile {
         options: CompareOptions::default(),
     });
     session.selected_view = compare_view_mode(&tab.mode);
+    session.last_result = Some(linsync_core::SessionResultSummary {
+        equal: tab.difference_count == 0,
+        difference_count: tab.difference_count,
+    });
     persist_tab_snapshot(&mut session, tab);
     session
 }
@@ -4877,6 +4881,10 @@ fn sessions_recent_bridge_response(paths: &AppPaths) -> Vec<u8> {
                 "left": file.session.left.display().to_string(),
                 "right": file.session.right.display().to_string(),
                 "mode": compare_view_mode_label(file.selected_view),
+                "lastResult": file.last_result.as_ref().map(|r| serde_json::json!({
+                    "equal": r.equal,
+                    "differenceCount": r.difference_count,
+                })),
             })
         })
         .collect();

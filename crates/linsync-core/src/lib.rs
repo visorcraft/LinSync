@@ -85,9 +85,9 @@ pub use profile::{
 pub use storage::{
     ArtifactManifest, CompareArtifact, CompareViewMode, FilterStore, NamedFilters, ProjectFile,
     ProjectFileStore, RecentPathStore, RecentPaths, RecentSessionStore, RecentSessions,
-    SessionFile, SessionFileStore, SessionLayout, Settings, SettingsStore, StoreError,
-    ThemePreference, WindowSize, artifact_dir, cleanup_artifacts, relativize_session_paths_against,
-    save_artifact,
+    SessionFile, SessionFileStore, SessionLayout, SessionResultSummary, Settings, SettingsStore,
+    StoreError, ThemePreference, WindowSize, artifact_dir, cleanup_artifacts,
+    relativize_session_paths_against, save_artifact,
 };
 pub use table::{
     TableCellDiff, TableCellState, TableColumnRule, TableCompareOptions, TableCompareResult,

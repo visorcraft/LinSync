@@ -2263,54 +2263,64 @@ wd!:target</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="340"/>
-        <source>Reopen</source>
+        <location filename="../qml/SessionsPage.qml" line="342"/>
+        <source>equal</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/SessionsPage.qml" line="343"/>
+        <source>%1 diff</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../qml/SessionsPage.qml" line="354"/>
+        <source>Reopen</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/SessionsPage.qml" line="368"/>
         <source>No remembered comparisons yet</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="362"/>
+        <location filename="../qml/SessionsPage.qml" line="376"/>
         <source>Recent workspaces</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="363"/>
+        <location filename="../qml/SessionsPage.qml" line="377"/>
         <source>Reopen a saved project to restore its comparisons as tabs.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="400"/>
+        <location filename="../qml/SessionsPage.qml" line="414"/>
         <source>Open</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="410"/>
+        <location filename="../qml/SessionsPage.qml" line="424"/>
         <source>Recent paths</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="412"/>
+        <location filename="../qml/SessionsPage.qml" line="426"/>
         <source>Files and folders you&apos;ve recently compared will be remembered here.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="413"/>
+        <location filename="../qml/SessionsPage.qml" line="427"/>
         <source>Use the copy button to reuse a path in the Compare bar.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="446"/>
-        <location filename="../qml/SessionsPage.qml" line="448"/>
-        <location filename="../qml/SessionsPage.qml" line="449"/>
+        <location filename="../qml/SessionsPage.qml" line="460"/>
+        <location filename="../qml/SessionsPage.qml" line="462"/>
+        <location filename="../qml/SessionsPage.qml" line="463"/>
         <source>Copy path</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="464"/>
+        <location filename="../qml/SessionsPage.qml" line="478"/>
         <source>No recent paths yet</source>
         <translation type="unfinished"></translation>
     </message>

@@ -334,6 +334,20 @@ Kirigami.ScrollablePage {
                                 }
                             }
 
+                            // Last-known comparison outcome, when recorded.
+                            Controls.Label {
+                                visible: !!modelData.lastResult
+                                text: modelData.lastResult
+                                    ? (modelData.lastResult.equal
+                                        ? qsTr("equal")
+                                        : qsTr("%1 diff").arg(modelData.lastResult.differenceCount))
+                                    : ""
+                                color: (modelData.lastResult && modelData.lastResult.equal)
+                                    ? Kirigami.Theme.positiveTextColor
+                                    : Kirigami.Theme.neutralTextColor
+                                font.pixelSize: 11
+                            }
+
                             AppButton {
                                 flat: true
                                 icon.name: "document-open-recent"
