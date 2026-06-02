@@ -31,6 +31,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         qt6-qtbase-private-devel \
         qt6-qtdeclarative-devel \
         qt6-qtdeclarative-private-devel \
+        qt6-qttools-devel \
         kf6-kirigami-devel \
         sqlite-devel \
     && dnf clean all

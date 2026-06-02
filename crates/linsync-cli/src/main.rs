@@ -6817,8 +6817,15 @@ fn webpage_command(args: &[String]) -> Result<ExitCode, String> {
         other => return Err(format!("unknown sub-mode: {other}")),
     };
 
+    // Collapse via WebpageCompareResult::is_equal() rather than matching the
+    // result variants: the Rendered/Screenshot variants only exist when
+    // linsync-core's `web-engine` feature is on, which a sibling crate (the
+    // GUI) can enable workspace-wide independently of linsync-cli's own
+    // `web-engine` feature — a variant `match` here would then be non-exhaustive
+    // and break the packaging/CI builds. is_equal() handles every variant
+    // inside linsync-core, where the cfg is authoritative.
     match result {
-        Ok(linsync_core::WebpageCompareResult::Text(cmp)) => {
+        Ok(cmp) => {
             if cmp.is_equal() {
                 println!("identical");
                 Ok(ExitCode::SUCCESS)
@@ -6826,31 +6833,6 @@ fn webpage_command(args: &[String]) -> Result<ExitCode, String> {
                 println!("different");
                 Ok(ExitCode::from(1))
             }
-        }
-        Ok(linsync_core::WebpageCompareResult::Folder(cmp)) => {
-            if cmp.is_equal() {
-                println!("identical");
-                Ok(ExitCode::SUCCESS)
-            } else {
-                println!("different");
-                Ok(ExitCode::from(1))
-            }
-        }
-        #[cfg(feature = "web-engine")]
-        Ok(linsync_core::WebpageCompareResult::Rendered(r)) => {
-            if r.html_fallback.as_ref().is_some_and(|t| t.is_equal()) || r.dom_diff.is_none() {
-                println!("identical (rendered fallback)");
-                Ok(ExitCode::SUCCESS)
-            } else {
-                println!("different");
-                Ok(ExitCode::from(1))
-            }
-        }
-        #[cfg(feature = "web-engine")]
-        Ok(linsync_core::WebpageCompareResult::Screenshot(_img)) => {
-            // Phase 9.7-bis: inspect image diff result.
-            println!("screenshot captured");
-            Ok(ExitCode::SUCCESS)
         }
         Err(linsync_core::WebpageCompareError::ConfirmationRequired) => {
             eprintln!("error: network fetch requires --accept-network-fetch");

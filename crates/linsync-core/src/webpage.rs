@@ -74,6 +74,28 @@ pub enum WebpageCompareResult {
     Screenshot(crate::image::ImageCompareResult),
 }
 
+impl WebpageCompareResult {
+    /// Whether the two pages compared equal, across every result kind. The
+    /// feature-gated `Rendered`/`Screenshot` variants are handled here, where
+    /// the `web-engine` cfg is authoritative, so clients (e.g. the CLI) can
+    /// collapse a result to equal/different without matching those variants.
+    /// That matters because enabling `linsync-core/web-engine` from *any*
+    /// workspace crate adds the variants for everyone, while a sibling crate's
+    /// own `web-engine` feature may be off — a `match` in that crate would then
+    /// be non-exhaustive and fail to compile. Routing through this method keeps
+    /// such clients compiling regardless of which crate turned the feature on.
+    pub fn is_equal(&self) -> bool {
+        match self {
+            WebpageCompareResult::Text(c) => c.is_equal(),
+            WebpageCompareResult::Folder(c) => c.is_equal(),
+            #[cfg(feature = "web-engine")]
+            WebpageCompareResult::Rendered(r) => r.is_equal(),
+            #[cfg(feature = "web-engine")]
+            WebpageCompareResult::Screenshot(img) => img.equal,
+        }
+    }
+}
+
 /// Structured result from the Rendered sub-mode.
 #[cfg(feature = "web-engine")]
 #[derive(Debug)]
