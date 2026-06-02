@@ -284,24 +284,6 @@ Kirigami.Page {
         "\n" +
         "END OF TERMS AND CONDITIONS\n" +
         "\n" +
-        "APPENDIX: How to apply the Apache License to your work.\n" +
-        "\n" +
-        "To apply the Apache License to your work, attach the following boilerplate notice, with the fields enclosed by brackets \"[]\" replaced with your own identifying information. (Don't include the brackets!)  The text should be enclosed in the appropriate comment syntax for the file format. We also recommend that a file or class name and description of purpose be included on the same \"printed page\" as the copyright notice for easier identification within third-party archives.\n" +
-        "\n" +
-        "Copyright [yyyy] [name of copyright owner]\n" +
-        "\n" +
-        "Licensed under the Apache License, Version 2.0 (the \"License\");\n" +
-        "you may not use this file except in compliance with the License.\n" +
-        "You may obtain a copy of the License at\n" +
-        "\n" +
-        "http://www.apache.org/licenses/LICENSE-2.0\n" +
-        "\n" +
-        "Unless required by applicable law or agreed to in writing, software\n" +
-        "distributed under the License is distributed on an \"AS IS\" BASIS,\n" +
-        "WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n" +
-        "See the License for the specific language governing permissions and\n" +
-        "limitations under the License.\n" +
-        "\n" +
         "### BSD 2-Clause License\n" +
         "\n" +
         "Redistribution and use in source and binary forms, with or without\n" +
