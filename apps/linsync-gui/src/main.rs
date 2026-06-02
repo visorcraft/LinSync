@@ -3290,6 +3290,7 @@ fn bridge_response_with_token(
         "/plugins/remove" => plugins_remove_bridge_response(query, paths),
         "/plugins/trust" => plugins_trust_bridge_response(query, paths),
         "/folder/query" => folder_query_bridge_response(query),
+        "/compare/text/window" => text_window_bridge_response(query),
         "/folder/op/plan" => folder_op_plan_bridge_response(query, paths, state),
         "/folder/op/execute" => folder_op_execute_bridge_response(query, paths, state),
         "/merge/conflicts" => merge_conflicts_bridge_response(state),
@@ -4459,6 +4460,44 @@ fn folder_query_bridge_response(query: &str) -> Vec<u8> {
         "offset": page.offset,
         "returned": page.returned,
         "hasMore": page.has_more,
+    })
+    .to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
+}
+
+/// Return a windowed slice of a text comparison's view rows
+/// (`?left=&right=&offset=&limit=`), so the GUI can render large diffs without
+/// loading every row into the view. Syntax/find work is materialized only for
+/// the returned window; `total_rows` drives pagination.
+fn text_window_bridge_response(query: &str) -> Vec<u8> {
+    let params = query_params(query);
+    let (Some(left), Some(right)) = (query_value(&params, "left"), query_value(&params, "right"))
+    else {
+        return bridge_error(400, "Bad Request", "missing left or right path");
+    };
+    let offset = query_value(&params, "offset")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    // 0 (or absent) means "to the end"; clamp to a sane default ceiling.
+    let limit = query_value(&params, "limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(usize::MAX);
+
+    let options = TextCompareOptions::default();
+    let result = match linsync_core::compare_text_files(Path::new(left), Path::new(right), &options)
+    {
+        Ok(result) => result,
+        Err(err) => return bridge_error(500, "Internal Server Error", &err.to_string()),
+    };
+    let page = result.view_rows_window(&options, offset, limit);
+    let returned = page.rows.len();
+    let body = serde_json::json!({
+        "totalRows": page.total_rows,
+        "offset": page.offset,
+        "returned": returned,
+        "hasMore": page.offset + returned < page.total_rows,
+        "rows": page.rows,
     })
     .to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
@@ -7119,6 +7158,72 @@ mod tests {
             tab.get("left_rows").is_none() && tab.get("right_rows").is_none(),
             "folder response should not duplicate virtual table data into text rows: {body}"
         );
+    }
+
+    #[test]
+    fn text_window_returns_paged_rows() {
+        let files = test_file_root("text-window");
+        let left = files.join("left.txt");
+        let right = files.join("right.txt");
+        // 10 lines each, line 5 differs.
+        let mk = |marker: &str| {
+            (1..=10)
+                .map(|n| {
+                    if n == 5 {
+                        format!("line{n}-{marker}\n")
+                    } else {
+                        format!("line{n}\n")
+                    }
+                })
+                .collect::<String>()
+        };
+        std::fs::write(&left, mk("L")).unwrap();
+        std::fs::write(&right, mk("R")).unwrap();
+        let paths = test_app_paths("text-window");
+        let state = test_bridge_state(None);
+
+        // Full window: total rows reported, hasMore false.
+        let all = json_response_body(
+            &String::from_utf8(bridge_response(
+                &format!(
+                    "GET /compare/text/window?left={}&right={} HTTP/1.1\r\n",
+                    urlencoding::encode(left.to_str().unwrap()),
+                    urlencoding::encode(right.to_str().unwrap())
+                ),
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        let total = all["totalRows"].as_u64().expect("totalRows present");
+        assert!(total >= 10, "all view rows should be reported, got {total}");
+        assert_eq!(all["hasMore"], serde_json::json!(false));
+
+        // A bounded window returns only `limit` rows and reports more remain.
+        let page = json_response_body(
+            &String::from_utf8(bridge_response(
+                &format!(
+                    "GET /compare/text/window?left={}&right={}&offset=0&limit=3 HTTP/1.1\r\n",
+                    urlencoding::encode(left.to_str().unwrap()),
+                    urlencoding::encode(right.to_str().unwrap())
+                ),
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        assert_eq!(
+            page["totalRows"].as_u64(),
+            Some(total),
+            "total stays stable"
+        );
+        assert_eq!(
+            page["rows"].as_array().unwrap().len(),
+            3,
+            "window honors limit"
+        );
+        assert_eq!(page["offset"], serde_json::json!(0));
+        assert_eq!(page["hasMore"], serde_json::json!(true));
     }
 
     #[test]
