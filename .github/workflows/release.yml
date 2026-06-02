@@ -305,11 +305,11 @@ jobs:
         env:
           QT_VERSION_MAJOR: "6"
         run: |
-          runuser -u builder -- bash -lc '
+          runuser -u builder -- bash -lc "
             set -euo pipefail
-            cd "$GITHUB_WORKSPACE/packaging/arch"
+            cd \"$GITHUB_WORKSPACE/packaging/arch\"
             makepkg -sf --noconfirm --syncdeps
-          '
+          "
 
       - name: Stage Arch artefact + sha256
         run: |
@@ -512,7 +512,7 @@ jobs:
           # produce a single aggregate below).
           find dist-staging -type f ! -name "sha256sums.txt" \
             -exec mv {} dist/ \;
-          (cd dist && sha256sum * > sha256sums.txt)
+          (cd dist && sha256sum -- * > sha256sums.txt)
           echo "Release payload:" && ls -la dist/
 
       - name: Create or update GitHub release
