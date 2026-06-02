@@ -3149,6 +3149,7 @@ fn bridge_response_with_token(
         "/plugins/diagnostic" => plugins_diagnostic_bridge_response(query, paths),
         "/plugins/install" => plugins_install_bridge_response(query, paths),
         "/plugins/remove" => plugins_remove_bridge_response(query, paths),
+        "/plugins/trust" => plugins_trust_bridge_response(query, paths),
         "/folder/query" => folder_query_bridge_response(query),
         "/folder/op/plan" => folder_op_plan_bridge_response(query, paths, state),
         "/folder/op/execute" => folder_op_execute_bridge_response(query, paths, state),
@@ -5108,10 +5109,11 @@ fn plugins_list_bridge_response(
     };
     let discovery = discover_installed_plugins(paths);
     let user_plugins_dir = paths.user_plugins_dir();
+    let trusted_map = linsync_core::load_plugin_trusted_map(paths);
     let plugins: Vec<serde_json::Value> = discovery
         .plugins
         .iter()
-        .map(|p| plugin_to_json(p, &enabled_map, &user_plugins_dir))
+        .map(|p| plugin_to_json(p, &enabled_map, &trusted_map, &user_plugins_dir))
         .collect();
     let errors: Vec<serde_json::Value> = discovery
         .errors
@@ -5234,6 +5236,30 @@ fn plugins_diagnostic_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> 
             .to_string();
             http_response(200, "OK", "application/json", body.into_bytes())
         }
+    }
+}
+
+/// Record a plugin's trusted state (`?id=&trusted=true|false`). The GUI calls
+/// this before enabling a discovered plugin for the first time, so that an
+/// enabled plugin is always one the user has authorized to run.
+fn plugins_trust_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(id) = query_value(&params, "id") else {
+        return bridge_error(400, "Bad Request", "missing plugin id");
+    };
+    if !linsync_core::is_stable_plugin_id(id) {
+        return bridge_error(400, "Bad Request", "invalid plugin id");
+    }
+    // Default to trusting; an explicit `?trusted=false` revokes.
+    let trusted = query_value(&params, "trusted")
+        .map(|v| v != "false")
+        .unwrap_or(true);
+    match linsync_core::set_plugin_trusted(paths, id, trusted) {
+        Ok(()) => {
+            let body = serde_json::json!({ "ok": true, "id": id, "trusted": trusted }).to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
+        }
+        Err(err) => bridge_error(500, "Internal Server Error", &err.to_string()),
     }
 }
 
@@ -5367,6 +5393,7 @@ fn plugins_options_set_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8>
 fn plugin_to_json(
     plugin: &DiscoveredPlugin,
     enabled_map: &std::collections::HashMap<String, bool>,
+    trusted_map: &std::collections::HashMap<String, bool>,
     user_plugins_dir: &Path,
 ) -> serde_json::Value {
     let manifest = &plugin.manifest;
@@ -5397,6 +5424,7 @@ fn plugin_to_json(
         "directory": plugin.root.display().to_string(),
         "source": source,
         "enabled": enabled,
+        "trusted": trusted_map.get(&manifest.id).copied().unwrap_or(false),
         "has_options": !manifest.options_schema.is_empty(),
     })
 }
@@ -7081,6 +7109,74 @@ mod tests {
             gone.starts_with("HTTP/1.1 404"),
             "removing absent plugin should 404: {gone}"
         );
+    }
+
+    #[test]
+    fn plugins_trust_endpoint_and_list_field() {
+        let paths = test_app_paths("plugins-trust");
+        // Install a fixture so it appears in /plugins/list.
+        let plugin_dir = paths.user_plugins_dir().join("test.trustable");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("run.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(
+            plugin_dir.join("linsync-plugin.json"),
+            r#"{
+              "schema_version": 1,
+              "id": "test.trustable",
+              "name": "Trustable Fixture",
+              "version": "1.0.0",
+              "license": "GPL-3.0-only",
+              "entry": ["./run.sh"],
+              "classes": ["prediffer"],
+              "mime_types": ["text/plain"],
+              "extensions": ["txt"],
+              "capabilities": [],
+              "deterministic": true,
+              "sandbox": { "network": false, "writes_input": false, "requires_home_access": false },
+              "options_schema": []
+            }"#,
+        )
+        .unwrap();
+        let state = test_bridge_state(None);
+
+        let trusted_in_list = || {
+            let body = json_response_body(
+                &String::from_utf8(bridge_response(
+                    "GET /plugins/list HTTP/1.1\r\n",
+                    &paths,
+                    &state,
+                ))
+                .unwrap(),
+            );
+            body["plugins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == "test.trustable")
+                .unwrap()["trusted"]
+                .clone()
+        };
+
+        // Discovered plugins start untrusted in the list payload.
+        assert_eq!(trusted_in_list(), serde_json::json!(false));
+
+        // Trust via the bridge, then the list reflects it.
+        let resp = String::from_utf8(bridge_response(
+            "GET /plugins/trust?id=test.trustable&trusted=true HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .unwrap();
+        assert_eq!(json_response_body(&resp)["ok"], serde_json::json!(true));
+        assert_eq!(trusted_in_list(), serde_json::json!(true));
+
+        // Revoke trust.
+        let _ = bridge_response(
+            "GET /plugins/trust?id=test.trustable&trusted=false HTTP/1.1\r\n",
+            &paths,
+            &state,
+        );
+        assert_eq!(trusted_in_list(), serde_json::json!(false));
     }
 
     #[test]

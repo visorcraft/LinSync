@@ -84,6 +84,12 @@ impl AppPaths {
         self.config_dir.join("plugins.json")
     }
 
+    /// Per-plugin "trusted" flags, recorded the first time a user authorizes a
+    /// discovered plugin to run: `$XDG_CONFIG_HOME/linsync/plugins-trusted.json`.
+    pub fn plugins_trusted_file(&self) -> PathBuf {
+        self.config_dir.join("plugins-trusted.json")
+    }
+
     /// Directory for per-plugin option files:
     /// `$XDG_CONFIG_HOME/linsync/plugin-options/<plugin_id>.json`
     pub fn plugin_options_dir(&self) -> PathBuf {

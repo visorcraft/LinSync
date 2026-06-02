@@ -66,13 +66,13 @@ pub use plugin::{
     PluginProbeOutcome, PluginSandbox, PluginStoreError, PluginTextOperationOptions,
     PluginTextResult, SandboxStatus, UnpackFolderResponse, VirtualNode, active_sandbox_status,
     clear_plugin_option, compare_archives_with_unpacker, discover_installed_plugins,
-    discover_plugins, install_plugin, is_stable_plugin_id, load_plugin_enabled_map,
-    load_plugin_options, plugin_discovery_roots, probe_plugin, remove_plugin,
-    resolve_enabled_prediffer, resolve_enabled_prediffers,
+    discover_plugins, install_plugin, is_plugin_trusted, is_stable_plugin_id,
+    load_plugin_enabled_map, load_plugin_options, load_plugin_trusted_map, plugin_discovery_roots,
+    probe_plugin, remove_plugin, resolve_enabled_prediffer, resolve_enabled_prediffers,
     resolve_enabled_virtualizer_for_extension, run_plugin_helper, run_prediffer_chain,
     run_prediffer_plugin, run_prediffer_plugin_with_options, run_streaming_plugin,
     run_unpack_folder_plugin, run_unpack_text_plugin, run_unpack_text_plugin_with_options,
-    save_plugin_options, set_plugin_enabled, set_plugin_option,
+    save_plugin_options, set_plugin_enabled, set_plugin_option, set_plugin_trusted,
 };
 pub use profile::builtin::{builtin_profile_ids, builtin_profiles, find_builtin};
 pub use profile::{

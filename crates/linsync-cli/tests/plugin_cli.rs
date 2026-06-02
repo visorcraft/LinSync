@@ -699,3 +699,54 @@ fn plugin_install_and_remove_round_trip() {
     let out = run_isolated(&home, &["plugin", "install", empty.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(2), "install without manifest fails");
 }
+
+#[test]
+fn plugin_trust_untrust_persists_and_shows_in_list() {
+    let home = temp_home("trust");
+    let id = install_fixture_plugin(&home);
+
+    // A freshly discovered plugin is untrusted by default.
+    let out = run_isolated(&home, &["plugin", "list", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let entry = json["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        entry["trusted"],
+        serde_json::json!(false),
+        "discovered plugins start untrusted"
+    );
+
+    // Trust it.
+    let out = run_isolated(&home, &["plugin", "trust", id]);
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = run_isolated(&home, &["plugin", "inspect", id, "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(
+        json["trusted"],
+        serde_json::json!(true),
+        "trust should persist"
+    );
+
+    // Untrust it again.
+    let out = run_isolated(&home, &["plugin", "untrust", id]);
+    assert!(out.status.success());
+    let out = run_isolated(&home, &["plugin", "list", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let entry = json["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id)
+        .unwrap()
+        .clone();
+    assert_eq!(entry["trusted"], serde_json::json!(false));
+}

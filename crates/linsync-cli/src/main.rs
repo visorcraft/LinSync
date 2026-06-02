@@ -20,9 +20,10 @@ use linsync_core::{
     compare_archives_with_unpacker, compare_binary_files, compare_folders, compare_table_files,
     compare_text, compare_text_files, compare_text_files_with_prediffer_chain,
     discover_installed_plugins, find_builtin, install_plugin, is_likely_binary,
-    load_plugin_enabled_map, load_plugin_options, merge_three_way, parse_conflict_markers,
-    plan_folder_operation, probe_plugin, remove_plugin, resolve_enabled_prediffers,
-    resolve_enabled_virtualizer_for_extension, set_plugin_enabled, set_plugin_option,
+    load_plugin_enabled_map, load_plugin_options, load_plugin_trusted_map, merge_three_way,
+    parse_conflict_markers, plan_folder_operation, probe_plugin, remove_plugin,
+    resolve_enabled_prediffers, resolve_enabled_virtualizer_for_extension, set_plugin_enabled,
+    set_plugin_option, set_plugin_trusted,
 };
 
 fn main() -> ExitCode {
@@ -1652,7 +1653,7 @@ fn extract_archive(
 fn plugin_command(args: &[String]) -> Result<ExitCode, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         eprintln!(
-            "usage: linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | install PATH | remove ID | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>"
+            "usage: linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | trust ID | untrust ID | set-option ID KEY VALUE | clear-option ID KEY | install PATH | remove ID | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>"
         );
         return Ok(ExitCode::from(2));
     };
@@ -1706,6 +1707,18 @@ fn plugin_command(args: &[String]) -> Result<ExitCode, String> {
             println!("cleared option '{key}' for plugin '{id}'");
             Ok(ExitCode::SUCCESS)
         }
+        "trust" | "untrust" => {
+            let Some(id) = first_positional else {
+                return Err(format!("usage: linsync-cli plugin {subcommand} ID"));
+            };
+            let trusted = subcommand == "trust";
+            set_plugin_trusted(&paths, id, trusted).map_err(|err| err.to_string())?;
+            println!(
+                "{} plugin '{id}'",
+                if trusted { "trusted" } else { "untrusted" }
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         "install" => {
             let Some(source) = first_positional else {
                 return Err("usage: linsync-cli plugin install PATH".to_owned());
@@ -1730,7 +1743,7 @@ fn plugin_command(args: &[String]) -> Result<ExitCode, String> {
         }
         "run-diagnostic" | "diagnostic" => plugin_run_diagnostic(&paths, rest),
         other => Err(format!(
-            "unknown plugin subcommand '{other}'; expected list, inspect, validate, enable, disable, set-option, clear-option, install, remove, or run-diagnostic"
+            "unknown plugin subcommand '{other}'; expected list, inspect, validate, enable, disable, trust, untrust, set-option, clear-option, install, remove, or run-diagnostic"
         )),
     }
 }
@@ -1891,6 +1904,7 @@ fn plugin_class_names(classes: &[linsync_core::PluginClass]) -> Vec<String> {
 fn plugin_list(paths: &AppPaths, as_json: bool) -> Result<ExitCode, String> {
     let discovery = discover_installed_plugins(paths);
     let enabled = load_plugin_enabled_map(paths);
+    let trusted = load_plugin_trusted_map(paths);
     if as_json {
         let plugins: Vec<serde_json::Value> = discovery
             .plugins
@@ -1903,6 +1917,7 @@ fn plugin_list(paths: &AppPaths, as_json: bool) -> Result<ExitCode, String> {
                     "version": m.version,
                     "classes": plugin_class_names(&m.classes),
                     "enabled": enabled.get(&m.id).copied().unwrap_or(true),
+                    "trusted": trusted.get(&m.id).copied().unwrap_or(false),
                     "has_options": !m.options_schema.is_empty(),
                 })
             })
@@ -1962,6 +1977,7 @@ fn plugin_inspect(paths: &AppPaths, id: &str, as_json: bool) -> Result<ExitCode,
         .get(id)
         .copied()
         .unwrap_or(true);
+    let trusted = linsync_core::is_plugin_trusted(paths, id);
     let values = load_plugin_options(paths, id);
     if as_json {
         let schema: Vec<serde_json::Value> = m
@@ -1984,6 +2000,7 @@ fn plugin_inspect(paths: &AppPaths, id: &str, as_json: bool) -> Result<ExitCode,
             "license": m.license,
             "classes": plugin_class_names(&m.classes),
             "enabled": enabled,
+            "trusted": trusted,
             "root": plugin.root.display().to_string(),
             "options_schema": schema,
             "values": values,
@@ -1999,6 +2016,7 @@ fn plugin_inspect(paths: &AppPaths, id: &str, as_json: bool) -> Result<ExitCode,
         println!("license:  {}", m.license);
         println!("classes:  {}", plugin_class_names(&m.classes).join(", "));
         println!("enabled:  {enabled}");
+        println!("trusted:  {trusted}");
         println!("root:     {}", plugin.root.display());
         if m.options_schema.is_empty() {
             println!("options:  (none)");
@@ -6453,8 +6471,8 @@ Open files or folders through the configured external viewer, xdg-open, or a nam
 .B patch LEFT RIGHT [--format unified|context|normal] [--context LINES] [--preview|--output FILE]
 Generate or preview a unified, context, or normal diff from two text files or text-only folder changes.
 .TP
-.B plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | install PATH | remove ID | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
-Manage discovered plugins. list shows installed plugins with enabled state; inspect shows a plugin's manifest, option schema, and current values; validate checks the persisted options against the manifest schema; enable/disable toggle a plugin; set-option validates a value against the schema before persisting it; clear-option removes a stored option; install copies a plugin directory from PATH into $XDG_DATA_HOME/linsync/plugins after validating its manifest (refusing an id that is already installed); remove deletes a user-installed plugin and its persisted options/enabled flag (system plugin directories are never touched); run-diagnostic probes a plugin's helper with an optional sample --input and reports exit/timeout/stdout/stderr, the parsed protocol response, and the active sandbox confinement (exit 0 healthy, 1 unhealthy, 2 transport error). Enabled state lives in $XDG_CONFIG_HOME/linsync/plugins.json and option values under $XDG_CONFIG_HOME/linsync/plugin-options/.
+.B plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | trust ID | untrust ID | set-option ID KEY VALUE | clear-option ID KEY | install PATH | remove ID | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
+Manage discovered plugins. list shows installed plugins with enabled state; inspect shows a plugin's manifest, option schema, and current values; validate checks the persisted options against the manifest schema; enable/disable toggle a plugin; trust/untrust record whether a discovered plugin is authorized to run (the GUI prompts for trust before a plugin's first run and will not enable an untrusted plugin; explicitly invoking a plugin from the CLI is itself consent); set-option validates a value against the schema before persisting it; clear-option removes a stored option; install copies a plugin directory from PATH into $XDG_DATA_HOME/linsync/plugins after validating its manifest (refusing an id that is already installed); remove deletes a user-installed plugin and its persisted options/enabled flag (system plugin directories are never touched); run-diagnostic probes a plugin's helper with an optional sample --input and reports exit/timeout/stdout/stderr, the parsed protocol response, and the active sandbox confinement (exit 0 healthy, 1 unhealthy, 2 transport error). Enabled state lives in $XDG_CONFIG_HOME/linsync/plugins.json, trust flags in plugins-trusted.json, and option values under $XDG_CONFIG_HOME/linsync/plugin-options/.
 .TP
 .B profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
 Manage compare profiles — named bundles of per-mode comparison options. Built-in profiles ship with the binary; user profiles live under $XDG_CONFIG_HOME/linsync/profiles/. Use --profile NAME-OR-PATH on a compare command to source options from a profile; CLI flags override profile values.
@@ -6528,7 +6546,7 @@ USAGE:
     linsync-cli mergetool --base BASE --local LOCAL --remote REMOTE --merged MERGED [--auto-resolve left|right|base] [--json]
     linsync-cli open-external [--wait] [--preset PRESET] PATH...
     linsync-cli patch LEFT RIGHT [--format unified|context|normal] [--context LINES] [--preview|--output FILE]
-    linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | set-option ID KEY VALUE | clear-option ID KEY | install PATH | remove ID | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
+    linsync-cli plugin <list [--json] | inspect ID [--json] | validate ID | enable ID | disable ID | trust ID | untrust ID | set-option ID KEY VALUE | clear-option ID KEY | install PATH | remove ID | run-diagnostic ID [--input FILE] [--timeout-ms MS] [--json]>
     linsync-cli profile <list | show ID | validate (ID|PATH) | import PATH | export ID [--output PATH] | delete ID>
     linsync-cli project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR | list [DIR] [--json]>
     linsync-cli reveal [--wait] PATH...
@@ -6549,7 +6567,8 @@ plugin:
     Manage discovered plugins. `list [--json]` shows installed plugins and their
     enabled state; `inspect ID [--json]` prints the manifest, option schema, and
     current values; `validate ID` checks the persisted options against the
-    schema; `enable`/`disable ID` toggle a plugin; `set-option ID KEY VALUE`
+    schema; `enable`/`disable ID` toggle a plugin; `trust`/`untrust ID` record
+    whether a discovered plugin is authorized to run; `set-option ID KEY VALUE`
     validates the value against the schema before persisting it (VALUE is parsed
     as JSON, falling back to a string); `clear-option ID KEY` removes it;
     `install PATH` copies a plugin directory into $XDG_DATA_HOME/linsync/plugins

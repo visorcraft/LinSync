@@ -31,6 +31,18 @@ Kirigami.ScrollablePage {
     // /plugins/install), or remove an installed plugin (/plugins/remove).
     signal pluginInstallRequested()
     signal pluginRemoveRequested(string id, string name)
+    // Ask Main.qml to mark a plugin trusted and then enable it (the user has
+    // just confirmed the first-run trust prompt).
+    signal pluginTrustAndEnableRequested(string id, string name)
+
+    property string _trustPluginId: ""
+    property string _trustPluginName: ""
+
+    function requestTrustThenEnable(id, name) {
+        page._trustPluginId = id
+        page._trustPluginName = name
+        trustDialog.open()
+    }
     // Last diagnostic result, shown as a transient line in the header.
     property string lastDiagnostic: ""
     // Last install/remove outcome, shown as a transient line in the header.
@@ -71,6 +83,7 @@ Kirigami.ScrollablePage {
                 classes: entry.classes || [],
                 extensions: entry.extensions || [],
                 enabled: !!entry.enabled,
+                trusted: !!entry.trusted,
                 builtin: false,
                 discovered: true,
                 has_options: !!entry.has_options,
@@ -353,6 +366,34 @@ Kirigami.ScrollablePage {
         optionsDialog.open()
     }
 
+    // First-run trust prompt: enabling a discovered plugin is gated on the user
+    // confirming they trust this external helper to run.
+    Kirigami.Dialog {
+        id: trustDialog
+        title: qsTr("Trust plugin?")
+        standardButtons: Kirigami.Dialog.Ok | Kirigami.Dialog.Cancel
+        preferredWidth: Kirigami.Units.gridUnit * 26
+
+        onAccepted: page.pluginTrustAndEnableRequested(page._trustPluginId, page._trustPluginName)
+
+        ColumnLayout {
+            spacing: Kirigami.Units.smallSpacing * 2
+            width: parent ? parent.width : 0
+            Controls.Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("“%1” is an external helper process that will run on your files when enabled. Only enable plugins you trust.").arg(page._trustPluginName)
+            }
+            Controls.Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                opacity: 0.7
+                font.pixelSize: 11
+                text: qsTr("Plugins run under the active sandbox (see the Sandbox line above). You can revoke trust later by disabling the plugin.")
+            }
+        }
+    }
+
     ColumnLayout {
         width: page.width
         spacing: 0
@@ -574,6 +615,24 @@ Kirigami.ScrollablePage {
                                     font.pixelSize: 11
                                     font.family: "monospace"
                                 }
+
+                                // Trust indicator for discovered plugins.
+                                Rectangle {
+                                    visible: !!modelData.discovered
+                                    radius: 10
+                                    implicitHeight: 18
+                                    implicitWidth: trustLabel.implicitWidth + 14
+                                    color: modelData.trusted
+                                        ? Kirigami.ColorUtils.tintWithAlpha(page.themeBg, Kirigami.Theme.positiveTextColor, 0.18)
+                                        : Kirigami.ColorUtils.tintWithAlpha(page.themeBg, Kirigami.Theme.neutralTextColor, 0.18)
+                                    Controls.Label {
+                                        id: trustLabel
+                                        anchors.centerIn: parent
+                                        text: modelData.trusted ? qsTr("TRUSTED") : qsTr("UNTRUSTED")
+                                        font.pixelSize: 9
+                                        font.bold: true
+                                    }
+                                }
                                 Item { Layout.fillWidth: true }
                             }
 
@@ -700,7 +759,17 @@ Kirigami.ScrollablePage {
                                 ? qsTr("Built-in plugins cannot be disabled")
                                 : (modelData.enabled ? qsTr("Disable") : qsTr("Enable"))
                             Controls.ToolTip.visible: hovered
-                            onToggled: page.setEnabled(modelData.id, checked)
+                            onToggled: {
+                                // Enabling a discovered, not-yet-trusted plugin
+                                // first requires confirming the trust prompt;
+                                // revert the visual toggle until trust is granted.
+                                if (checked && !modelData.builtin && !modelData.trusted) {
+                                    checked = Qt.binding(function () { return modelData.enabled })
+                                    page.requestTrustThenEnable(modelData.id, modelData.name)
+                                } else {
+                                    page.setEnabled(modelData.id, checked)
+                                }
+                            }
 
                             // Custom themed track + handle. Colours come from
                             // the page-level theme properties (read while the

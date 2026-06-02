@@ -4574,6 +4574,22 @@ Kirigami.ApplicationWindow {
                                 pluginsPage.showDiagnosticResult(id, null)
                         })
                 }
+                onPluginTrustAndEnableRequested: function(id, name) {
+                    // Record trust, then enable, then refresh so the row shows
+                    // both the new trusted state and the enabled toggle.
+                    root.bridgeGet("/plugins/trust?id=" + encodeURIComponent(id) + "&trusted=true",
+                        function (ok) {
+                            if (!ok) {
+                                pluginsPage.showActionResult(qsTr("Could not trust %1").arg(name))
+                                return
+                            }
+                            root.bridgeGet("/plugins/toggle?id=" + encodeURIComponent(id) + "&enabled=true",
+                                function () {
+                                    pluginsPage.showActionResult(qsTr("Trusted and enabled %1").arg(name))
+                                    root.loadPlugins(function (p) { pluginsPage.applyDiscovery(p) })
+                                })
+                        })
+                }
                 onPluginInstallRequested: pluginInstallDialog.open()
                 onPluginRemoveRequested: function(id, name) {
                     root.bridgeGet("/plugins/remove?id=" + encodeURIComponent(id),

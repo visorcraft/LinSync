@@ -922,6 +922,39 @@ pub fn set_plugin_enabled(paths: &AppPaths, plugin_id: &str, enabled: bool) -> i
     fs::write(file, text)
 }
 
+/// Load the persisted per-plugin "trusted" flags (empty when the file is absent
+/// or unreadable). A plugin is trusted once the user has explicitly authorized
+/// it to run; absence means untrusted (so the GUI prompts before first run).
+pub fn load_plugin_trusted_map(paths: &AppPaths) -> std::collections::HashMap<String, bool> {
+    let Ok(text) = fs::read_to_string(paths.plugins_trusted_file()) else {
+        return std::collections::HashMap::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+/// Whether the user has marked this plugin trusted. Defaults to `false`
+/// (untrusted) so a freshly discovered plugin must be authorized before it runs
+/// from the GUI.
+pub fn is_plugin_trusted(paths: &AppPaths, plugin_id: &str) -> bool {
+    load_plugin_trusted_map(paths)
+        .get(plugin_id)
+        .copied()
+        .unwrap_or(false)
+}
+
+/// Record a plugin's trusted state (load → modify → write).
+pub fn set_plugin_trusted(paths: &AppPaths, plugin_id: &str, trusted: bool) -> io::Result<()> {
+    let mut map = load_plugin_trusted_map(paths);
+    map.insert(plugin_id.to_owned(), trusted);
+    let file = paths.plugins_trusted_file();
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let text = serde_json::to_string_pretty(&map)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    fs::write(file, text)
+}
+
 /// Load the per-plugin option map (empty when none/unreadable).
 pub fn load_plugin_options(
     paths: &AppPaths,
@@ -2340,6 +2373,33 @@ mod tests {
         assert_eq!(discovery.plugins.len(), 1);
         assert_eq!(discovery.plugins[0].manifest.id, "example.installed");
         assert_eq!(discovery.plugins[0].root, plugin_dir);
+    }
+
+    #[test]
+    fn plugin_trusted_state_round_trips_and_defaults_untrusted() {
+        let fixture = TempFixture::new();
+        let paths = AppPaths::from_base_dirs(
+            fixture.path.join("config"),
+            fixture.path.join("data"),
+            fixture.path.join("cache"),
+            fixture.path.join("state"),
+        );
+
+        // Unknown plugins are untrusted by default.
+        assert!(!is_plugin_trusted(&paths, "example.normalizer"));
+
+        // Trust round-trips.
+        set_plugin_trusted(&paths, "example.normalizer", true).unwrap();
+        assert!(is_plugin_trusted(&paths, "example.normalizer"));
+        assert_eq!(
+            load_plugin_trusted_map(&paths).get("example.normalizer"),
+            Some(&true)
+        );
+
+        // Revoking trust round-trips and is independent of other plugins.
+        set_plugin_trusted(&paths, "example.normalizer", false).unwrap();
+        assert!(!is_plugin_trusted(&paths, "example.normalizer"));
+        assert!(!is_plugin_trusted(&paths, "other.plugin"));
     }
 
     #[test]
