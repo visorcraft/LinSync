@@ -87,6 +87,20 @@ Kirigami.ApplicationWindow {
     property string folderTypeFilter: ""
     property var unfilteredLeftRows: []
     property var unfilteredRightRows: []
+    // Lazy text windowing. When a text diff is larger than the server's window
+    // threshold, the compare response carries only the first window of rows
+    // plus the full row count (textTotalRows) and the full change-/find-row
+    // index lists; further windows are fetched from /compare/text/window as the
+    // user scrolls toward the bottom or jumps to a change/match outside the
+    // loaded range. textTotalRows == 0 means the whole diff is already loaded
+    // (small/medium diffs — unchanged behavior).
+    property int textTotalRows: 0
+    property var serverDiffRowIndexes: []
+    property var serverSearchRowIndexes: []
+    property bool textWindowLoading: false
+    // Suppresses the pane's scroll-to-top reset when rows change because we are
+    // appending a fetched window (vs. loading a fresh comparison).
+    property bool suppressTextScrollReset: false
     property var folderEntries: []
     property var visibleFolderEntries: []
     property string folderSortColumn: ""
@@ -423,6 +437,16 @@ Kirigami.ApplicationWindow {
             scrollToCurrentDifference()
             return
         }
+        // Windowed text diff: the server supplied the full change-row index list
+        // (covering changes outside the loaded window), so use it directly
+        // rather than scanning the partially-loaded rows.
+        if (root.textTotalRows > 0) {
+            root.diffRowIndexes = root.serverDiffRowIndexes
+            root.currentDiffPosition = root.serverDiffRowIndexes.length > 0 ? 0 : -1
+            root.currentDiffRow = root.serverDiffRowIndexes.length > 0 ? root.serverDiffRowIndexes[0] : -1
+            scrollToCurrentDifference()
+            return
+        }
         for (let index = 0; index < root.leftRows.length; index++) {
             const leftState = root.leftRows[index] ? root.leftRows[index].state : ""
             const rightState = root.rightRows[index] ? root.rightRows[index].state : ""
@@ -491,6 +515,15 @@ Kirigami.ApplicationWindow {
                 folderTable.positionViewAtIndex(root.currentDiffRow, ListView.Center)
             return
         }
+        // Windowed diff: if the target change is past the loaded rows, fetch the
+        // intervening windows first, then position once it is in view.
+        if (root.textTotalRows > 0 && root.currentDiffRow >= root.unfilteredLeftRows.length
+                && root.unfilteredLeftRows.length < root.textTotalRows) {
+            root.loadTextWindowsUntil(root.currentDiffRow, function () {
+                root.scrollToCurrentDifference()
+            })
+            return
+        }
         root.syncingScroll = true
         if (leftPane && rightPane) {
             leftPane.positionAtRow(root.currentDiffRow)
@@ -546,6 +579,16 @@ Kirigami.ApplicationWindow {
     function rebuildSearchRows() {
         const rows = []
         const rowCount = root.compareMode === "Folder" ? root.visibleFolderEntries.length : root.leftRows.length
+        // Windowed text diff with an active find: the server matched the whole
+        // document, so use its full match-row index list rather than scanning
+        // only the loaded window (which would miss matches further down).
+        if (root.compareMode !== "Folder" && root.textTotalRows > 0 && root.searchText !== "") {
+            root.searchRowIndexes = root.serverSearchRowIndexes
+            root.currentSearchPosition = root.serverSearchRowIndexes.length > 0 ? 0 : -1
+            root.currentSearchRow = root.serverSearchRowIndexes.length > 0 ? root.serverSearchRowIndexes[0] : -1
+            scrollToCurrentSearchResult()
+            return
+        }
         // Compile the find regex ONCE per rebuild rather than once per row.
         let searchRe = null
         if (root.searchRegex && root.searchText !== "") {
@@ -598,6 +641,15 @@ Kirigami.ApplicationWindow {
     function scrollToCurrentSearchResult() {
         if (root.currentSearchRow < 0)
             return
+        // Windowed diff: load up to the match row if it is past what is loaded.
+        if (root.compareMode !== "Folder" && root.textTotalRows > 0
+                && root.currentSearchRow >= root.unfilteredLeftRows.length
+                && root.unfilteredLeftRows.length < root.textTotalRows) {
+            root.loadTextWindowsUntil(root.currentSearchRow, function () {
+                root.scrollToCurrentSearchResult()
+            })
+            return
+        }
         root.syncingScroll = true
         if (leftPane && rightPane) {
             leftPane.positionAtRow(root.currentSearchRow)
@@ -1331,6 +1383,14 @@ Kirigami.ApplicationWindow {
         const fallbackRightRows = tab.right_rows && tab.right_rows.length > 0 ? tab.right_rows : makeBlankRows()
         root.unfilteredLeftRows = fallbackLeftRows
         root.unfilteredRightRows = fallbackRightRows
+        // Windowed large text diffs: the response embeds only the first window
+        // plus the full row count and navigation index lists. A small diff has
+        // no total_rows, so textTotalRows stays 0 (fully loaded).
+        const windowedTotal = (root.compareMode !== "Folder" && tab.total_rows)
+            ? Number(tab.total_rows) : 0
+        root.textTotalRows = windowedTotal
+        root.serverDiffRowIndexes = (windowedTotal > 0 && tab.diff_row_indexes) ? tab.diff_row_indexes : []
+        root.serverSearchRowIndexes = (windowedTotal > 0 && tab.search_row_indexes) ? tab.search_row_indexes : []
         root.folderEntries = tab.folder_entries || []
         root.applyFolderFilter()
         if (preferBridge && hasSessionBridge())
@@ -1652,6 +1712,9 @@ Kirigami.ApplicationWindow {
             root.tabItems = []
             root.leftRows = makeBlankRows()
             root.rightRows = makeBlankRows()
+            root.textTotalRows = 0
+            root.serverDiffRowIndexes = []
+            root.serverSearchRowIndexes = []
             root.leftDirty = false
             root.rightDirty = false
             root.validationCompatible = false
@@ -1663,6 +1726,113 @@ Kirigami.ApplicationWindow {
             setDifferenceCount(0)
             rebuildDiffRows()
         }
+    }
+
+    // The compare-option query params shared by /compare and the windowed
+    // /compare/text/window fetches, so a fetched window is built with exactly
+    // the same render mode / ignore flags / syntax / find as the first window.
+    function textOptionParams() {
+        let params = ""
+        params += "&ignore_case=" + (root.ignoreCase ? "1" : "0")
+        params += "&ignore_whitespace=" + (root.ignoreWhitespace ? "1" : "0")
+        params += "&ignore_blank_lines=" + (root.ignoreBlankLines ? "1" : "0")
+        params += "&ignore_eol=" + (root.ignoreEol ? "1" : "0")
+        params += "&eol=" + encodeURIComponent(root.eolNormalization)
+        params += "&render_mode=" + encodeURIComponent(root.textRenderMode)
+        params += "&syntax=" + encodeURIComponent(root.syntaxMode)
+        params += "&encoding=" + encodeURIComponent(root.textEncoding)
+        for (let ruleIndex = 0; ruleIndex < root.textRegexRuleSets.length; ruleIndex++)
+            params += "&regex_rule_set=" + encodeURIComponent(root.textRegexRuleSets[ruleIndex])
+        if (root.contextFolding)
+            params += "&context_lines=" + encodeURIComponent(root.contextLines)
+        if (root.showOnlyChanges)
+            params += "&show_only_changes=1"
+        if (root.searchText !== "") {
+            params += "&find=" + encodeURIComponent(root.searchText)
+            params += "&find_regex=" + (root.searchRegex ? "1" : "0")
+            params += "&find_case_sensitive=" + (root.searchCaseSensitive ? "1" : "0")
+        }
+        return params
+    }
+
+    // Fetch the next window of a windowed text diff and append it to the loaded
+    // rows. `onDone(loadedMore)` (optional) fires after the append (or
+    // immediately when there is nothing more to load / no bridge).
+    function loadNextTextWindow(onDone) {
+        const finish = function (loaded) { if (onDone) onDone(loaded) }
+        if (root.textTotalRows <= 0 || root.bridgeUrl === "" || root.textWindowLoading) {
+            finish(false)
+            return
+        }
+        const offset = root.unfilteredLeftRows.length
+        if (offset >= root.textTotalRows) {
+            finish(false)
+            return
+        }
+        root.textWindowLoading = true
+        const request = new XMLHttpRequest()
+        let url = root.bridgeUrl + "/compare/text/window?left=" + encodeURIComponent(root.leftPath)
+            + "&right=" + encodeURIComponent(root.rightPath)
+            + "&offset=" + offset + "&limit=2000"
+        url += root.textOptionParams()
+        request.onreadystatechange = function () {
+            if (request.readyState !== XMLHttpRequest.DONE)
+                return
+            root.textWindowLoading = false
+            if (request.status !== 200) {
+                root.statusText = qsTr("Failed to load more rows")
+                finish(false)
+                return
+            }
+            const payload = JSON.parse(request.responseText)
+            const lw = payload.left_rows || []
+            const rw = payload.right_rows || []
+            if (lw.length === 0 && rw.length === 0) {
+                finish(false)
+                return
+            }
+            // Append without yanking the viewport back to the top.
+            root.suppressTextScrollReset = true
+            root.unfilteredLeftRows = root.unfilteredLeftRows.concat(lw)
+            root.unfilteredRightRows = root.unfilteredRightRows.concat(rw)
+            root.leftRows = root.unfilteredLeftRows
+            root.rightRows = root.unfilteredRightRows
+            root.suppressTextScrollReset = false
+            finish(true)
+        }
+        request.open("GET", url)
+        request.send()
+    }
+
+    // Keep fetching windows until row `targetRow` is loaded (or no more remain),
+    // then invoke `onDone`. Used when navigation jumps to a change/match that
+    // lives outside the currently loaded window.
+    function loadTextWindowsUntil(targetRow, onDone) {
+        if (root.textTotalRows <= 0
+                || root.unfilteredLeftRows.length > targetRow
+                || root.unfilteredLeftRows.length >= root.textTotalRows) {
+            if (onDone) onDone()
+            return
+        }
+        root.loadNextTextWindow(function (loadedMore) {
+            if (loadedMore && root.unfilteredLeftRows.length <= targetRow
+                    && root.unfilteredLeftRows.length < root.textTotalRows)
+                root.loadTextWindowsUntil(targetRow, onDone)
+            else if (onDone)
+                onDone()
+        })
+    }
+
+    // Prefetch the next window when the user scrolls within ~two screenfuls of
+    // the bottom of the loaded text. Called from the left pane's scroll handler.
+    function maybeLoadMoreTextRows(inner) {
+        if (root.textTotalRows <= 0 || root.textWindowLoading || !inner)
+            return
+        if (root.unfilteredLeftRows.length >= root.textTotalRows)
+            return
+        const remaining = inner.contentHeight - (inner.contentY + inner.height)
+        if (remaining < inner.height * 2)
+            root.loadNextTextWindow()
     }
 
     function requestCompare(newTab) {
@@ -1702,25 +1872,7 @@ Kirigami.ApplicationWindow {
         // current Rust bridge only consumes a subset. Unknown query
         // params are ignored server-side; getting them in the URL means
         // a future bridge build can opt in without QML changes.
-        url += "&ignore_case=" + (root.ignoreCase ? "1" : "0")
-        url += "&ignore_whitespace=" + (root.ignoreWhitespace ? "1" : "0")
-        url += "&ignore_blank_lines=" + (root.ignoreBlankLines ? "1" : "0")
-        url += "&ignore_eol=" + (root.ignoreEol ? "1" : "0")
-        url += "&eol=" + encodeURIComponent(root.eolNormalization)
-        url += "&render_mode=" + encodeURIComponent(root.textRenderMode)
-        url += "&syntax=" + encodeURIComponent(root.syntaxMode)
-        url += "&encoding=" + encodeURIComponent(root.textEncoding)
-        for (let ruleIndex = 0; ruleIndex < root.textRegexRuleSets.length; ruleIndex++)
-            url += "&regex_rule_set=" + encodeURIComponent(root.textRegexRuleSets[ruleIndex])
-        if (root.contextFolding)
-            url += "&context_lines=" + encodeURIComponent(root.contextLines)
-        if (root.showOnlyChanges)
-            url += "&show_only_changes=1"
-        if (root.searchText !== "") {
-            url += "&find=" + encodeURIComponent(root.searchText)
-            url += "&find_regex=" + (root.searchRegex ? "1" : "0")
-            url += "&find_case_sensitive=" + (root.searchCaseSensitive ? "1" : "0")
-        }
+        url += root.textOptionParams()
         url = root.appendBookmarkParams(url)
         if (newTab)
             url += "&new_tab=1"
@@ -4457,7 +4609,10 @@ Kirigami.ApplicationWindow {
                         anchors.margins: 6
 
                         property var diffRows: root.diffRowIndexes
-                        property int totalRows: root.leftRows.length
+                        // Reflect the FULL diff length when windowed so the diff
+                        // markers and viewport indicator stay proportional even
+                        // though only part of the diff is loaded.
+                        property int totalRows: root.textTotalRows > 0 ? root.textTotalRows : root.leftRows.length
                         property color normalColor: root.activeNegativeText
                         property color highlightColor: root.activeHighlight
                         property int currentHighlight: root.currentDiffRow
@@ -4509,6 +4664,20 @@ Kirigami.ApplicationWindow {
                                 var ratio = y / height
                                 var targetRow = Math.round(ratio * (overviewCanvas.totalRows - 1))
                                 targetRow = Math.max(0, Math.min(overviewCanvas.totalRows - 1, targetRow))
+                                // Windowed diff: load up to the target before
+                                // positioning so the jump lands on real content.
+                                if (root.textTotalRows > 0 && targetRow >= root.unfilteredLeftRows.length
+                                        && root.unfilteredLeftRows.length < root.textTotalRows) {
+                                    root.currentDiffRow = targetRow
+                                    root.currentDiffPosition = -1
+                                    root.loadTextWindowsUntil(targetRow, function () {
+                                        root.syncingScroll = true
+                                        if (leftPane) leftPane.positionAtRow(targetRow)
+                                        if (rightPane) rightPane.positionAtRow(targetRow)
+                                        root.syncingScroll = false
+                                    })
+                                    return
+                                }
                                 root.syncingScroll = true
                                 if (leftPane) leftPane.positionAtRow(targetRow)
                                 if (rightPane) rightPane.positionAtRow(targetRow)
@@ -5058,7 +5227,9 @@ Kirigami.ApplicationWindow {
 
         onRowsChanged: {
             resetRowsModel()
-            scrollToTopTimer.restart()
+            // Appending a fetched window must not yank the viewport to the top.
+            if (!root.suppressTextScrollReset)
+                scrollToTopTimer.restart()
         }
         onUseBridgeModelChanged: resetRowsModel()
         onModelRevisionChanged: resetRowsModel()
@@ -5088,6 +5259,10 @@ Kirigami.ApplicationWindow {
                 var cy = lineScroll.contentItem.contentY
                 if (pane.contentY === cy) return
                 pane.contentY = cy
+                // Prefetch the next window of a large diff as we near the bottom
+                // (left pane only, so a single fetch is issued per scroll).
+                if (pane.sideKey === "left")
+                    root.maybeLoadMoreTextRows(lineScroll.contentItem)
                 if (root.syncingScroll) return
                 root.syncingScroll = true
                 if (pane.sideKey === "left" && rightPane)

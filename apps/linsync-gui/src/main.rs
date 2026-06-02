@@ -249,6 +249,24 @@ struct GuiCompareTab {
     left_rows: Vec<GuiLineRow>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     right_rows: Vec<GuiLineRow>,
+    /// When a text diff exceeds [`TEXT_WINDOW_THRESHOLD`] rows it is served in
+    /// windows: `left_rows`/`right_rows` carry only the first window and this is
+    /// the full row count, so the GUI fetches the rest on demand via
+    /// `/compare/text/window`. `None` (the default, omitted on the wire) means
+    /// every row is embedded as before — small/medium diffs are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    total_rows: Option<usize>,
+    /// Full change-row index list for a windowed text diff so next/prev-change
+    /// navigation reaches differences outside the loaded window. Empty (and
+    /// omitted) for non-windowed diffs, where the GUI derives it from the rows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    diff_row_indexes: Vec<usize>,
+    /// Full find-match row index list for a windowed text diff that was compared
+    /// with an active find, so find navigation reaches matches outside the
+    /// loaded window. Empty (and omitted) when no find is active or the diff
+    /// is not windowed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    search_row_indexes: Vec<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     folder_entries: Vec<GuiFolderEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1307,8 +1325,25 @@ fn write_owner_only(path: &Path, data: &[u8]) -> std::io::Result<()> {
     file.flush()
 }
 
+/// Serialize a launch context to a JSON value, windowing any large text tab for
+/// the wire so the GUI never receives every row at once. The canonical
+/// server-side context stays full (it backs merge-copy/undo/export); only clone
+/// when something actually needs windowing so the common small-diff path
+/// serializes the borrow directly with no extra allocation.
+fn context_to_value(context: &GuiLaunchContext) -> Result<serde_json::Value, serde_json::Error> {
+    if context.session.tabs.iter().any(tab_needs_windowing) {
+        let mut windowed = context.clone();
+        for tab in &mut windowed.session.tabs {
+            apply_text_windowing(tab);
+        }
+        serde_json::to_value(&windowed)
+    } else {
+        serde_json::to_value(context)
+    }
+}
+
 fn context_to_json(context: &GuiLaunchContext) -> Result<String, String> {
-    let mut value = serde_json::to_value(context)
+    let mut value = context_to_value(context)
         .map_err(|err| format!("failed to serialize GUI context: {err}"))?;
     insert_response_schema_version(&mut value);
     serde_json::to_string(&value).map_err(|err| format!("failed to serialize GUI context: {err}"))
@@ -1346,7 +1381,7 @@ fn attach_session_to_response_body(
         Err(_) => return body,
     };
     record_recent_context(paths, &context);
-    if let Ok(context_value) = serde_json::to_value(&context)
+    if let Ok(context_value) = context_to_value(&context)
         && let Some(context_object) = context_value.as_object()
     {
         for (key, value) in context_object {
@@ -3108,11 +3143,63 @@ fn compare_tab(
         summary,
         left_rows,
         right_rows,
+        total_rows: None,
+        diff_row_indexes: Vec::new(),
+        search_row_indexes: Vec::new(),
         folder_entries,
         encoding_metadata,
         table_cells,
         artifacts,
     }
+}
+
+/// Text diffs with more than this many rows are served to the GUI in windows:
+/// the compare response embeds only the first window, and the GUI fetches the
+/// rest on demand via `/compare/text/window` as the user scrolls or jumps. Kept
+/// well above a screenful so small/medium diffs are still embedded whole (zero
+/// behavior change for the common case). Also the window size used per fetch.
+const TEXT_WINDOW_THRESHOLD: usize = 2000;
+
+/// Whether `tab` is a text comparison large enough to serve in windows. Folder/
+/// table/hex/image tabs are never windowed (they carry their own metadata and
+/// the GUI has no window-fetch wiring for them).
+fn tab_needs_windowing(tab: &GuiCompareTab) -> bool {
+    tab.mode == "Text" && tab.left_rows.len().max(tab.right_rows.len()) > TEXT_WINDOW_THRESHOLD
+}
+
+/// Window a large text `tab` *for transmission to the GUI*: compute the full
+/// change-row index list (so next/prev-change navigation reaches differences
+/// outside the loaded window), record the total row count, and truncate the
+/// embedded rows to the first window. Callers apply this to a throwaway clone —
+/// the canonical server-side tab stays full so merge-copy, bookmarks, undo, and
+/// report export still address every row. A no-op for tabs below the threshold.
+fn apply_text_windowing(tab: &mut GuiCompareTab) {
+    if !tab_needs_windowing(tab) {
+        return;
+    }
+    let total = tab.left_rows.len().max(tab.right_rows.len());
+    let mut diff_row_indexes = Vec::new();
+    let mut search_row_indexes = Vec::new();
+    for index in 0..total {
+        let left = tab.left_rows.get(index);
+        let right = tab.right_rows.get(index);
+        let left_state = left.map(|row| row.state.as_str());
+        let right_state = right.map(|row| row.state.as_str());
+        if left_state.is_some_and(is_gui_difference_state)
+            || right_state.is_some_and(is_gui_difference_state)
+        {
+            diff_row_indexes.push(index);
+        }
+        if left.is_some_and(|row| row.has_find_match) || right.is_some_and(|row| row.has_find_match)
+        {
+            search_row_indexes.push(index);
+        }
+    }
+    tab.total_rows = Some(total);
+    tab.diff_row_indexes = diff_row_indexes;
+    tab.search_row_indexes = search_row_indexes;
+    tab.left_rows.truncate(TEXT_WINDOW_THRESHOLD);
+    tab.right_rows.truncate(TEXT_WINDOW_THRESHOLD);
 }
 
 fn compare_tab_title(mode: &str, left_path: &str, right_path: &str) -> String {
@@ -3378,7 +3465,7 @@ fn bridge_response_with_token(
         "/plugins/trust" => plugins_trust_bridge_response(query, paths),
         "/capabilities" => capabilities_bridge_response(),
         "/folder/query" => folder_query_bridge_response(query),
-        "/compare/text/window" => text_window_bridge_response(query),
+        "/compare/text/window" => text_window_bridge_response(query, paths),
         "/folder/op/plan" => folder_op_plan_bridge_response(query, paths, state),
         "/folder/op/execute" => folder_op_execute_bridge_response(query, paths, state),
         "/merge/conflicts" => merge_conflicts_bridge_response(state),
@@ -4398,6 +4485,9 @@ fn raw_compare_bridge_response(
         ],
         left_rows,
         right_rows,
+        total_rows: None,
+        diff_row_indexes: Vec::new(),
+        search_row_indexes: Vec::new(),
         folder_entries: vec![],
         encoding_metadata: Some(result.encoding_summary()),
         table_cells: None,
@@ -4636,10 +4726,6 @@ fn folder_query_bridge_response(query: &str) -> Vec<u8> {
     http_response(200, "OK", "application/json", body.into_bytes())
 }
 
-/// Return a windowed slice of a text comparison's view rows
-/// (`?left=&right=&offset=&limit=`), so the GUI can render large diffs without
-/// loading every row into the view. Syntax/find work is materialized only for
-/// the returned window; `total_rows` drives pagination.
 /// Report compile-time capabilities so the QML can hide modes the binary can't
 /// serve (e.g. webpage rendered/screenshot, which need the `web-engine` build).
 fn capabilities_bridge_response() -> Vec<u8> {
@@ -4650,7 +4736,14 @@ fn capabilities_bridge_response() -> Vec<u8> {
     http_response(200, "OK", "application/json", body.into_bytes())
 }
 
-fn text_window_bridge_response(query: &str) -> Vec<u8> {
+/// Return a windowed slice of a text comparison
+/// (`?left=&right=&offset=&limit=` + the same option params `/compare` accepts),
+/// so the GUI can extend a large diff window-by-window instead of loading every
+/// row into the view. The rows are built exactly as `/compare` builds them —
+/// the same `left_rows`/`right_rows` split, honoring render mode / ignore flags
+/// / syntax / find — so a fetched window appends seamlessly onto the first
+/// window the compare response embedded. `totalRows`/`hasMore` drive paging.
+fn text_window_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
     let params = query_params(query);
     let (Some(left), Some(right)) = (query_value(&params, "left"), query_value(&params, "right"))
     else {
@@ -4659,26 +4752,41 @@ fn text_window_bridge_response(query: &str) -> Vec<u8> {
     let offset = query_value(&params, "offset")
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0);
-    // 0 (or absent) means "to the end"; clamp to a sane default ceiling.
+    // 0 (or absent) means "to the end".
     let limit = query_value(&params, "limit")
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|n| *n > 0)
         .unwrap_or(usize::MAX);
 
-    let options = TextCompareOptions::default();
+    let options = match resolve_text_options_for_request(paths, &params) {
+        Ok(options) => options,
+        Err(err) => return bridge_error(400, "Bad Request", &err),
+    };
     let result = match linsync_core::compare_text_files(Path::new(left), Path::new(right), &options)
     {
         Ok(result) => result,
         Err(err) => return bridge_error(500, "Internal Server Error", &err.to_string()),
     };
-    let page = result.view_rows_window(&options, offset, limit);
-    let returned = page.rows.len();
+    let (left_rows, right_rows) = text_rows_for_gui_with_options(&result, &options);
+    let total_rows = left_rows.len().max(right_rows.len());
+    let end = offset.saturating_add(limit).min(total_rows);
+    let window = |rows: Vec<GuiLineRow>| -> Vec<GuiLineRow> {
+        if offset >= rows.len() {
+            Vec::new()
+        } else {
+            rows[offset..end.min(rows.len())].to_vec()
+        }
+    };
+    let left_window = window(left_rows);
+    let right_window = window(right_rows);
+    let returned = left_window.len().max(right_window.len());
     let body = serde_json::json!({
-        "totalRows": page.total_rows,
-        "offset": page.offset,
+        "totalRows": total_rows,
+        "offset": offset,
         "returned": returned,
-        "hasMore": page.offset + returned < page.total_rows,
-        "rows": page.rows,
+        "hasMore": offset + returned < total_rows,
+        "left_rows": left_window,
+        "right_rows": right_window,
     })
     .to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
@@ -7667,13 +7775,135 @@ mod tests {
             Some(total),
             "total stays stable"
         );
+        // The window returns the same left_rows/right_rows split the /compare
+        // response embeds, so a fetched window appends seamlessly.
         assert_eq!(
-            page["rows"].as_array().unwrap().len(),
+            page["left_rows"].as_array().unwrap().len(),
             3,
-            "window honors limit"
+            "window honors limit on the left side"
         );
+        assert_eq!(
+            page["right_rows"].as_array().unwrap().len(),
+            3,
+            "window honors limit on the right side"
+        );
+        assert_eq!(page["returned"], serde_json::json!(3));
         assert_eq!(page["offset"], serde_json::json!(0));
         assert_eq!(page["hasMore"], serde_json::json!(true));
+
+        // A second window picks up exactly where the first left off — its first
+        // row is the row after the previous window's last (rows are split so
+        // each side carries the same per-row text the /compare path produced).
+        let next = json_response_body(
+            &String::from_utf8(bridge_response(
+                &format!(
+                    "GET /compare/text/window?left={}&right={}&offset=3&limit=3 HTTP/1.1\r\n",
+                    urlencoding::encode(left.to_str().unwrap()),
+                    urlencoding::encode(right.to_str().unwrap())
+                ),
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        assert_eq!(next["offset"], serde_json::json!(3));
+        assert_eq!(
+            next["left_rows"][0]["text"], all["left_rows"][3]["text"],
+            "the next window continues from where the first ended"
+        );
+    }
+
+    #[test]
+    fn large_text_compare_response_is_windowed() {
+        // A diff larger than TEXT_WINDOW_THRESHOLD must come back windowed: only
+        // the first window of rows embedded, the full row count in total_rows,
+        // and the full change-row index list (covering changes BEYOND the
+        // window) so next/prev-change navigation still reaches them.
+        let files = test_file_root("text-windowed-compare");
+        let left = files.join("left.txt");
+        let right = files.join("right.txt");
+        let total_lines = TEXT_WINDOW_THRESHOLD + 500;
+        // Differ on the last line — well past the first window — so a correct
+        // diff_row_indexes must contain an index >= TEXT_WINDOW_THRESHOLD.
+        let mk = |last: &str| {
+            (1..=total_lines)
+                .map(|n| {
+                    if n == total_lines {
+                        format!("line{n}-{last}\n")
+                    } else {
+                        format!("line{n}\n")
+                    }
+                })
+                .collect::<String>()
+        };
+        std::fs::write(&left, mk("L")).unwrap();
+        std::fs::write(&right, mk("R")).unwrap();
+        let paths = test_app_paths("text-windowed-compare");
+        let state = test_bridge_state(None);
+
+        let resp = String::from_utf8(bridge_response(
+            &format!(
+                "GET /compare?left={}&right={}&mode=Text HTTP/1.1\r\n",
+                urlencoding::encode(left.to_str().unwrap()),
+                urlencoding::encode(right.to_str().unwrap())
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        let body = json_response_body(&resp);
+        let tab = &body["session"]["tabs"][0];
+
+        let total = tab["total_rows"].as_u64().expect("total_rows present");
+        assert!(
+            total as usize >= total_lines,
+            "total_rows reports the full diff length, got {total}"
+        );
+        assert_eq!(
+            tab["left_rows"].as_array().unwrap().len(),
+            TEXT_WINDOW_THRESHOLD,
+            "only the first window of rows is embedded"
+        );
+        let indexes = tab["diff_row_indexes"]
+            .as_array()
+            .expect("diff_row_indexes present");
+        assert!(
+            indexes
+                .iter()
+                .filter_map(|v| v.as_u64())
+                .any(|i| i as usize >= TEXT_WINDOW_THRESHOLD),
+            "the change beyond the first window is still in the navigation index"
+        );
+
+        // A small diff must NOT be windowed (no total_rows / diff_row_indexes,
+        // every row embedded) so the common path is byte-for-byte unchanged.
+        let small_left = files.join("small-left.txt");
+        let small_right = files.join("small-right.txt");
+        std::fs::write(&small_left, "a\nb\nc\n").unwrap();
+        std::fs::write(&small_right, "a\nB\nc\n").unwrap();
+        let small = json_response_body(
+            &String::from_utf8(bridge_response(
+                &format!(
+                    "GET /compare?left={}&right={}&mode=Text HTTP/1.1\r\n",
+                    urlencoding::encode(small_left.to_str().unwrap()),
+                    urlencoding::encode(small_right.to_str().unwrap())
+                ),
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        let small_tab = &small["session"]["tabs"][0];
+        assert!(
+            small_tab["total_rows"].is_null(),
+            "small diffs are not windowed (total_rows omitted)"
+        );
+        assert!(
+            small_tab["diff_row_indexes"]
+                .as_array()
+                .is_none_or(|v| v.is_empty()),
+            "small diffs carry no server-side navigation index"
+        );
     }
 
     #[test]
