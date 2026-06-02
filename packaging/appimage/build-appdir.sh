@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# AppImage builder for LinSync — mirrors the Grexa packaging flow for
-# consistency. Uses linuxdeploy + linuxdeploy-plugin-qt to bundle a
+# AppImage builder for LinSync. Uses linuxdeploy + linuxdeploy-plugin-qt to bundle a
 # self-contained Qt 6 stack so the resulting bundle runs on any
 # glibc-modern Linux without needing the host to ship Qt. The bundle
 # uses the in-process cxx-qt host (`cxxqt-app` feature) so QML loads

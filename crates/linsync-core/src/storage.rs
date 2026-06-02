@@ -154,7 +154,7 @@ pub enum ThemePreference {
 }
 
 impl ThemePreference {
-    pub fn from_grex_value(value: u8) -> Option<Self> {
+    pub fn from_theme_value(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::System),
             1 => Some(Self::Light),
@@ -173,7 +173,7 @@ impl ThemePreference {
         }
     }
 
-    pub fn grex_value(self) -> u8 {
+    pub fn theme_value(self) -> u8 {
         self as u8
     }
 
@@ -210,7 +210,7 @@ impl<'de> Deserialize<'de> for ThemePreference {
             type Value = ThemePreference;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a Grex/Grexa theme integer 0..12 or a legacy theme key")
+                formatter.write_str("a theme integer 0..12 or a legacy theme key")
             }
 
             fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
@@ -219,7 +219,7 @@ impl<'de> Deserialize<'de> for ThemePreference {
             {
                 let value = u8::try_from(value)
                     .map_err(|_| E::custom(format!("unsupported theme preference {value}")))?;
-                ThemePreference::from_grex_value(value)
+                ThemePreference::from_theme_value(value)
                     .ok_or_else(|| E::custom(format!("unsupported theme preference {value}")))
             }
 
@@ -229,7 +229,7 @@ impl<'de> Deserialize<'de> for ThemePreference {
             {
                 let value = u8::try_from(value)
                     .map_err(|_| E::custom(format!("unsupported theme preference {value}")))?;
-                ThemePreference::from_grex_value(value)
+                ThemePreference::from_theme_value(value)
                     .ok_or_else(|| E::custom(format!("unsupported theme preference {value}")))
             }
 
@@ -1106,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_theme_preferences_cover_grexa_palette_keys() {
+    fn settings_theme_preferences_cover_palette_keys() {
         for (theme, value) in [
             (ThemePreference::System, 0),
             (ThemePreference::Light, 1),

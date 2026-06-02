@@ -7,7 +7,7 @@ use linsync_core::ThemePreference;
 #[test]
 fn every_documented_key_round_trips_through_bridge() {
     for (key, value) in [
-        ("themePreference", "2"), // numeric grex value; 2 = Dark
+        ("themePreference", "2"), // numeric theme value; 2 = Dark
         ("fontSize", "14"),
         ("fontFamily", "Iosevka"),
         ("tabWidth", "8"),

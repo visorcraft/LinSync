@@ -50,7 +50,7 @@ Kirigami.Page {
     property bool wrapText: false
 
     // Reset state to defaults when navigated away from
-    // Component.onCompleted leaves defaults; this is symmetric with Grexa.
+    // Component.onCompleted leaves defaults.
 
     readonly property string thirdPartyText:
         "<!-- SPDX-FileCopyrightText: 2026 VisorCraft LLC -->\n" +

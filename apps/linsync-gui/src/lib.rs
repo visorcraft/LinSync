@@ -469,7 +469,7 @@ pub fn apply_gui_setting(
             let value = value
                 .parse::<u8>()
                 .map_err(|_| format!("invalid theme preference: {value}"))?;
-            settings.theme_preference = ThemePreference::from_grex_value(value)
+            settings.theme_preference = ThemePreference::from_theme_value(value)
                 .ok_or_else(|| format!("unsupported theme preference: {value}"))?;
         }
         "fontSize" => settings.pane_font_size = parse_u8_setting(key, value, 8, 28)?,

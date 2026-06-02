@@ -1,7 +1,7 @@
 # AppImage Packaging
 
-The AppImage build uses `linuxdeploy` + `linuxdeploy-plugin-qt` (the
-same flow Grexa uses) to bundle a self-contained Qt 6 stack so the
+The AppImage build uses `linuxdeploy` + `linuxdeploy-plugin-qt` to
+bundle a self-contained Qt 6 stack so the
 resulting `.AppImage` runs on any glibc-modern Linux without needing
 the host to ship Qt. The bundle uses the in-process cxx-qt host
 (`linsync/cxxqt linsync/cxxqt-app` feature combo) so QML loads

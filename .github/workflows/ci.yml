@@ -1,10 +1,9 @@
 # SPDX-FileCopyrightText: 2026 VisorCraft LLC
 # SPDX-License-Identifier: GPL-3.0-only
 #
-# Per-job CI matching the Grexa layout. Each gate runs in its own runner
+# Per-job CI layout. Each gate runs in its own runner
 # so failures pinpoint quickly and the build job (which needs Arch's
-# fresher Kirigami) doesn't block the faster checks. Mirror of
-# grexa/ci.yml adapted for LinSync. No `${{ github.event.* }}`
+# fresher Kirigami) doesn't block the faster checks. No `${{ github.event.* }}`
 # interpolations are used: this workflow is safe against workflow
 # injection from PR titles, branch names, or commit messages.
 

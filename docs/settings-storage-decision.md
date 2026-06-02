@@ -6,9 +6,9 @@ metadata.
 
 ## Decision
 
-Keep JSON storage as the default for early releases. This matches the current
-Grexa-aligned direction, keeps user data portable, and makes migration and bug
-reports easier because users can inspect files without a KDE-specific tool.
+Keep JSON storage as the default for early releases. This keeps user data
+portable and makes migration and bug reports easier because users can inspect
+files without a KDE-specific tool.
 
 KConfig remains a possible future integration only if it provides a clear KDE
 desktop benefit that outweighs portability and schema-migration complexity.
@@ -35,7 +35,7 @@ into four cards:
 
 - Appearance: `themePreference`, `fontFamily`, `fontSize`, `tabWidth`,
   `showLineNumbers`, `showWhitespace`, `wordWrap`, `reduceMotion`.
-  `themePreference` uses the Grex/Grexa integer contract: `0` system, `1` light, `2` dark,
+  `themePreference` uses the integer theme contract: `0` system, `1` light, `2` dark,
   `3` Gentle Gecko, `4` Black Knight, `5` Diamond, `6` Dreams, `7` Paranoid,
   `8` Red Velvet, `9` Subspace, `10` Tiefling, `11` Vibes, `12` OLED Black.
 - Comparison behavior: `defaultCompareMode`, `ignoreCase`, `ignoreWhitespace`,
@@ -48,7 +48,7 @@ into four cards:
 These keys are persisted through the Rust bridge into
 `$XDG_CONFIG_HOME/linsync/settings.json` via `linsync-core::SettingsStore`.
 Legacy string theme keys such as `dark`, `oled-black`, and `high-contrast`
-are accepted on import, but new writes use the Grex/Grexa numeric format.
+are accepted on import, but new writes use the numeric format.
 
 ## Rules
 

@@ -38,7 +38,7 @@ audit:
     cargo audit
 
 # Build the release binaries and bundle a self-contained AppImage via
-# linuxdeploy + linuxdeploy-plugin-qt (mirrors the Grexa flow). Falls
+# linuxdeploy + linuxdeploy-plugin-qt. Falls
 # back to staging the AppDir when linuxdeploy isn't on PATH.
 package:
     bash packaging/appimage/build-appdir.sh

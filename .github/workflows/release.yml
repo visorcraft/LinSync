@@ -12,8 +12,7 @@
 #   - Debian / Ubuntu .deb            : debian:trixie-slim container
 #   - Fedora / RHEL .rpm              : fedora:latest container
 #
-# Grexa runs everything inside Arch since that release ships a single
-# tarball; LinSync also ships per-distro packages. Each distro builds
+# LinSync ships per-distro packages rather than a single tarball. Each distro builds
 # inside its native container because KF6 Kirigami / Qt 6 packaging is
 # fragmented across releases — Ubuntu noble's apt repos do not ship
 # qml6-module-org-kde-kirigami, only Debian trixie does.

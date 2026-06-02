@@ -134,7 +134,7 @@ Kirigami.ApplicationWindow {
     property string mergeOutputPath: ""
 
     // -- Theming --------------------------------------------------------
-    // The user-chosen Grex/Grexa theme integer. 0 follows the host palette;
+    // The user-chosen theme integer. 0 follows the host palette;
     // the other values force an explicit palette by overriding Qt/Kirigami
     // colors at the window root.
     property bool   _settingsReady:     false

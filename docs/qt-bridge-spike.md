@@ -7,8 +7,8 @@ the implementation must satisfy.
 ## Preferred Bridge
 
 `cxx-qt` remains the preferred bridge between the Rust core and QML because it
-matches the Grexa architecture direction and keeps domain logic in Rust while
-presenting Qt-friendly objects and models to the UI.
+keeps domain logic in Rust while presenting Qt-friendly objects and models to
+the UI.
 
 Before committing large UI surfaces to `cxx-qt`, validate:
 
