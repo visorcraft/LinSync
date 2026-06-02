@@ -109,6 +109,11 @@ impl AppPaths {
         self.data_dir.join("recent-sessions.json")
     }
 
+    /// Most-recently saved/opened project files (recent workspaces).
+    pub fn recent_projects_file(&self) -> PathBuf {
+        self.data_dir.join("recent-projects.json")
+    }
+
     pub fn sessions_dir(&self) -> PathBuf {
         self.data_dir.join("sessions")
     }

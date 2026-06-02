@@ -24,8 +24,12 @@ Kirigami.ScrollablePage {
     // open a project file and restore its comparisons as tabs.
     signal saveProjectRequested()
     signal openProjectRequested()
+    // Reopen a recent workspace by its project-file path.
+    signal openRecentProjectRequested(string path)
     // Transient status line for project save/open outcomes.
     property string projectStatus: ""
+    // Recent workspaces: [{path, name}], most-recent first.
+    property var recentProjects: []
 
     required property string bridgeUrl
 
@@ -348,6 +352,55 @@ Kirigami.ScrollablePage {
                         anchors.centerIn: parent
                         width: parent.width - 20
                         text: qsTr("No remembered comparisons yet")
+                    }
+                }
+            }
+
+            Card {
+                Layout.fillWidth: true
+                visible: page.recentProjects.length > 0
+                title: qsTr("Recent workspaces")
+                subtitle: qsTr("Reopen a saved project to restore its comparisons as tabs.")
+
+                Repeater {
+                    model: page.recentProjects
+                    delegate: Rectangle {
+                        required property var modelData
+                        required property int index
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 36
+                        radius: 4
+                        color: index % 2 === 0 ? page.themeBg : page.themeBgAlt
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 8
+                            spacing: 10
+
+                            Kirigami.Icon {
+                                Layout.preferredWidth: 18
+                                Layout.preferredHeight: 18
+                                source: "project-development"
+                                opacity: 0.7
+                            }
+                            Controls.Label {
+                                Layout.fillWidth: true
+                                text: modelData.name || page.pathLabel(modelData.path)
+                                elide: Text.ElideRight
+                                color: page.themeText
+                            }
+                            Controls.Label {
+                                text: page.pathLabel(modelData.path)
+                                opacity: 0.5
+                                font.pixelSize: 10
+                                font.family: "monospace"
+                            }
+                            AppButton {
+                                text: qsTr("Open")
+                                onClicked: page.openRecentProjectRequested(modelData.path)
+                            }
+                        }
                     }
                 }
             }

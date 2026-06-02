@@ -1055,702 +1055,702 @@ wd!:target</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2237"/>
+        <location filename="../qml/Main.qml" line="2238"/>
         <source>Project save failed</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2244"/>
+        <location filename="../qml/Main.qml" line="2246"/>
         <source>Open project</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2253"/>
+        <location filename="../qml/Main.qml" line="2259"/>
         <source>Opened %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2256"/>
+        <location filename="../qml/Main.qml" line="2263"/>
         <source>Not a valid project file</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2257"/>
+        <location filename="../qml/Main.qml" line="2264"/>
         <source>Project open failed</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2266"/>
+        <location filename="../qml/Main.qml" line="2278"/>
         <source>Select legacy .flt file to migrate</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2297"/>
+        <location filename="../qml/Main.qml" line="2309"/>
         <source>Three-way merge: select BASE file</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2308"/>
+        <location filename="../qml/Main.qml" line="2320"/>
         <source>Three-way merge: select LEFT file</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2319"/>
+        <location filename="../qml/Main.qml" line="2331"/>
         <source>Three-way merge: select RIGHT file</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2332"/>
+        <location filename="../qml/Main.qml" line="2344"/>
         <source>Compare: select LEFT file</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2340"/>
+        <location filename="../qml/Main.qml" line="2352"/>
         <source>Compare: select RIGHT file</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2348"/>
+        <location filename="../qml/Main.qml" line="2360"/>
         <source>Compare: select LEFT folder</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2356"/>
+        <location filename="../qml/Main.qml" line="2368"/>
         <source>Compare: select RIGHT folder</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2367"/>
+        <location filename="../qml/Main.qml" line="2379"/>
         <source>New Compare</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2386"/>
+        <location filename="../qml/Main.qml" line="2398"/>
         <source>From files</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2391"/>
+        <location filename="../qml/Main.qml" line="2403"/>
         <source>Paste text</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2409"/>
+        <location filename="../qml/Main.qml" line="2421"/>
         <source>Left file or folder</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2425"/>
+        <location filename="../qml/Main.qml" line="2437"/>
         <source>Browse left</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2444"/>
+        <location filename="../qml/Main.qml" line="2456"/>
         <source>Right file or folder</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2460"/>
+        <location filename="../qml/Main.qml" line="2472"/>
         <source>Browse right</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2476"/>
+        <location filename="../qml/Main.qml" line="2488"/>
         <source>Mode:</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2512"/>
-        <location filename="../qml/Main.qml" line="2680"/>
-        <location filename="../qml/Main.qml" line="3067"/>
+        <location filename="../qml/Main.qml" line="2524"/>
+        <location filename="../qml/Main.qml" line="2692"/>
+        <location filename="../qml/Main.qml" line="3079"/>
         <source>Compare</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2524"/>
-        <location filename="../qml/Main.qml" line="2709"/>
+        <location filename="../qml/Main.qml" line="2536"/>
+        <location filename="../qml/Main.qml" line="2721"/>
         <source>Compare in new tab</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2551"/>
+        <location filename="../qml/Main.qml" line="2563"/>
         <source>Left text </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2560"/>
-        <location filename="../qml/Main.qml" line="2611"/>
+        <location filename="../qml/Main.qml" line="2572"/>
+        <location filename="../qml/Main.qml" line="2623"/>
         <source>Label</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2581"/>
+        <location filename="../qml/Main.qml" line="2593"/>
         <source>Paste left content here…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2602"/>
+        <location filename="../qml/Main.qml" line="2614"/>
         <source>Right text</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2632"/>
+        <location filename="../qml/Main.qml" line="2644"/>
         <source>Paste right content here…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2654"/>
+        <location filename="../qml/Main.qml" line="2666"/>
         <source>Ignore case</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2661"/>
+        <location filename="../qml/Main.qml" line="2673"/>
         <source>Ignore whitespace</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2668"/>
+        <location filename="../qml/Main.qml" line="2680"/>
         <source>Ignore blank lines</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2742"/>
+        <location filename="../qml/Main.qml" line="2754"/>
         <source>Discard unsaved edits?</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2749"/>
+        <location filename="../qml/Main.qml" line="2761"/>
         <source>Reloading from disk will lose unsaved edits in the current tab.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2758"/>
+        <location filename="../qml/Main.qml" line="2770"/>
         <source>Save then reload</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2768"/>
+        <location filename="../qml/Main.qml" line="2780"/>
         <source>Discard and reload</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2778"/>
-        <location filename="../qml/Main.qml" line="2847"/>
+        <location filename="../qml/Main.qml" line="2790"/>
+        <location filename="../qml/Main.qml" line="2859"/>
         <source>Cancel</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2789"/>
+        <location filename="../qml/Main.qml" line="2801"/>
         <source>Run folder operation?</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2800"/>
+        <location filename="../qml/Main.qml" line="2812"/>
         <source>Kind: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2826"/>
+        <location filename="../qml/Main.qml" line="2838"/>
         <source>Apply</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="2832"/>
+        <location filename="../qml/Main.qml" line="2844"/>
         <source>Folder op done: %1 succeeded / %2 failed of %3</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3032"/>
+        <location filename="../qml/Main.qml" line="3044"/>
         <source>File compare &amp; merge</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3055"/>
+        <location filename="../qml/Main.qml" line="3067"/>
         <source>WORKSPACE</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3075"/>
+        <location filename="../qml/Main.qml" line="3087"/>
         <source>Image Compare</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3083"/>
+        <location filename="../qml/Main.qml" line="3095"/>
         <source>Webpage Compare</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3091"/>
+        <location filename="../qml/Main.qml" line="3103"/>
         <source>Document Compare</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3099"/>
+        <location filename="../qml/Main.qml" line="3111"/>
         <source>Sessions</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3115"/>
+        <location filename="../qml/Main.qml" line="3127"/>
         <source>TOOLS</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3127"/>
+        <location filename="../qml/Main.qml" line="3139"/>
         <source>Filters</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3135"/>
+        <location filename="../qml/Main.qml" line="3147"/>
         <source>Plugins</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3151"/>
+        <location filename="../qml/Main.qml" line="3163"/>
         <source>PREFERENCES</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3163"/>
+        <location filename="../qml/Main.qml" line="3175"/>
         <source>Settings</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3171"/>
+        <location filename="../qml/Main.qml" line="3183"/>
         <source>About</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3576"/>
+        <location filename="../qml/Main.qml" line="3588"/>
         <source>Stop the running compare</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3577"/>
+        <location filename="../qml/Main.qml" line="3589"/>
         <source>No compare is running</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3579"/>
+        <location filename="../qml/Main.qml" line="3591"/>
         <source>Stop</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3591"/>
+        <location filename="../qml/Main.qml" line="3603"/>
         <source>Copy paths to clipboard</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3593"/>
+        <location filename="../qml/Main.qml" line="3605"/>
         <source>Copy paths</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3604"/>
+        <location filename="../qml/Main.qml" line="3616"/>
         <source>Reveal left in file manager</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3606"/>
+        <location filename="../qml/Main.qml" line="3618"/>
         <source>Reveal in file manager</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3614"/>
+        <location filename="../qml/Main.qml" line="3626"/>
         <source>Open left with default application</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3616"/>
+        <location filename="../qml/Main.qml" line="3628"/>
         <source>Open externally</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3628"/>
+        <location filename="../qml/Main.qml" line="3640"/>
         <source>Export unified diff report</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3630"/>
+        <location filename="../qml/Main.qml" line="3642"/>
         <source>Export report</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3637"/>
-        <location filename="../qml/Main.qml" line="3639"/>
+        <location filename="../qml/Main.qml" line="3649"/>
+        <location filename="../qml/Main.qml" line="3651"/>
         <source>Reload compare</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3646"/>
-        <location filename="../qml/Main.qml" line="3648"/>
+        <location filename="../qml/Main.qml" line="3658"/>
+        <location filename="../qml/Main.qml" line="3660"/>
         <source>Swap sides</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3655"/>
+        <location filename="../qml/Main.qml" line="3667"/>
         <source>Open three-way merge…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3657"/>
+        <location filename="../qml/Main.qml" line="3669"/>
         <source>Open three-way merge</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3679"/>
+        <location filename="../qml/Main.qml" line="3691"/>
         <source>Profile:</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3692"/>
+        <location filename="../qml/Main.qml" line="3704"/>
         <source>Compare profile</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3755"/>
+        <location filename="../qml/Main.qml" line="3767"/>
         <source>View:</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3764"/>
+        <location filename="../qml/Main.qml" line="3776"/>
         <source>Side by side</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3764"/>
+        <location filename="../qml/Main.qml" line="3776"/>
         <source>Unified</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3764"/>
+        <location filename="../qml/Main.qml" line="3776"/>
         <source>Context</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3764"/>
+        <location filename="../qml/Main.qml" line="3776"/>
         <source>Normal</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3764"/>
-        <location filename="../qml/Main.qml" line="3827"/>
+        <location filename="../qml/Main.qml" line="3776"/>
+        <location filename="../qml/Main.qml" line="3839"/>
         <source>HTML</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3765"/>
+        <location filename="../qml/Main.qml" line="3777"/>
         <source>Text render mode</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3778"/>
-        <location filename="../qml/Main.qml" line="3780"/>
+        <location filename="../qml/Main.qml" line="3790"/>
+        <location filename="../qml/Main.qml" line="3792"/>
         <source>Fold unchanged context</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3793"/>
+        <location filename="../qml/Main.qml" line="3805"/>
         <source>Context lines</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3806"/>
-        <location filename="../qml/Main.qml" line="3808"/>
+        <location filename="../qml/Main.qml" line="3818"/>
+        <location filename="../qml/Main.qml" line="3820"/>
         <source>Show only changed rows</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3818"/>
+        <location filename="../qml/Main.qml" line="3830"/>
         <source>Syntax:</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3827"/>
+        <location filename="../qml/Main.qml" line="3839"/>
         <source>Plain</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3827"/>
-        <location filename="../qml/Main.qml" line="3867"/>
+        <location filename="../qml/Main.qml" line="3839"/>
+        <location filename="../qml/Main.qml" line="3879"/>
         <source>Auto</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3827"/>
+        <location filename="../qml/Main.qml" line="3839"/>
         <source>Rust</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3827"/>
+        <location filename="../qml/Main.qml" line="3839"/>
         <source>JSON</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3827"/>
+        <location filename="../qml/Main.qml" line="3839"/>
         <source>Markdown</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3827"/>
+        <location filename="../qml/Main.qml" line="3839"/>
         <source>Shell</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3827"/>
+        <location filename="../qml/Main.qml" line="3839"/>
         <source>TOML</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3827"/>
+        <location filename="../qml/Main.qml" line="3839"/>
         <source>YAML</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3828"/>
+        <location filename="../qml/Main.qml" line="3840"/>
         <source>Syntax mode</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3842"/>
-        <location filename="../qml/Main.qml" line="3844"/>
+        <location filename="../qml/Main.qml" line="3854"/>
+        <location filename="../qml/Main.qml" line="3856"/>
         <source>Text regex rule sets</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3867"/>
+        <location filename="../qml/Main.qml" line="3879"/>
         <source>UTF-8</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3867"/>
+        <location filename="../qml/Main.qml" line="3879"/>
         <source>UTF-8 BOM</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3867"/>
+        <location filename="../qml/Main.qml" line="3879"/>
         <source>UTF-16 LE</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3867"/>
+        <location filename="../qml/Main.qml" line="3879"/>
         <source>UTF-16 BE</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3867"/>
+        <location filename="../qml/Main.qml" line="3879"/>
         <source>Lossy UTF-8</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3868"/>
+        <location filename="../qml/Main.qml" line="3880"/>
         <source>Text encoding</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3882"/>
-        <location filename="../qml/Main.qml" line="3884"/>
+        <location filename="../qml/Main.qml" line="3894"/>
+        <location filename="../qml/Main.qml" line="3896"/>
         <source>Toggle bookmark</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3892"/>
-        <location filename="../qml/Main.qml" line="3894"/>
+        <location filename="../qml/Main.qml" line="3904"/>
+        <location filename="../qml/Main.qml" line="3906"/>
         <source>Previous bookmark</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3902"/>
-        <location filename="../qml/Main.qml" line="3904"/>
+        <location filename="../qml/Main.qml" line="3914"/>
+        <location filename="../qml/Main.qml" line="3916"/>
         <source>Next bookmark</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3926"/>
+        <location filename="../qml/Main.qml" line="3938"/>
         <source>Folder ops:</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3934"/>
+        <location filename="../qml/Main.qml" line="3946"/>
         <source>Copy →</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3936"/>
+        <location filename="../qml/Main.qml" line="3948"/>
         <source>Copy selected entry left → right</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3945"/>
+        <location filename="../qml/Main.qml" line="3957"/>
         <source>Copy ←</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3947"/>
+        <location filename="../qml/Main.qml" line="3959"/>
         <source>Copy selected entry right → left</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3958"/>
+        <location filename="../qml/Main.qml" line="3970"/>
         <source>Delete left</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3967"/>
+        <location filename="../qml/Main.qml" line="3979"/>
         <source>Delete right</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3978"/>
+        <location filename="../qml/Main.qml" line="3990"/>
         <source>Refresh</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3986"/>
+        <location filename="../qml/Main.qml" line="3998"/>
         <source>Filter:</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3992"/>
+        <location filename="../qml/Main.qml" line="4004"/>
         <source>Changed</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="3999"/>
+        <location filename="../qml/Main.qml" line="4011"/>
         <source>Left only</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4006"/>
+        <location filename="../qml/Main.qml" line="4018"/>
         <source>Right only</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4013"/>
+        <location filename="../qml/Main.qml" line="4025"/>
         <source>Different</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4026"/>
+        <location filename="../qml/Main.qml" line="4038"/>
         <source>Search paths…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4035"/>
+        <location filename="../qml/Main.qml" line="4047"/>
         <source>Search folder entries by path</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4040"/>
+        <location filename="../qml/Main.qml" line="4052"/>
         <source>Type:</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4046"/>
+        <location filename="../qml/Main.qml" line="4058"/>
         <source>Files</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4053"/>
+        <location filename="../qml/Main.qml" line="4065"/>
         <source>Folders</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4060"/>
+        <location filename="../qml/Main.qml" line="4072"/>
         <source>Symlinks</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4069"/>
+        <location filename="../qml/Main.qml" line="4081"/>
         <source>Sort:</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4075"/>
-        <location filename="../qml/Main.qml" line="4308"/>
+        <location filename="../qml/Main.qml" line="4087"/>
+        <location filename="../qml/Main.qml" line="4320"/>
         <source>Path</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4082"/>
-        <location filename="../qml/Main.qml" line="4309"/>
+        <location filename="../qml/Main.qml" line="4094"/>
+        <location filename="../qml/Main.qml" line="4321"/>
         <source>Status</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4089"/>
+        <location filename="../qml/Main.qml" line="4101"/>
         <source>Size</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4096"/>
-        <location filename="../qml/Main.qml" line="4312"/>
+        <location filename="../qml/Main.qml" line="4108"/>
+        <location filename="../qml/Main.qml" line="4324"/>
         <source>Method</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4106"/>
+        <location filename="../qml/Main.qml" line="4118"/>
         <source>Selected: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4107"/>
+        <location filename="../qml/Main.qml" line="4119"/>
         <source>Select a folder row to enable operations.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4243"/>
-        <location filename="../qml/Main.qml" line="4245"/>
+        <location filename="../qml/Main.qml" line="4255"/>
+        <location filename="../qml/Main.qml" line="4257"/>
         <source>Regex find</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4257"/>
-        <location filename="../qml/Main.qml" line="4259"/>
+        <location filename="../qml/Main.qml" line="4269"/>
+        <location filename="../qml/Main.qml" line="4271"/>
         <source>Case-sensitive find</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4310"/>
+        <location filename="../qml/Main.qml" line="4322"/>
         <source>Left size</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4311"/>
+        <location filename="../qml/Main.qml" line="4323"/>
         <source>Right size</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4725"/>
+        <location filename="../qml/Main.qml" line="4739"/>
         <source>Could not trust %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4730"/>
+        <location filename="../qml/Main.qml" line="4744"/>
         <source>Trusted and enabled %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4740"/>
+        <location filename="../qml/Main.qml" line="4754"/>
         <source>Removed %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4743"/>
+        <location filename="../qml/Main.qml" line="4757"/>
         <source>%1 is not installed</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="4745"/>
+        <location filename="../qml/Main.qml" line="4759"/>
         <source>Could not remove %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="5327"/>
+        <location filename="../qml/Main.qml" line="5341"/>
         <source>Comparing %1/%2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="5329"/>
+        <location filename="../qml/Main.qml" line="5343"/>
         <source>Comparing — %1</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2128,144 +2128,159 @@ wd!:target</source>
 <context>
     <name>SessionsPage</name>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="59"/>
+        <location filename="../qml/SessionsPage.qml" line="63"/>
         <source>(not set)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="97"/>
+        <location filename="../qml/SessionsPage.qml" line="101"/>
         <source>Sessions</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="103"/>
+        <location filename="../qml/SessionsPage.qml" line="107"/>
         <source>%1 open tab%2 · %3 recent path%4</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="115"/>
+        <location filename="../qml/SessionsPage.qml" line="119"/>
         <source>Save session</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="130"/>
+        <location filename="../qml/SessionsPage.qml" line="134"/>
         <source>Save project…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="135"/>
+        <location filename="../qml/SessionsPage.qml" line="139"/>
         <source>Open project…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="158"/>
+        <location filename="../qml/SessionsPage.qml" line="162"/>
         <source>Open tabs</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="160"/>
+        <location filename="../qml/SessionsPage.qml" line="164"/>
         <source>No active comparison tabs. Open files from the Compare page or pick a recent pair below.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="161"/>
+        <location filename="../qml/SessionsPage.qml" line="165"/>
         <source>Switch between active comparisons or close tabs you&apos;re done with.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="198"/>
+        <location filename="../qml/SessionsPage.qml" line="202"/>
         <source>Compare</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="211"/>
+        <location filename="../qml/SessionsPage.qml" line="215"/>
         <source>active</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="233"/>
+        <location filename="../qml/SessionsPage.qml" line="237"/>
         <source>Switch</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="235"/>
+        <location filename="../qml/SessionsPage.qml" line="239"/>
         <source>Activate this tab</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="242"/>
+        <location filename="../qml/SessionsPage.qml" line="246"/>
         <source>Close</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="244"/>
+        <location filename="../qml/SessionsPage.qml" line="248"/>
         <source>Close tab</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="265"/>
+        <location filename="../qml/SessionsPage.qml" line="269"/>
         <source>No active tabs</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="266"/>
+        <location filename="../qml/SessionsPage.qml" line="270"/>
         <source>Comparisons you open from the Compare page will appear here.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="274"/>
+        <location filename="../qml/SessionsPage.qml" line="278"/>
         <source>Go to Compare</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="283"/>
+        <location filename="../qml/SessionsPage.qml" line="287"/>
         <source>Recent comparisons</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="285"/>
+        <location filename="../qml/SessionsPage.qml" line="289"/>
         <source>Comparisons you&apos;ve opened recently will appear here. Click Reopen to launch a remembered pair as a fresh tab.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="286"/>
+        <location filename="../qml/SessionsPage.qml" line="290"/>
         <source>Reopen a past comparison as a new tab.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="336"/>
+        <location filename="../qml/SessionsPage.qml" line="340"/>
         <source>Reopen</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="350"/>
+        <location filename="../qml/SessionsPage.qml" line="354"/>
         <source>No remembered comparisons yet</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="357"/>
+        <location filename="../qml/SessionsPage.qml" line="362"/>
+        <source>Recent workspaces</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/SessionsPage.qml" line="363"/>
+        <source>Reopen a saved project to restore its comparisons as tabs.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/SessionsPage.qml" line="400"/>
+        <source>Open</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/SessionsPage.qml" line="410"/>
         <source>Recent paths</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="359"/>
+        <location filename="../qml/SessionsPage.qml" line="412"/>
         <source>Files and folders you&apos;ve recently compared will be remembered here.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="360"/>
+        <location filename="../qml/SessionsPage.qml" line="413"/>
         <source>Use the copy button to reuse a path in the Compare bar.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="393"/>
-        <location filename="../qml/SessionsPage.qml" line="395"/>
-        <location filename="../qml/SessionsPage.qml" line="396"/>
+        <location filename="../qml/SessionsPage.qml" line="446"/>
+        <location filename="../qml/SessionsPage.qml" line="448"/>
+        <location filename="../qml/SessionsPage.qml" line="449"/>
         <source>Copy path</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/SessionsPage.qml" line="411"/>
+        <location filename="../qml/SessionsPage.qml" line="464"/>
         <source>No recent paths yet</source>
         <translation type="unfinished"></translation>
     </message>

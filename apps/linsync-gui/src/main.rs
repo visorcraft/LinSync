@@ -3447,6 +3447,7 @@ fn bridge_response_with_token(
         "/report" => report_bridge_response(query, state, paths),
         "/project/save" => project_save_bridge_response(query, state, paths),
         "/project/open" => project_open_bridge_response(query, paths),
+        "/project/recent" => project_recent_bridge_response(paths),
         "/sessions/save" => sessions_save_bridge_response(query, paths, state),
         "/artifacts/list" => artifacts_list_bridge_response(state),
         "/artifacts/cleanup" => artifacts_cleanup_bridge_response(query, paths),
@@ -4750,7 +4751,7 @@ fn sessions_reopen_bridge_response(
 fn project_save_bridge_response(
     query: &str,
     state: &Arc<Mutex<GuiBridgeState>>,
-    _paths: &AppPaths,
+    paths: &AppPaths,
 ) -> Vec<u8> {
     let params = query_params(query);
     let Some(path) = query_value(&params, "path") else {
@@ -4787,6 +4788,7 @@ fn project_save_bridge_response(
 
     match linsync_core::ProjectFileStore::new(PathBuf::from(path)).save(&project) {
         Ok(()) => {
+            record_recent_project(paths, path);
             let body = serde_json::json!({
                 "ok": true,
                 "name": name,
@@ -4800,9 +4802,37 @@ fn project_save_bridge_response(
     }
 }
 
+/// Record a project file path in the recent-workspaces list (best-effort).
+fn record_recent_project(paths: &AppPaths, path: &str) {
+    let store = RecentPathStore::new(paths.recent_projects_file(), recent_limit(paths));
+    if let Err(err) = store.add(PathBuf::from(path)) {
+        tracing::warn!(path, error = %err, "failed to record recent project");
+    }
+}
+
+/// List recent project files (most-recent first), skipping any that no longer
+/// exist on disk.
+fn project_recent_bridge_response(paths: &AppPaths) -> Vec<u8> {
+    let store = RecentPathStore::new(paths.recent_projects_file(), recent_limit(paths));
+    let recent = store.load_or_default().unwrap_or_default();
+    let projects: Vec<serde_json::Value> = recent
+        .paths
+        .iter()
+        .filter(|p| p.exists())
+        .map(|p| {
+            serde_json::json!({
+                "path": p.display().to_string(),
+                "name": p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+            })
+        })
+        .collect();
+    let body = serde_json::json!({ "projects": projects }).to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
+}
+
 /// Open a project file at `?path=` and return it as a launch-context JSON the
 /// QML can apply (`applySessionContextJson`): one tab per saved session.
-fn project_open_bridge_response(query: &str, _paths: &AppPaths) -> Vec<u8> {
+fn project_open_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
     let params = query_params(query);
     let Some(path) = query_value(&params, "path") else {
         return bridge_error(400, "Bad Request", "missing project path");
@@ -4814,6 +4844,7 @@ fn project_open_bridge_response(query: &str, _paths: &AppPaths) -> Vec<u8> {
     if project.sessions.is_empty() {
         return bridge_error(404, "Not Found", "project has no comparisons");
     }
+    record_recent_project(paths, path);
 
     let mut tabs: Vec<GuiCompareTab> = Vec::with_capacity(project.sessions.len());
     for (index, session) in project.sessions.iter().enumerate() {
@@ -7705,6 +7736,24 @@ mod tests {
         );
         assert_eq!(save_body["sessions"], serde_json::json!(2));
         assert!(project_path.exists(), "project file should be written");
+
+        // The saved project now appears in the recent-workspaces list.
+        let recent = json_response_body(
+            &String::from_utf8(bridge_response(
+                "GET /project/recent HTTP/1.1\r\n",
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        assert!(
+            recent["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["path"] == serde_json::json!(project_path.to_str().unwrap())),
+            "recent workspaces should include the saved project: {recent}"
+        );
 
         // Open it back: the response is a launch context with both tabs.
         let open = String::from_utf8(bridge_response(

@@ -2231,10 +2231,12 @@ Kirigami.ApplicationWindow {
             const localPath = root.urlToLocalPath(selectedFile)
             root.bridgeGet("/project/save?path=" + encodeURIComponent(localPath) + "&name=" + encodeURIComponent(root.projectNameFromPath(localPath)),
                 function (ok, payload) {
-                    if (ok && payload && payload.ok)
+                    if (ok && payload && payload.ok) {
                         sessionsPage.projectStatus = qsTr("Saved %1 comparison(s)").arg(payload.sessions)
-                    else
+                        root.loadRecentProjects()
+                    } else {
                         sessionsPage.projectStatus = qsTr("Project save failed")
+                    }
                 })
         }
     }
@@ -2243,21 +2245,31 @@ Kirigami.ApplicationWindow {
         id: projectOpenDialog
         title: qsTr("Open project")
         nameFilters: ["LinSync project (*.linsync-project)", "All files (*)"]
-        onAccepted: {
-            const localPath = root.urlToLocalPath(selectedFile)
-            root.bridgeGet("/project/open?path=" + encodeURIComponent(localPath),
-                function (ok, payload, status) {
-                    if (ok && payload && payload.session) {
-                        root.applySessionContextJson(JSON.stringify(payload))
-                        root.activeSection = 0
-                        sessionsPage.projectStatus = qsTr("Opened %1").arg(payload.name || "project")
-                    } else {
-                        sessionsPage.projectStatus = (status === 400 || status === 404)
-                            ? qsTr("Not a valid project file")
-                            : qsTr("Project open failed")
-                    }
-                })
-        }
+        onAccepted: root.openProjectFile(root.urlToLocalPath(selectedFile))
+    }
+
+    // Open a project file by path (shared by the file dialog and the recent
+    // workspaces list).
+    function openProjectFile(localPath) {
+        root.bridgeGet("/project/open?path=" + encodeURIComponent(localPath),
+            function (ok, payload, status) {
+                if (ok && payload && payload.session) {
+                    root.applySessionContextJson(JSON.stringify(payload))
+                    root.activeSection = 0
+                    sessionsPage.projectStatus = qsTr("Opened %1").arg(payload.name || "project")
+                    root.loadRecentProjects()
+                } else {
+                    sessionsPage.projectStatus = (status === 400 || status === 404)
+                        ? qsTr("Not a valid project file")
+                        : qsTr("Project open failed")
+                }
+            })
+    }
+
+    function loadRecentProjects() {
+        root.bridgeGet("/project/recent", function (ok, payload) {
+            sessionsPage.recentProjects = (ok && payload && payload.projects) ? payload.projects : []
+        })
     }
 
     Dialogs.FileDialog {
@@ -4613,6 +4625,8 @@ Kirigami.ApplicationWindow {
                 }
                 onSaveProjectRequested: projectSaveDialog.open()
                 onOpenProjectRequested: projectOpenDialog.open()
+                onOpenRecentProjectRequested: path => root.openProjectFile(path)
+                Component.onCompleted: root.loadRecentProjects()
             }
 
             FiltersPage {
