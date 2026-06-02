@@ -369,6 +369,7 @@ pub enum PluginOperation {
     UnpackText,
     ListVirtualFolder,
     UnpackFolder,
+    RenderPages,
 }
 
 impl PluginOperation {
@@ -379,8 +380,20 @@ impl PluginOperation {
             Self::UnpackText => "unpack_text",
             Self::ListVirtualFolder => "list_virtual_folder",
             Self::UnpackFolder => "unpack_folder",
+            Self::RenderPages => "render_pages",
         }
     }
+}
+
+/// Response produced by the `render_pages` operation: the page images the
+/// renderer wrote, in order, to the caller-provided output directory.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RenderPagesResponse {
+    pub ok: bool,
+    #[serde(default)]
+    pub pages: Vec<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// A single node in a virtual folder tree returned by the `unpack_folder` operation.
@@ -1632,6 +1645,45 @@ pub fn run_unpack_folder_plugin(
     let req = serde_json::json!({"op": "unpack_folder", "source": source});
     let raw = run_plugin_helper(plugin_dir, manifest, &req.to_string(), options)?;
     Ok(serde_json::from_str(&raw.stdout)?)
+}
+
+/// Invoke a `render_pages` plugin (a `pdf_renderer`) to rasterize `source` into
+/// page images, copied in page order into the persistent `output_dir`.
+///
+/// The request is `{"op":"render_pages","source":<source>}`. The plugin writes
+/// its page PNGs into its sandbox-writable temp dir (`$LINSYNC_PLUGIN_TEMP_DIR`)
+/// and responds with `{"ok":true,"pages":[...]}` (paths within that temp dir) or
+/// `{"ok":false,"error":"..."}`. Because the helper's temp dir is reclaimed when
+/// it exits, this function copies each page out into `output_dir` (a caller-owned
+/// directory that outlives the call) while the temp dir is still alive, and
+/// returns the copied paths. This keeps the renderer inside the same sandbox
+/// policy as every other plugin (which may only write under its temp dir).
+pub fn run_render_pages_plugin(
+    plugin_dir: &Path,
+    manifest: &PluginManifest,
+    source: &str,
+    output_dir: &Path,
+    options: &PluginExecutionOptions,
+) -> Result<RenderPagesResponse, PluginError> {
+    let req = serde_json::json!({ "op": "render_pages", "source": source });
+    // Keep the helper's temp dir alive while we copy the rendered pages out.
+    let with_temp = run_plugin_helper_with_temp(plugin_dir, manifest, &req.to_string(), options)?;
+    let response: RenderPagesResponse = serde_json::from_str(&with_temp.result.stdout)?;
+    if !response.ok {
+        return Ok(response);
+    }
+    fs::create_dir_all(output_dir)?;
+    let mut copied = Vec::with_capacity(response.pages.len());
+    for (index, page) in response.pages.iter().enumerate() {
+        let dest = output_dir.join(format!("page-{index}.png"));
+        fs::copy(page, &dest)?;
+        copied.push(dest.to_string_lossy().into_owned());
+    }
+    Ok(RenderPagesResponse {
+        ok: true,
+        pages: copied,
+        error: None,
+    })
 }
 
 /// Compare two archives by unpacking each through a folder-virtualizer /

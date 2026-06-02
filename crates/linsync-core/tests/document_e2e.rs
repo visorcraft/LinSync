@@ -326,6 +326,60 @@ fn compare_document_files_identical_pdfs_are_equal() {
     );
 }
 
+#[cfg(all(feature = "document-compare", feature = "image-compare"))]
+#[test]
+fn compare_document_files_rendered_diffs_pages() {
+    if !common::tools_available(&["pdftoppm", "bash"]) {
+        eprintln!("SKIP: pdftoppm or bash not on PATH");
+        return;
+    }
+    build_document_fixtures();
+
+    use linsync_core::DocumentCompareMode;
+    use linsync_core::DocumentCompareOptions;
+    use linsync_core::document::compare_document_files;
+
+    let plugins_root = common::workspace_root().join("packaging/plugins");
+    let simple = document_fixture_dir().join("simple.pdf");
+    let changed = document_fixture_dir().join("simple-changed.pdf");
+
+    let opts = DocumentCompareOptions {
+        mode: DocumentCompareMode::Rendered,
+        ..DocumentCompareOptions::default()
+    };
+
+    // Identical PDFs render to pixel-equal pages.
+    let same = compare_document_files(&simple, &simple, &plugins_root, &opts)
+        .expect("rendered compare on identical pair failed");
+    assert_eq!(same.left_extractor, "pdf-render");
+    assert!(
+        same.text_result.is_none(),
+        "rendered mode has no text result"
+    );
+    assert!(
+        !same.rendered_pages.is_empty(),
+        "at least one page rendered"
+    );
+    assert!(same.is_equal(), "identical PDFs should render equal");
+
+    // Different page text renders different pixels.
+    let diff = compare_document_files(&simple, &changed, &plugins_root, &opts)
+        .expect("rendered compare on differing pair failed");
+    assert!(!diff.is_equal(), "differing PDFs should render different");
+}
+
+#[cfg(feature = "document-compare")]
+#[test]
+fn pdf_render_plugin_manifest_deserializes() {
+    let plugin_dir = common::workspace_root().join("packaging/plugins/pdf-render");
+    let manifest = load_manifest(&plugin_dir);
+    assert_eq!(manifest.id, "com.visorcraft.linsync.pdf-render");
+    assert!(manifest.supports_extension("pdf"));
+    manifest
+        .validate(&plugin_dir)
+        .expect("pdf-render manifest.validate() failed");
+}
+
 #[cfg(feature = "document-compare")]
 #[test]
 fn compare_document_files_no_plugin_returns_error() {

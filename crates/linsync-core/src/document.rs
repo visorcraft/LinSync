@@ -61,6 +61,22 @@ impl Default for DocumentCompareOptions {
     }
 }
 
+/// Per-page outcome of a `Rendered` document compare (feature-independent
+/// summary of the underlying image comparison).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RenderedPageSummary {
+    /// Zero-based page index.
+    pub page: usize,
+    /// Whether the two rendered pages are pixel-equal.
+    pub equal: bool,
+    /// Fraction of differing pixels (0.0–1.0); 1.0 for a one-sided page.
+    pub diff_ratio: f64,
+    /// Number of differing pixels.
+    pub differing_pixels: u64,
+    /// True when the page exists on only one side (page-count mismatch).
+    pub one_sided: bool,
+}
+
 /// Result produced by a document compare.
 #[derive(Debug, Clone)]
 pub struct DocumentCompareResult {
@@ -70,6 +86,21 @@ pub struct DocumentCompareResult {
     pub right_extractor: String,
     /// Underlying text compare result (only populated when `mode` is `Text` or `OcrText`).
     pub text_result: Option<crate::text::TextCompareResult>,
+    /// Per-page image comparison (only populated when `mode` is `Rendered`).
+    pub rendered_pages: Vec<RenderedPageSummary>,
+}
+
+impl DocumentCompareResult {
+    /// Whether the documents compared equal (text result, or all rendered pages).
+    pub fn is_equal(&self) -> bool {
+        if let Some(text) = &self.text_result {
+            return text.is_equal();
+        }
+        if !self.rendered_pages.is_empty() {
+            return self.rendered_pages.iter().all(|p| p.equal);
+        }
+        true
+    }
 }
 
 /// Error returned when a document compare fails.
@@ -151,7 +182,9 @@ pub fn select_plugin_id(path: &Path, mode: DocumentCompareMode) -> Option<&'stat
 
     match mode {
         DocumentCompareMode::OcrText => Some("com.visorcraft.linsync.tesseract-ocr"),
-        DocumentCompareMode::Rendered => None, // Phase 7 integration; not implemented in v1
+        // Rendered mode discovers a renderer by the `pdf_renderer` class rather
+        // than a fixed id (see `find_renderer_plugin`).
+        DocumentCompareMode::Rendered => None,
         DocumentCompareMode::Text => match ext.as_str() {
             "pdf" => Some("com.visorcraft.linsync.pdf-to-text"),
             "docx" | "odt" | "rtf" => Some("com.visorcraft.linsync.libreoffice-extract"),
@@ -237,10 +270,7 @@ pub fn compare_document_files(
     options: &DocumentCompareOptions,
 ) -> Result<DocumentCompareResult, DocumentCompareError> {
     if matches!(options.mode, DocumentCompareMode::Rendered) {
-        return Err(DocumentCompareError::NoSuitablePlugin {
-            path: left.display().to_string(),
-            mime_hint: "rendered-mode not implemented in v1".to_owned(),
-        });
+        return compare_document_rendered(left, right, plugins_root, options);
     }
 
     let left_plugin = find_plugin_for(left, options.mode, plugins_root).ok_or_else(|| {
@@ -296,5 +326,265 @@ pub fn compare_document_files(
         left_extractor: left_name,
         right_extractor: right_name,
         text_result: Some(text_result),
+        rendered_pages: Vec::new(),
     })
+}
+
+/// Find an installed `pdf_renderer` plugin under `plugins_root`.
+fn find_renderer_plugin(plugins_root: &Path) -> Option<DiscoveredPlugin> {
+    let discovery = discover_plugins(&[plugins_root.to_path_buf()]);
+    discovery.plugins.into_iter().find(|p| {
+        p.manifest
+            .classes
+            .contains(&crate::plugin::PluginClass::PdfRenderer)
+    })
+}
+
+/// Rendered-mode document compare: rasterize both documents to page images via
+/// a `pdf_renderer` plugin, then diff corresponding pages through the image
+/// engine. Requires the `image-compare` feature.
+#[cfg(feature = "image-compare")]
+fn compare_document_rendered(
+    left: &Path,
+    right: &Path,
+    plugins_root: &Path,
+    options: &DocumentCompareOptions,
+) -> Result<DocumentCompareResult, DocumentCompareError> {
+    let renderer = find_renderer_plugin(plugins_root).ok_or_else(|| {
+        DocumentCompareError::NoSuitablePlugin {
+            path: left.display().to_string(),
+            mime_hint: "no pdf_renderer plugin installed".to_owned(),
+        }
+    })?;
+    let name = extractor_name(&renderer);
+
+    // Persistent output dirs for the rendered PNGs (the helper's own temp dir is
+    // ephemeral). Unique per side and process so concurrent compares don't clash.
+    let base = options
+        .temp_root
+        .clone()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("linsync-rendered-pages");
+    let path_tag = |p: &Path| -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        p.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    };
+    let pid = std::process::id();
+    let left_dir = base.join(format!("{pid}-{}-left", path_tag(left)));
+    let right_dir = base.join(format!("{pid}-{}-right", path_tag(right)));
+    std::fs::create_dir_all(&left_dir)?;
+    std::fs::create_dir_all(&right_dir)?;
+
+    let exec = PluginExecutionOptions {
+        timeout: Duration::from_secs(options.timeout_secs),
+        temp_root: options.temp_root.clone(),
+        ..PluginExecutionOptions::default()
+    };
+    let render = |doc: &Path, out: &Path| -> Result<Vec<String>, DocumentCompareError> {
+        let response = crate::plugin::run_render_pages_plugin(
+            &renderer.root,
+            &renderer.manifest,
+            &doc.to_string_lossy(),
+            out,
+            &exec,
+        )?;
+        if response.ok {
+            Ok(response.pages)
+        } else {
+            Err(DocumentCompareError::Plugin(
+                crate::plugin::PluginError::PluginResponseError {
+                    code: "render_failed".to_owned(),
+                    message: response
+                        .error
+                        .unwrap_or_else(|| format!("renderer failed for '{}'", doc.display())),
+                    diagnostics: Vec::new(),
+                },
+            ))
+        }
+    };
+    let left_pages = render(left, &left_dir)?;
+    let right_pages = render(right, &right_dir)?;
+
+    let img_opts = crate::image::ImageCompareOptions::default();
+    let page_count = left_pages.len().max(right_pages.len());
+    let mut rendered_pages = Vec::with_capacity(page_count);
+    for index in 0..page_count {
+        match (left_pages.get(index), right_pages.get(index)) {
+            (Some(lp), Some(rp)) => {
+                let cmp = crate::image::compare_images(Path::new(lp), Path::new(rp), &img_opts)
+                    .map_err(|e| DocumentCompareError::Io(std::io::Error::other(e.to_string())))?;
+                rendered_pages.push(RenderedPageSummary {
+                    page: index,
+                    equal: cmp.equal,
+                    diff_ratio: cmp.diff_ratio,
+                    differing_pixels: cmp.differing_pixels,
+                    one_sided: false,
+                });
+            }
+            _ => rendered_pages.push(RenderedPageSummary {
+                page: index,
+                equal: false,
+                diff_ratio: 1.0,
+                differing_pixels: 0,
+                one_sided: true,
+            }),
+        }
+    }
+
+    if !options.retain_rendered_pages {
+        let _ = std::fs::remove_dir_all(&left_dir);
+        let _ = std::fs::remove_dir_all(&right_dir);
+    }
+
+    Ok(DocumentCompareResult {
+        left_extractor: name.clone(),
+        right_extractor: name,
+        text_result: None,
+        rendered_pages,
+    })
+}
+
+/// Without the image engine, rendered mode cannot diff the pages.
+#[cfg(not(feature = "image-compare"))]
+fn compare_document_rendered(
+    left: &Path,
+    _right: &Path,
+    _plugins_root: &Path,
+    _options: &DocumentCompareOptions,
+) -> Result<DocumentCompareResult, DocumentCompareError> {
+    Err(DocumentCompareError::NoSuitablePlugin {
+        path: left.display().to_string(),
+        mime_hint: "rendered mode requires the image-compare feature".to_owned(),
+    })
+}
+
+#[cfg(all(test, feature = "image-compare"))]
+mod rendered_tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Install a `pdf_renderer` fixture plugin. Its helper "renders" one copy of
+    /// a bundled 1×1 PNG (kept inside the plugin dir, which the sandbox lets the
+    /// helper read via its working directory) per line in the source document,
+    /// writing the pages into `$LINSYNC_PLUGIN_TEMP_DIR`. This keeps the fixture
+    /// sandbox-independent — it never reads a file outside the plugin dir.
+    fn install_renderer_plugin(plugins_root: &Path) {
+        let dir = plugins_root.join("test.renderer");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Bundle the page image inside the plugin dir.
+        let img: image::RgbaImage =
+            image::ImageBuffer::from_pixel(1, 1, image::Rgba([10, 160, 10, 255]));
+        img.save(dir.join("page-fixture.png"))
+            .expect("write png fixture");
+        let helper = dir.join("render.sh");
+        // The helper runs with its working directory set to the plugin dir, so
+        // it copies the bundled PNG via the relative "./page-fixture.png".
+        let script = "#!/bin/sh\n\
+             req=$(cat)\n\
+             source=$(printf '%s' \"$req\" | sed -n 's/.*\"source\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+             outdir=\"$LINSYNC_PLUGIN_TEMP_DIR\"\n\
+             i=0; pages=\"\"\n\
+             while IFS= read -r _line; do\n\
+               cp './page-fixture.png' \"$outdir/page-$i.png\"\n\
+               [ -n \"$pages\" ] && pages=\"$pages,\"\n\
+               pages=\"$pages\\\"$outdir/page-$i.png\\\"\"\n\
+               i=$((i+1))\n\
+             done < \"$source\"\n\
+             printf '{\"ok\":true,\"pages\":[%s]}\\n' \"$pages\"\n"
+            .to_string();
+        let mut f = std::fs::File::create(&helper).unwrap();
+        f.write_all(script.as_bytes()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&helper).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&helper, perms).unwrap();
+        }
+        std::fs::write(
+            dir.join("linsync-plugin.json"),
+            r#"{
+              "schema_version": 1,
+              "id": "test.renderer",
+              "name": "Fixture Renderer",
+              "version": "1.0.0",
+              "license": "GPL-3.0-only",
+              "entry": ["./render.sh"],
+              "classes": ["pdf_renderer"],
+              "mime_types": ["application/pdf"],
+              "extensions": ["pdf"],
+              "capabilities": [],
+              "deterministic": true,
+              "sandbox": { "network": false, "writes_input": false, "requires_home_access": false },
+              "options_schema": []
+            }"#,
+        )
+        .unwrap();
+    }
+
+    fn rendered_options(temp_root: &Path) -> DocumentCompareOptions {
+        DocumentCompareOptions {
+            mode: DocumentCompareMode::Rendered,
+            temp_root: Some(temp_root.to_path_buf()),
+            ..DocumentCompareOptions::default()
+        }
+    }
+
+    #[test]
+    fn rendered_compare_equal_pages_and_page_count_mismatch() {
+        let tmp = std::env::temp_dir().join(format!("linsync-rendered-doc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let plugins_root = tmp.join("plugins");
+        std::fs::create_dir_all(&plugins_root).unwrap();
+        install_renderer_plugin(&plugins_root);
+
+        // Two 2-page documents (2 lines each) → 2 identical rendered pages.
+        let a = tmp.join("a.pdf");
+        let b = tmp.join("b.pdf");
+        std::fs::write(&a, "p1\np2\n").unwrap();
+        std::fs::write(&b, "p1\np2\n").unwrap();
+        let result =
+            compare_document_files(&a, &b, &plugins_root, &rendered_options(&tmp)).unwrap();
+        assert!(
+            result.text_result.is_none(),
+            "rendered mode has no text result"
+        );
+        assert_eq!(result.rendered_pages.len(), 2, "two pages compared");
+        assert!(
+            result
+                .rendered_pages
+                .iter()
+                .all(|p| p.equal && !p.one_sided)
+        );
+        assert!(result.is_equal());
+
+        // A 3-page right document → third page is one-sided, overall different.
+        let c = tmp.join("c.pdf");
+        std::fs::write(&c, "p1\np2\np3\n").unwrap();
+        let mismatch =
+            compare_document_files(&a, &c, &plugins_root, &rendered_options(&tmp)).unwrap();
+        assert_eq!(mismatch.rendered_pages.len(), 3);
+        assert!(mismatch.rendered_pages[2].one_sided);
+        assert!(!mismatch.is_equal());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rendered_mode_without_renderer_plugin_errors() {
+        let tmp =
+            std::env::temp_dir().join(format!("linsync-rendered-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let plugins_root = tmp.join("plugins");
+        std::fs::create_dir_all(&plugins_root).unwrap();
+        let a = tmp.join("a.pdf");
+        std::fs::write(&a, "p1\n").unwrap();
+        let err =
+            compare_document_files(&a, &a, &plugins_root, &rendered_options(&tmp)).unwrap_err();
+        assert!(matches!(err, DocumentCompareError::NoSuitablePlugin { .. }));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
