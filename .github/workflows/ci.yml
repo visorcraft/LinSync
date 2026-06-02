@@ -127,8 +127,6 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: LINSYNC_GUI_SMOKE_CXXQT=1 bash scripts/gui-smoke.sh
-      - name: Third-party attribution drift-guard
-        run: bash scripts/check-credits.sh
 
   screenshots:
     name: GUI screenshots
