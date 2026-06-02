@@ -650,11 +650,54 @@ impl ProjectFileStore {
     }
 
     pub fn load(&self) -> Result<ProjectFile, StoreError> {
-        read_json::<ProjectFile>(&self.path)?.validate_current_schema()
+        let mut project = read_json::<ProjectFile>(&self.path)?.validate_current_schema()?;
+        // Resolve any relative session paths against the project file's own
+        // directory so a project (saved with relative paths) stays valid after
+        // being moved together with its files. Absolute paths are unchanged
+        // (Path::join returns an absolute right-hand side as-is).
+        if let Some(base) = self.path.parent() {
+            for session in &mut project.sessions {
+                resolve_session_paths_against(&mut session.session, base);
+            }
+        }
+        Ok(project)
     }
 
     pub fn save(&self, project: &ProjectFile) -> Result<(), StoreError> {
         write_json(&self.path, project)
+    }
+}
+
+/// Rewrite a comparison's `left`/`base`/`right` to be absolute by joining them
+/// against `base` when they are relative. A no-op for already-absolute paths.
+fn resolve_session_paths_against(session: &mut CompareSession, base: &Path) {
+    let resolve = |p: &PathBuf| -> PathBuf {
+        if p.as_os_str().is_empty() {
+            p.clone()
+        } else {
+            base.join(p)
+        }
+    };
+    session.left = resolve(&session.left);
+    session.right = resolve(&session.right);
+    if let Some(b) = session.base.as_ref() {
+        session.base = Some(resolve(b));
+    }
+}
+
+/// Rewrite a comparison's `left`/`base`/`right` to be relative to `base` when
+/// they currently live under it; paths outside `base` are left absolute.
+/// Used when saving a project so it can travel with its directory.
+pub fn relativize_session_paths_against(session: &mut CompareSession, base: &Path) {
+    let relativize = |p: &PathBuf| -> PathBuf {
+        p.strip_prefix(base)
+            .map(|rel| rel.to_path_buf())
+            .unwrap_or_else(|_| p.clone())
+    };
+    session.left = relativize(&session.left);
+    session.right = relativize(&session.right);
+    if let Some(b) = session.base.as_ref() {
+        session.base = Some(relativize(b));
     }
 }
 
@@ -1245,6 +1288,53 @@ mod tests {
         project.active_session_index = Some(2);
         store.save(&project).unwrap();
         assert!(matches!(store.load(), Err(StoreError::InvalidData(_))));
+    }
+
+    #[test]
+    fn project_relative_paths_travel_with_the_directory() {
+        let fixture = TempFixture::new();
+        let proj_dir = fixture.path.join("workspace");
+        let project_file = proj_dir.join("compare.linsync-project");
+
+        // A comparison whose files live under the project directory.
+        let mut session = sample_compare_session("Main");
+        session.left = proj_dir.join("src/a.txt");
+        session.right = proj_dir.join("src/b.txt");
+
+        // Relativize against the project dir, then save.
+        relativize_session_paths_against(&mut session, &proj_dir);
+        assert_eq!(
+            session.left,
+            PathBuf::from("src/a.txt"),
+            "stored path is relative"
+        );
+        let mut project = ProjectFile::new("Portable");
+        project.sessions.push(SessionFile::new(session));
+        ProjectFileStore::new(project_file.clone())
+            .save(&project)
+            .unwrap();
+
+        // Loading from the original location resolves back to absolute.
+        let loaded = ProjectFileStore::new(project_file.clone()).load().unwrap();
+        assert_eq!(loaded.sessions[0].session.left, proj_dir.join("src/a.txt"));
+
+        // Move the whole project directory; relative paths still resolve.
+        let moved_dir = fixture.path.join("relocated");
+        fs::create_dir_all(&moved_dir).unwrap();
+        let moved_file = moved_dir.join("compare.linsync-project");
+        fs::copy(&project_file, &moved_file).unwrap();
+        let relocated = ProjectFileStore::new(moved_file).load().unwrap();
+        assert_eq!(
+            relocated.sessions[0].session.left,
+            moved_dir.join("src/a.txt"),
+            "relative paths resolve against the project file's new location"
+        );
+
+        // A path outside the project dir stays absolute through relativize.
+        let mut outside = sample_compare_session("Outside");
+        outside.left = PathBuf::from("/etc/hosts");
+        relativize_session_paths_against(&mut outside, &proj_dir);
+        assert_eq!(outside.left, PathBuf::from("/etc/hosts"));
     }
 
     #[test]

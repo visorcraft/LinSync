@@ -4786,6 +4786,14 @@ fn project_save_bridge_response(
     project.active_session_index = active_index;
     project.sessions = sessions;
 
+    // Store paths relative to the project file's directory when they live under
+    // it, so the project travels with its folder; load() resolves them back.
+    if let Some(base) = Path::new(path).parent() {
+        for session in &mut project.sessions {
+            linsync_core::relativize_session_paths_against(&mut session.session, base);
+        }
+    }
+
     match linsync_core::ProjectFileStore::new(PathBuf::from(path)).save(&project) {
         Ok(()) => {
             record_recent_project(paths, path);
