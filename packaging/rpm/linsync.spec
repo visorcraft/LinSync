@@ -54,7 +54,7 @@ integration.
 
 %build
 QT_VERSION_MAJOR=6 cargo build --release --workspace \
-    --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine'
+    --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine linsync-cli/web-engine'
 
 %install
 # Honour CARGO_TARGET_DIR if the build set it (containerised builds put

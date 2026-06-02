@@ -30,7 +30,7 @@ appdir="${1:-"${root}/target/appimage/LinSync.AppDir"}"
 output="${2:-"${root}/target/appimage/LinSync-${VERSION}-x86_64.AppImage"}"
 
 QT_VERSION_MAJOR=6 cargo build --workspace --release \
-    --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine'
+    --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine linsync-cli/web-engine'
 
 rm -rf "${appdir}"
 install -Dm755 "${root}/target/release/linsync" "${appdir}/usr/bin/linsync"

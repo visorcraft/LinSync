@@ -82,7 +82,7 @@ modules:
       # Match the per-distro packaging recipes: build with the cxx-qt
       # in-process host so the Flatpak doesn't need an external `qml6`
       # subprocess at runtime.
-      - QT_VERSION_MAJOR=6 cargo --offline build --release --workspace --frozen --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine'
+      - QT_VERSION_MAJOR=6 cargo --offline build --release --workspace --frozen --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine linsync-cli/web-engine'
       - install -Dm755 target/release/linsync /app/bin/linsync
       - install -Dm755 target/release/linsync-cli /app/bin/linsync-cli
       - mkdir -p /app/share/linsync

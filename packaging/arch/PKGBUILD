@@ -48,7 +48,7 @@ _srcdir="${startdir}/../.."
 build() {
     cd "${_srcdir}"
     QT_VERSION_MAJOR=6 cargo build --release --workspace \
-        --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine'
+        --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine linsync-cli/web-engine'
 }
 
 check() {
