@@ -418,6 +418,19 @@ Kirigami.ApplicationWindow {
         return root['zebra' + (index % 2)]
     }
 
+    // Full-opacity change-bar color for a diff state, drawn as a thin marker at
+    // the left edge of each changed row. The per-row background tint is only
+    // 14–22% alpha — too faint under a high-contrast color scheme — so this
+    // solid bar keeps differences clearly distinguishable regardless of scheme
+    // and gives a non-background cue (helps low-vision use). "" = no marker.
+    function lineMarkerColor(state) {
+        if (state === "left_only" || state === "error") return root.activeNegativeText
+        if (state === "right_only") return root.activePositiveText
+        if (state === "changed") return root.activeNeutralText
+        if (state === "skipped" || state === "aborted" || state === "folded") return root.activeDisabledText
+        return ""
+    }
+
     // Sync scroll between panes only when flick animation ends, not per-pixel.
     function isDifferenceState(state) {
         return state === "changed" || state === "left_only" || state === "right_only" || state === "error" || state === "aborted"
@@ -5362,6 +5375,10 @@ Kirigami.ApplicationWindow {
                                 required property var modelData
 
                                 property string _state: modelData && modelData.state ? String(modelData.state) : "empty"
+                                // "" when the row is not a difference; else the
+                                // full-opacity change-bar color (a string the
+                                // child Rectangle parses).
+                                property string _markerColor: root.lineMarkerColor(_state)
 
                                 width: rowBackgrounds.width
                                 height: paneStack.lineHeight
@@ -5381,6 +5398,20 @@ Kirigami.ApplicationWindow {
                                 }
                                 border.color: index === root.currentDiffRow ? root.activeHighlight : "transparent"
                                 border.width: index === root.currentDiffRow ? 1 : 0
+
+                                // Full-opacity change bar at the left edge of a
+                                // diff row, so differences stay visible even
+                                // when the faint background tint washes out
+                                // under a high-contrast scheme (and as a cue
+                                // that does not rely on reading the tint).
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    width: 3
+                                    visible: parent._markerColor !== ""
+                                    color: visible ? parent._markerColor : "transparent"
+                                }
                             }
                         }
                     }
