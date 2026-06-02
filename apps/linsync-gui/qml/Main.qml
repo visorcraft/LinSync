@@ -5058,6 +5058,22 @@ Kirigami.ApplicationWindow {
                             }
                         })
                 }
+                onPluginProfileEnabledToggled: function(id, enabled) {
+                    root.bridgeGet("/profiles/active/plugin-enabled?id=" + encodeURIComponent(id)
+                            + "&enabled=" + (enabled ? "true" : "false"),
+                        function (ok, payload, status) {
+                            if (ok) {
+                                pluginsPage.showActionResult(enabled
+                                    ? qsTr("Enabled in active profile")
+                                    : qsTr("Disabled in active profile"))
+                                root.loadPlugins(function (p) { pluginsPage.applyDiscovery(p) })
+                            } else if (status === 409) {
+                                pluginsPage.showActionResult(qsTr("Select a user profile to set per-profile plugin state"))
+                            } else {
+                                pluginsPage.showActionResult(qsTr("Could not update per-profile plugin state"))
+                            }
+                        })
+                }
                 onPluginInstallRequested: pluginInstallDialog.open()
                 onPluginRemoveRequested: function(id, name) {
                     root.bridgeGet("/plugins/remove?id=" + encodeURIComponent(id),

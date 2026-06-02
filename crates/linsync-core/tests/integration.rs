@@ -176,6 +176,7 @@ JSON
         sandbox: PluginSandbox::default(),
         streaming: false,
         options_schema: vec![],
+        normalization_categories: vec![],
     };
 
     let result = run_prediffer_plugin(

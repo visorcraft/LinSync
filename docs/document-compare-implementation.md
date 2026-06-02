@@ -11,7 +11,9 @@ Satisfies all seven prerequisites from `docs/document-ocr-compare.md`.
 
 ## Non-goals
 
-- OCR word-position mapping (deferred to v2; see below).
+- A pixel-accurate visual overlay of diff highlights on a rendered source page
+  (see the carve-out under "OCR with positions" below). Per-word positions are
+  now surfaced as data; drawing them back onto a scaled page render is not.
 - Remote/cloud OCR of any kind.
 - Bundling Tesseract, Poppler, or LibreOffice in the LinSync package.
 - Encrypted document support.
@@ -45,11 +47,37 @@ and writes the result to `stdout.txt` in its temp dir. The plugin exposes a
 manifest option `language` (default `eng`). LinSync passes the user-selected
 language via the `options` block in the `unpack_text` request.
 
-### OCR with positions (deferred to v2)
+### OCR with positions (implemented)
 
-Tesseract's `hocr` or `tsv` output modes expose per-word bounding boxes. Adding
-position data requires a new protocol field (`word_positions`) and a new GUI
-overlay layer. This is out of scope for v1.
+Tesseract's `tsv` output mode exposes per-word bounding boxes, and LinSync now
+captures them through the (optional, backward-compatible) plugin-protocol fields
+added for this purpose:
+
+1. The document engine sets `options.want_positions: true` on the `unpack_text`
+   request whenever `mode` is `OcrText` (`compare_document_files` in
+   `crates/linsync-core/src/document.rs`).
+2. The `tesseract-ocr` plugin, seeing `want_positions`, additionally runs the
+   `tsv` config, parses the level-5 word rows (grouped by block/paragraph/line
+   into per-line arrays in reading order), and attaches them as
+   `PluginOperationOutput.word_positions` — a `Vec<Vec<WordPosition>>`. Each
+   `WordPosition` carries `text`, the 0-based `line`, an image-pixel bounding box
+   (`x`, `y`, `width`, `height`), and an optional integer `confidence` (`0`–`100`).
+3. The engine threads each side's positions onto
+   `DocumentCompareResult.{left,right}_word_positions`, and the `/compare/document`
+   bridge serializes them as `left_word_positions` / `right_word_positions`.
+
+The protocol version stays **`1`** — both `want_positions` (request) and
+`word_positions` (response) are purely additive and omitted when unused, so older
+plugins are unaffected (see `docs/plugin-protocol.md`).
+
+**Known carve-out — no visual overlay over the rendered page.** Positions are
+surfaced as *data* (the per-word boxes plus their counts), not painted as diff
+highlights on top of a rendered source page. There is deliberately **no
+zoom/scale mapping** from the OCR'd image-pixel coordinate space onto a
+display-time page raster: the boxes are in the resolution Tesseract saw, and the
+GUI does not rescale or align them to a separately-rendered page. Drawing an
+accurate, zoom-aware overlay (matching the image-compare overlay treatment)
+remains a documented limitation.
 
 ## Helper stack
 

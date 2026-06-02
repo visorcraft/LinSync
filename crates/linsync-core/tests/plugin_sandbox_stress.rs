@@ -49,6 +49,7 @@ fn manifest_for(entry: &str) -> PluginManifest {
         },
         streaming: false,
         options_schema: vec![],
+        normalization_categories: vec![],
     }
 }
 

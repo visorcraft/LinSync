@@ -130,6 +130,7 @@ const COMPARE_FLAGS: &[&str] = &[
     "--detect-moves",
     "--diff-algorithm",
     "--prediffer",
+    "--prediffer-conflict-policy",
     "--save-result",
     "--from-json",
     "--inline-granularity",
@@ -147,6 +148,7 @@ const COMPARE_FLAGS: &[&str] = &[
     "--image-mode",
     "--image-tolerance",
     "--image-delta-e",
+    "--image-frames",
     "--ocr-language",
     "--document-mode",
     "--document-pages",
@@ -248,7 +250,7 @@ fn compare_command(args: &[String]) -> Result<ExitCode, String> {
     let compare_args = split_compare_args(args)?;
     if compare_args.paths.len() != 2 {
         return Err(
-            "usage: linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--document-pages FIRST-LAST] [--save-result FILE] LEFT RIGHT"
+            "usage: linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--prediffer-conflict-policy chain|first-wins|last-wins] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--image-frames first|all] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--document-pages FIRST-LAST] [--save-result FILE] LEFT RIGHT"
                 .to_owned(),
         );
     }
@@ -464,12 +466,14 @@ fn run_text_compare(
     left: &Path,
     right: &Path,
     options: &TextCompareOptions,
+    plugin_enablement: &std::collections::BTreeMap<String, bool>,
 ) -> Result<linsync_core::TextCompareResult, String> {
     if options.prediffer_plugins.is_empty() {
         return compare_text_files(left, right, options).map_err(|err| err.to_string());
     }
     let paths = AppPaths::from_env();
-    let chain = resolve_enabled_prediffers(&paths, &options.prediffer_plugins);
+    let chain =
+        resolve_enabled_prediffers(&paths, &options.prediffer_plugins, Some(plugin_enablement));
     if chain.is_empty() {
         eprintln!(
             "info: profile requested prediffer(s) {:?} but none are installed + enabled; comparing without",
@@ -498,7 +502,12 @@ fn compare_text_command(
     right: PathBuf,
     compare_args: CompareArgs,
 ) -> Result<ExitCode, String> {
-    let result = run_text_compare(&left, &right, &compare_args.text_options)?;
+    let result = run_text_compare(
+        &left,
+        &right,
+        &compare_args.text_options,
+        &compare_args.plugin_enablement,
+    )?;
 
     if let Some(path) = &compare_args.save_result {
         let result_json = serde_json::to_value(&result).map_err(|err| err.to_string())?;
@@ -878,26 +887,51 @@ fn has_tsv_extension(path: &Path) -> bool {
 }
 
 fn compare_image_command(left: &Path, right: &Path, args: CompareArgs) -> Result<ExitCode, String> {
-    use linsync_core::{ImageCompareMode, ImageCompareOptions, compare_images};
+    use linsync_core::{FrameCompareMode, ImageCompareMode, ImageCompareOptions, compare_images};
 
     let mode = match args.image_options.mode.as_str() {
-        "tolerance" => ImageCompareMode::Tolerance(args.image_options.tolerance),
+        "tolerance" => ImageCompareMode::Tolerance {
+            tolerance: args.image_options.tolerance,
+        },
         "perceptual" => ImageCompareMode::Perceptual,
         _ => ImageCompareMode::Exact,
+    };
+    let frame_mode = match args.image_options.frames.as_str() {
+        "all" => FrameCompareMode::AllFrames,
+        _ => FrameCompareMode::FirstFrame,
     };
 
     let opts = ImageCompareOptions {
         mode,
         tolerance: args.image_options.tolerance,
         delta_e_threshold: args.image_options.delta_e,
+        frame_mode,
         ..ImageCompareOptions::default()
     };
 
     let result = compare_images(left, right, &opts).map_err(|e| e.to_string())?;
 
+    if let Some(path) = &args.save_result {
+        let envelope = serde_json::json!({
+            "schema_version": 1,
+            "kind": "image",
+            "result": serde_json::to_value(&result).map_err(|err| err.to_string())?,
+        });
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&envelope).map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| {
+            format!(
+                "cannot write --save-result file '{}': {err}",
+                path.display()
+            )
+        })?;
+    }
+
     match args.output {
         OutputMode::Json => {
-            let json = serde_json::json!({
+            let mut json = serde_json::json!({
                 "equal": result.equal,
                 "left_dims": result.left_dims,
                 "right_dims": result.right_dims,
@@ -907,6 +941,17 @@ fn compare_image_command(left: &Path, right: &Path, args: CompareArgs) -> Result
                 "mode": args.image_options.mode,
                 "diff_bbox": result.diff_bbox,
             });
+            // Animated (AllFrames) compares report the per-frame breakdown.
+            if let Some(count) = result.frame_count {
+                json["frame_count"] = serde_json::json!(count);
+                json["differing_frames"] = serde_json::json!(
+                    result
+                        .per_frame_summaries
+                        .iter()
+                        .filter(|f| !f.equal)
+                        .count()
+                );
+            }
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
         }
         OutputMode::Quiet => {}
@@ -969,6 +1014,24 @@ fn compare_document_command(
             }
             other => other.to_string(),
         })?;
+
+    if let Some(path) = &args.save_result {
+        let envelope = serde_json::json!({
+            "schema_version": 1,
+            "kind": "document",
+            "result": serde_json::to_value(&result).map_err(|err| err.to_string())?,
+        });
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&envelope).map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| {
+            format!(
+                "cannot write --save-result file '{}': {err}",
+                path.display()
+            )
+        })?;
+    }
 
     let text_result = result.text_result.as_ref();
     let is_equal = result.is_equal();
@@ -1448,7 +1511,8 @@ fn archive_command(args: &[String]) -> Result<ExitCode, String> {
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
-        if let Some(plugin) = resolve_enabled_virtualizer_for_extension(&AppPaths::from_env(), ext)
+        if let Some(plugin) =
+            resolve_enabled_virtualizer_for_extension(&AppPaths::from_env(), ext, None)
         {
             return archive_compare_via_plugin(&plugin.manifest.id, &paths[0], &paths[1], json);
         }
@@ -3432,9 +3496,20 @@ fn report_command(args: &[String]) -> Result<ExitCode, String> {
                         .map_err(|err| format!("invalid saved binary result: {err}"))?;
                 (result.to_html_report(), result.is_equal())
             }
+            Some("image") => {
+                let result: linsync_core::ImageCompareResult = serde_json::from_value(result_value)
+                    .map_err(|err| format!("invalid saved image result: {err}"))?;
+                (result.to_html_report(), result.equal)
+            }
+            Some("document") => {
+                let result: linsync_core::DocumentCompareResult =
+                    serde_json::from_value(result_value)
+                        .map_err(|err| format!("invalid saved document result: {err}"))?;
+                (result.to_html_report(), result.is_equal())
+            }
             other => {
                 return Err(format!(
-                    "report --from-json: unsupported result kind {other:?} (expected text, folder, table, or binary)"
+                    "report --from-json: unsupported result kind {other:?} (expected text, folder, table, binary, image, or document)"
                 ));
             }
         };
@@ -4738,6 +4813,8 @@ struct ImageCompareArgsOptions {
     mode: String,
     tolerance: u8,
     delta_e: f32,
+    /// "first" | "all" — animated-image frame comparison mode.
+    frames: String,
 }
 
 impl Default for ImageCompareArgsOptions {
@@ -4746,6 +4823,7 @@ impl Default for ImageCompareArgsOptions {
             mode: "exact".into(),
             tolerance: 0,
             delta_e: 2.3,
+            frames: "first".into(),
         }
     }
 }
@@ -4787,6 +4865,11 @@ struct CompareArgs {
     /// When set (text compares), write the full result as versioned JSON to this
     /// path so `report --from-json` can re-render it without recomparing.
     save_result: Option<PathBuf>,
+    /// Per-profile plugin enable/disable overrides copied from the `--profile`
+    /// profile (empty when no profile is passed). Threaded into plugin
+    /// resolution so a profile that disables a prediffer/virtualizer is honored
+    /// in the CLI exactly as in the GUI.
+    plugin_enablement: std::collections::BTreeMap<String, bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -4813,6 +4896,7 @@ fn compare_flag_value_count(flag: &str) -> Option<usize> {
         | "--inline-granularity"
         | "--regex-rule-set"
         | "--prediffer"
+        | "--prediffer-conflict-policy"
         | "--context"
         | "--render"
         | "--syntax"
@@ -4824,6 +4908,7 @@ fn compare_flag_value_count(flag: &str) -> Option<usize> {
         | "--image-mode"
         | "--image-tolerance"
         | "--image-delta-e"
+        | "--image-frames"
         | "--document-mode"
         | "--ocr-language"
         | "--document-pages"
@@ -4870,6 +4955,8 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
     let mut effective_profile: Option<String> = None;
     let mut explicit_text_options = false;
     let mut save_result: Option<PathBuf> = None;
+    let mut plugin_enablement: std::collections::BTreeMap<String, bool> =
+        std::collections::BTreeMap::new();
 
     // First pass: resolve --profile so the per-mode options are seeded
     // from the profile *before* the rest of the flag parsing overrides
@@ -4913,11 +5000,15 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
             // we can unconditionally read those fields here.
             image_options.mode = match profile.image.mode {
                 linsync_core::ImageCompareMode::Exact => "exact".to_owned(),
-                linsync_core::ImageCompareMode::Tolerance(_) => "tolerance".to_owned(),
+                linsync_core::ImageCompareMode::Tolerance { .. } => "tolerance".to_owned(),
                 linsync_core::ImageCompareMode::Perceptual => "perceptual".to_owned(),
             };
             image_options.tolerance = profile.image.tolerance;
             image_options.delta_e = profile.image.delta_e_threshold;
+            image_options.frames = match profile.image.frame_mode {
+                linsync_core::FrameCompareMode::AllFrames => "all".to_owned(),
+                linsync_core::FrameCompareMode::FirstFrame => "first".to_owned(),
+            };
             document_options.mode = match profile.document.mode {
                 linsync_core::DocumentCompareMode::Text => "text".to_owned(),
                 linsync_core::DocumentCompareMode::OcrText => "ocr_text".to_owned(),
@@ -4925,6 +5016,7 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
             };
             document_options.ocr_language = profile.document.ocr_language.clone();
             document_options.page_range = profile.document.page_range;
+            plugin_enablement = profile.plugin_enablement.clone();
             effective_profile = Some(profile.id.to_string());
             profile_seek += 2;
             continue;
@@ -5007,6 +5099,26 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
                     return Err("--prediffer requires a plugin id".to_owned());
                 };
                 text_options.prediffer_plugins.push(value.clone());
+                explicit_text_options = true;
+                index += 1;
+            }
+            "--prediffer-conflict-policy" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(
+                        "--prediffer-conflict-policy requires a value: chain | first-wins | last-wins"
+                            .to_owned(),
+                    );
+                };
+                text_options.prediffer_conflict_policy = match value.as_str() {
+                    "chain" => linsync_core::PredifferConflictPolicy::Chain,
+                    "first-wins" => linsync_core::PredifferConflictPolicy::FirstWins,
+                    "last-wins" => linsync_core::PredifferConflictPolicy::LastWins,
+                    _ => {
+                        return Err(format!(
+                            "unknown --prediffer-conflict-policy '{value}' (chain | first-wins | last-wins)"
+                        ));
+                    }
+                };
                 explicit_text_options = true;
                 index += 1;
             }
@@ -5154,6 +5266,16 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
                     .map_err(|_| format!("invalid delta-e '{v}'"))?;
                 index += 1;
             }
+            "--image-frames" => {
+                let Some(v) = args.get(index + 1) else {
+                    return Err("--image-frames requires a value: first | all".into());
+                };
+                if !matches!(v.as_str(), "first" | "all") {
+                    return Err(format!("unknown --image-frames '{v}' (first | all)"));
+                }
+                image_options.frames = v.clone();
+                index += 1;
+            }
             "--document-mode" => {
                 let Some(v) = args.get(index + 1) else {
                     return Err(
@@ -5218,6 +5340,7 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
         effective_profile,
         explicit_text_options,
         save_result,
+        plugin_enablement,
     })
 }
 
@@ -6537,8 +6660,8 @@ Compare two archive files by extracting them (via tar / unzip subprocesses) and 
 .B cache clear [--scope webcompare]
 Clear LinSync cache directories. Currently the only supported scope is webcompare (the webpage compare HTTP fetch cache under $XDG_CACHE_HOME/linsync/webcompare).
 .TP
-.B compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--save-result FILE] LEFT RIGHT
-Compare two files and exit with 0 for equal files or 1 for differences. The --type auto default routes Folder/Binary/Table/Text; --type image and --type document must be selected explicitly because auto-detection does not route to those engines. --profile seeds every per-mode option from a built-in id (default, strict-bytes, ignore-formatting, code-review, prose-review, folder-sync-preview, webpage-source-safe), a saved user profile id, or a path to a profile JSON file; explicit CLI flags override the profile values regardless of argument order. --prediffer PLUGIN_ID (repeatable; also settable per profile as text.prediffer_plugins) routes enabled, installed prediffer plugins to normalize each side before diffing. Multiple ids form an ordered chain — each stage normalizes the previous stage's output. Ids that are missing, the wrong class, or disabled are skipped with a note and the comparison proceeds without them. --save-result FILE (text/folder/table/binary compares) writes the full result as versioned JSON so "report --from-json FILE" can re-render it later without recomparing.
+.B compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--prediffer-conflict-policy chain|first-wins|last-wins] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--image-frames first|all] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--save-result FILE] LEFT RIGHT
+Compare two files and exit with 0 for equal files or 1 for differences. The --type auto default routes Folder/Binary/Table/Text; --type image and --type document must be selected explicitly because auto-detection does not route to those engines. --profile seeds every per-mode option from a built-in id (default, strict-bytes, ignore-formatting, code-review, prose-review, folder-sync-preview, webpage-source-safe), a saved user profile id, or a path to a profile JSON file; explicit CLI flags override the profile values regardless of argument order. --prediffer PLUGIN_ID (repeatable; also settable per profile as text.prediffer_plugins) routes enabled, installed prediffer plugins to normalize each side before diffing. Multiple ids form an ordered chain — each stage normalizes the previous stage's output. Ids that are missing, the wrong class, or disabled are skipped with a note and the comparison proceeds without them. --save-result FILE (text/folder/table/binary/image/document compares) writes the full result as versioned JSON so "report --from-json FILE" can re-render it later without recomparing.
 .TP
 .B compare3 [--markers|--json] LEFT BASE RIGHT
 Compare left and right against a base file and optionally print conflict markers or JSON.
@@ -6571,7 +6694,7 @@ Manage discovered plugins. list shows installed plugins with enabled state; insp
 Manage compare profiles — named bundles of per-mode comparison options. Built-in profiles ship with the binary; user profiles live under $XDG_CONFIG_HOME/linsync/profiles/. Use --profile NAME-OR-PATH on a compare command to source options from a profile; CLI flags override profile values.
 .TP
 .B report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports] [--relative-paths] [--from-json FILE]
-Generate an HTML file or folder comparison report with optional text context, folder columns, tree state, or nested file reports. --relative-paths labels the compared paths relative to the current directory (when they live under it) so the report carries no absolute, machine-specific paths. --from-json FILE re-renders a text/folder/table/binary result previously saved with "compare --save-result" instead of comparing afresh (requires --output).
+Generate an HTML file or folder comparison report with optional text context, folder columns, tree state, or nested file reports. --relative-paths labels the compared paths relative to the current directory (when they live under it) so the report carries no absolute, machine-specific paths. --from-json FILE re-renders a text/folder/table/binary/image/document result previously saved with "compare --save-result" instead of comparing afresh (requires --output).
 .TP
 .B project <validate PATH | show PATH [--json] | run PATH [--json] | report PATH --output DIR | list [DIR] [--json]>
 Operate on a project file (a named bundle of saved comparisons). validate loads and schema-checks it; show lists its comparisons; run executes each one (auto-detecting folder / text / binary / table like the compare command, with default options) and exits 0 when all are equal, 1 when some differ, or 2 on error, for CI use; report writes an HTML report per comparison (text or folder) into DIR with the same exit codes; list shows the *.linsync-project files in DIR (default the current directory) with their name and comparison count.
@@ -6629,7 +6752,7 @@ linsync-cli {}
 USAGE:
     linsync-cli archive [--keep-temp] [--json] [--unpacker PLUGIN_ID] LEFT RIGHT
     linsync-cli cache clear [--scope webcompare]
-    linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--save-result FILE] LEFT RIGHT
+    linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--prediffer-conflict-policy chain|first-wins|last-wins] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--image-frames first|all] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--save-result FILE] LEFT RIGHT
     linsync-cli compare3 [--markers|--json] LEFT BASE RIGHT
     linsync-cli conflict [--json] FILE
     linsync-cli completions SHELL

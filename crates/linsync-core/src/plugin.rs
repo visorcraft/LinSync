@@ -48,6 +48,73 @@ pub struct PluginManifest {
     /// renders a settings panel for this plugin.
     #[serde(default)]
     pub options_schema: Vec<PluginOption>,
+    /// Normalization categories this plugin claims (prediffers only), e.g.
+    /// `["whitespace", "timestamps"]`. Two prediffers in a chain that share a
+    /// category "overlap"; the [`PredifferConflictPolicy`] decides which to keep.
+    /// Empty (the default) means the plugin never conflicts with another, so the
+    /// whole chain runs unchanged — existing manifests stay valid and behave
+    /// exactly as before.
+    #[serde(default)]
+    pub normalization_categories: Vec<String>,
+}
+
+/// How to resolve overlapping prediffers in a chain — prediffers that declare
+/// one or more shared [`PluginManifest::normalization_categories`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PredifferConflictPolicy {
+    /// Run every prediffer in the configured order (today's behavior, default).
+    #[default]
+    Chain,
+    /// When two prediffers share a category, keep the first and drop the later
+    /// overlapping one(s).
+    FirstWins,
+    /// When two prediffers share a category, keep the last and drop the earlier
+    /// overlapping one(s).
+    LastWins,
+}
+
+/// Apply a [`PredifferConflictPolicy`] to an ordered, already-resolved prediffer
+/// chain, dropping prediffers whose declared normalization categories overlap an
+/// already-kept prediffer (per the policy). `Chain` returns the chain unchanged.
+///
+/// Order is preserved among the kept prediffers. A prediffer declaring no
+/// categories never conflicts and is always kept.
+pub fn resolve_prediffer_conflicts(
+    chain: &[DiscoveredPlugin],
+    policy: PredifferConflictPolicy,
+) -> Vec<DiscoveredPlugin> {
+    if matches!(policy, PredifferConflictPolicy::Chain) || chain.len() < 2 {
+        return chain.to_vec();
+    }
+
+    // For LastWins, scan from the end so a later prediffer claims its categories
+    // first; then restore the original order for the kept set.
+    let indexed: Vec<usize> = match policy {
+        PredifferConflictPolicy::LastWins => (0..chain.len()).rev().collect(),
+        _ => (0..chain.len()).collect(),
+    };
+
+    let mut claimed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut keep = vec![false; chain.len()];
+    for &idx in &indexed {
+        let categories = &chain[idx].manifest.normalization_categories;
+        // A prediffer with no categories never overlaps; always keep it.
+        let overlaps = categories.iter().any(|c| claimed.contains(c));
+        if !overlaps {
+            keep[idx] = true;
+            for c in categories {
+                claimed.insert(c.clone());
+            }
+        }
+    }
+
+    chain
+        .iter()
+        .enumerate()
+        .filter(|&(idx, _)| keep[idx])
+        .map(|(_, plugin)| plugin.clone())
+        .collect()
 }
 
 /// A single configurable option declared by a plugin manifest.
@@ -475,6 +542,16 @@ pub struct PluginTextOperationOptions {
     /// text-extractor and OCR plugins via `options.language`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Request per-word bounding boxes from an OCR engine (advisory). Plugins
+    /// that support it emit [`PluginOperationOutput::word_positions`]; others
+    /// ignore it and simply return text. Defaults to `false` and is omitted from
+    /// the request JSON when unset, so existing plugins are unaffected.
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub want_positions: bool,
+}
+
+fn is_false_bool(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -515,6 +592,24 @@ pub enum PluginOutputKind {
     VirtualFolder,
 }
 
+/// A single OCR'd word with its bounding box on the rendered page, in
+/// document-resolution pixels (origin top-left). Emitted by OCR-engine plugins
+/// when [`PluginTextOperationOptions::want_positions`] is set, so clients can
+/// overlay per-word diff highlights on the source page. Confidence is the
+/// integer percent Tesseract reports (`0`–`100`), `None` when unknown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordPosition {
+    pub text: String,
+    /// 0-based line index this word belongs to (the OCR reading order).
+    pub line: u32,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<i32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginOperationOutput {
     pub role: String,
@@ -527,6 +622,11 @@ pub struct PluginOperationOutput {
     pub encoding: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_ending: Option<String>,
+    /// Optional per-word bounding boxes (OCR engines only, when positions were
+    /// requested). Grouped per text line; backward-compatible — older plugins
+    /// omit it and it deserializes to `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word_positions: Option<Vec<Vec<WordPosition>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -548,6 +648,9 @@ pub struct PluginTextResult {
     pub encoding: Option<String>,
     pub line_ending: Option<String>,
     pub diagnostics: Vec<PluginDiagnostic>,
+    /// Per-word bounding boxes (grouped per line) when an OCR engine returned
+    /// them; `None` otherwise. See [`WordPosition`].
+    pub word_positions: Option<Vec<Vec<WordPosition>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -825,10 +928,31 @@ pub fn load_plugin_enabled_map(paths: &AppPaths) -> std::collections::HashMap<St
 pub fn resolve_enabled_prediffer(
     paths: &AppPaths,
     candidate_ids: &[String],
+    profile_overrides: Option<&std::collections::BTreeMap<String, bool>>,
 ) -> Option<DiscoveredPlugin> {
-    resolve_enabled_prediffers(paths, candidate_ids)
+    resolve_enabled_prediffers(paths, candidate_ids, profile_overrides)
         .into_iter()
         .next()
+}
+
+/// Resolve a plugin's effective enabled state for a given profile context.
+///
+/// Precedence: a per-profile override (from [`CompareProfile::plugin_enablement`])
+/// wins over the global `plugins.json` map, which wins over the default (`true`,
+/// enabled). Pass an empty map (or rely on the `None` shims at call sites) for
+/// the no-profile context, which then reduces to the global-map behavior.
+///
+/// [`CompareProfile::plugin_enablement`]: crate::profile::CompareProfile::plugin_enablement
+pub fn is_plugin_enabled_for_profile(
+    global_map: &std::collections::HashMap<String, bool>,
+    profile_overrides: &std::collections::BTreeMap<String, bool>,
+    id: &str,
+) -> bool {
+    profile_overrides
+        .get(id)
+        .or_else(|| global_map.get(id))
+        .copied()
+        .unwrap_or(true)
 }
 
 /// Resolve **all** enabled, installed prediffers named in `candidate_ids`, in
@@ -839,12 +963,15 @@ pub fn resolve_enabled_prediffer(
 pub fn resolve_enabled_prediffers(
     paths: &AppPaths,
     candidate_ids: &[String],
+    profile_overrides: Option<&std::collections::BTreeMap<String, bool>>,
 ) -> Vec<DiscoveredPlugin> {
     if candidate_ids.is_empty() {
         return Vec::new();
     }
     let discovery = discover_installed_plugins(paths);
     let enabled = load_plugin_enabled_map(paths);
+    let empty = std::collections::BTreeMap::new();
+    let overrides = profile_overrides.unwrap_or(&empty);
     candidate_ids
         .iter()
         .filter_map(|id| {
@@ -854,7 +981,7 @@ pub fn resolve_enabled_prediffers(
                 .find(|plugin| {
                     plugin.manifest.id == *id
                         && plugin.manifest.classes.contains(&PluginClass::Prediffer)
-                        && enabled.get(id).copied().unwrap_or(true)
+                        && is_plugin_enabled_for_profile(&enabled, overrides, id)
                 })
                 .cloned()
         })
@@ -867,6 +994,7 @@ pub fn resolve_enabled_prediffers(
 pub fn resolve_enabled_virtualizer_for_extension(
     paths: &AppPaths,
     extension: &str,
+    profile_overrides: Option<&std::collections::BTreeMap<String, bool>>,
 ) -> Option<DiscoveredPlugin> {
     let wanted = extension.trim_start_matches('.').to_ascii_lowercase();
     if wanted.is_empty() {
@@ -874,6 +1002,8 @@ pub fn resolve_enabled_virtualizer_for_extension(
     }
     let discovery = discover_installed_plugins(paths);
     let enabled = load_plugin_enabled_map(paths);
+    let empty = std::collections::BTreeMap::new();
+    let overrides = profile_overrides.unwrap_or(&empty);
     discovery
         .plugins
         .iter()
@@ -881,7 +1011,7 @@ pub fn resolve_enabled_virtualizer_for_extension(
             let classes = &plugin.manifest.classes;
             (classes.contains(&PluginClass::FolderVirtualizer)
                 || classes.contains(&PluginClass::Unpacker))
-                && enabled.get(&plugin.manifest.id).copied().unwrap_or(true)
+                && is_plugin_enabled_for_profile(&enabled, overrides, &plugin.manifest.id)
                 && plugin
                     .manifest
                     .extensions
@@ -2104,6 +2234,9 @@ fn parse_text_operation_response(
                     message: "ok response did not include a text output".to_owned(),
                 })?;
 
+            // Capture optional OCR positions before the inline_text/path fields
+            // are moved out below (distinct fields → a partial move is fine).
+            let word_positions = output.word_positions;
             let text = match (output.inline_text, output.path) {
                 (Some(text), None) => text,
                 (None, Some(path)) => read_plugin_text_output(&path, temp_dir, text_output_limit)?,
@@ -2126,6 +2259,7 @@ fn parse_text_operation_response(
                 encoding: output.encoding,
                 line_ending: output.line_ending,
                 diagnostics: response.diagnostics,
+                word_positions,
             })
         }
     }
@@ -3050,6 +3184,110 @@ JSON
     }
 
     #[test]
+    fn is_plugin_enabled_for_profile_precedence() {
+        use std::collections::{BTreeMap, HashMap};
+        let mut global = HashMap::new();
+        global.insert("a".to_owned(), false); // globally disabled
+        global.insert("b".to_owned(), true);
+        let mut overrides = BTreeMap::new();
+        overrides.insert("a".to_owned(), true); // profile re-enables a
+        overrides.insert("c".to_owned(), false); // profile disables c
+
+        // Profile override wins over the global map.
+        assert!(is_plugin_enabled_for_profile(&global, &overrides, "a"));
+        // No override → global map applies.
+        assert!(is_plugin_enabled_for_profile(&global, &overrides, "b"));
+        // Profile override applies even when global is silent.
+        assert!(!is_plugin_enabled_for_profile(&global, &overrides, "c"));
+        // Neither override nor global → default enabled.
+        assert!(is_plugin_enabled_for_profile(
+            &global, &overrides, "unknown"
+        ));
+
+        // Empty maps → everything defaults to enabled.
+        let empty_g = HashMap::new();
+        let empty_o = BTreeMap::new();
+        assert!(is_plugin_enabled_for_profile(
+            &empty_g, &empty_o, "anything"
+        ));
+    }
+
+    fn prediffer_with_categories(id: &str, categories: &[&str]) -> DiscoveredPlugin {
+        let mut manifest = sample_manifest(id);
+        manifest.normalization_categories = categories.iter().map(|c| (*c).to_owned()).collect();
+        discovered(Path::new("/tmp/linsync-conflict-test"), manifest)
+    }
+
+    fn ids(chain: &[DiscoveredPlugin]) -> Vec<String> {
+        chain.iter().map(|p| p.manifest.id.clone()).collect()
+    }
+
+    #[test]
+    fn conflict_policy_chain_keeps_every_prediffer() {
+        let chain = vec![
+            prediffer_with_categories("a", &["whitespace"]),
+            prediffer_with_categories("b", &["whitespace"]),
+        ];
+        let kept = resolve_prediffer_conflicts(&chain, PredifferConflictPolicy::Chain);
+        assert_eq!(ids(&kept), vec!["a", "b"], "Chain keeps everything");
+    }
+
+    #[test]
+    fn conflict_policy_first_wins_drops_later_overlap() {
+        let chain = vec![
+            prediffer_with_categories("a", &["whitespace"]),
+            prediffer_with_categories("b", &["whitespace"]), // overlaps a → dropped
+            prediffer_with_categories("c", &["timestamps"]), // distinct → kept
+        ];
+        let kept = resolve_prediffer_conflicts(&chain, PredifferConflictPolicy::FirstWins);
+        assert_eq!(ids(&kept), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn conflict_policy_last_wins_drops_earlier_overlap() {
+        let chain = vec![
+            prediffer_with_categories("a", &["whitespace"]), // overlaps b → dropped
+            prediffer_with_categories("b", &["whitespace"]),
+            prediffer_with_categories("c", &["timestamps"]),
+        ];
+        let kept = resolve_prediffer_conflicts(&chain, PredifferConflictPolicy::LastWins);
+        // Order among kept prediffers is preserved (b before c).
+        assert_eq!(ids(&kept), vec!["b", "c"]);
+    }
+
+    #[test]
+    fn conflict_policy_keeps_uncategorized_and_disjoint() {
+        let chain = vec![
+            prediffer_with_categories("a", &[]), // no categories → never conflicts
+            prediffer_with_categories("b", &["whitespace"]),
+            prediffer_with_categories("c", &["case"]),
+            prediffer_with_categories("d", &[]), // no categories → kept
+        ];
+        let kept = resolve_prediffer_conflicts(&chain, PredifferConflictPolicy::FirstWins);
+        assert_eq!(ids(&kept), vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn conflict_policy_serde_defaults_to_chain() {
+        // Older profiles without the field deserialize to Chain (no regression).
+        let policy: PredifferConflictPolicy = serde_json::from_str("\"chain\"").unwrap();
+        assert_eq!(policy, PredifferConflictPolicy::Chain);
+        assert_eq!(
+            PredifferConflictPolicy::default(),
+            PredifferConflictPolicy::Chain
+        );
+        // And a manifest without normalization_categories loads with an empty vec.
+        let manifest: PluginManifest = serde_json::from_str(
+            r#"{"id":"x","name":"X","version":"1","license":"MIT","entry":["x"],
+                "classes":["prediffer"],"mime_types":[],"extensions":[],"capabilities":[],
+                "deterministic":true,
+                "sandbox":{"network":false,"writes_input":false,"requires_home_access":false}}"#,
+        )
+        .unwrap();
+        assert!(manifest.normalization_categories.is_empty());
+    }
+
+    #[test]
     fn run_prediffer_chain_threads_stages() {
         let fixture = TempFixture::new();
         // Stage 1 lowercases; stage 2 strips digits. "HELLO123" -> "hello".
@@ -3081,6 +3319,135 @@ JSON
             run_prediffer_chain(&[], "left", &input, &PluginExecutionOptions::default()),
             None
         );
+    }
+
+    #[test]
+    fn conflict_policy_changes_text_compare_outcome_end_to_end() {
+        // Two prediffers declaring the SAME normalization category (so they
+        // overlap): `collapse` maps every letter to 'Z'; `identity` leaves text
+        // unchanged. The chosen policy decides which one runs, which changes
+        // whether "a" vs "b" compares equal — proving the policy is applied in
+        // the real compare path, not just in the isolated resolver unit tests.
+        let fixture = TempFixture::new();
+        let collapse_dir = fixture.path.join("plugins/collapse");
+        fs::create_dir_all(&collapse_dir).unwrap();
+        write_transform_prediffer(&collapse_dir, "tr 'a-z' 'Z'");
+        let mut collapse = sample_manifest("example.collapse");
+        collapse.entry = vec!["prediff.sh".to_owned()];
+        collapse.normalization_categories = vec!["case".to_owned()];
+
+        let identity_dir = fixture.path.join("plugins/identity");
+        fs::create_dir_all(&identity_dir).unwrap();
+        write_transform_prediffer(&identity_dir, "tr 'q' 'q'");
+        let mut identity = sample_manifest("example.identity");
+        identity.entry = vec!["prediff.sh".to_owned()];
+        identity.normalization_categories = vec!["case".to_owned()];
+
+        let left = fixture.path.join("left.txt");
+        let right = fixture.path.join("right.txt");
+        fs::write(&left, "a").unwrap();
+        fs::write(&right, "b").unwrap();
+
+        // Chain order is [collapse, identity]; both declare "case".
+        let chain = vec![
+            discovered(&collapse_dir, collapse),
+            discovered(&identity_dir, identity),
+        ];
+        let exec = PluginExecutionOptions::default();
+
+        let run = |policy| {
+            let opts = crate::text::TextCompareOptions {
+                prediffer_conflict_policy: policy,
+                ..crate::text::TextCompareOptions::default()
+            };
+            crate::text::compare_text_files_with_prediffer_chain(
+                &left, &right, &opts, &chain, &exec,
+            )
+            .unwrap()
+            .is_equal()
+        };
+
+        // FirstWins keeps `collapse` (drops the overlapping `identity`): both
+        // sides collapse to "Z" → equal.
+        assert!(
+            run(PredifferConflictPolicy::FirstWins),
+            "FirstWins keeps the first overlapping prediffer (collapse) → equal"
+        );
+        // LastWins keeps `identity` (drops `collapse`): "a" vs "b" stay distinct.
+        assert!(
+            !run(PredifferConflictPolicy::LastWins),
+            "LastWins keeps the last overlapping prediffer (identity) → differ"
+        );
+        // Chain runs both in order (collapse then identity) → both "Z" → equal.
+        assert!(
+            run(PredifferConflictPolicy::Chain),
+            "Chain runs every prediffer → equal"
+        );
+    }
+
+    #[test]
+    fn resolve_enabled_prediffers_respects_profile_override() {
+        // A prediffer installed + globally enabled is still skipped when the
+        // active profile's override disables it — the mechanism the GUI archive
+        // and text auto-routing paths rely on.
+        let fixture = TempFixture::new();
+        let paths = AppPaths {
+            config_dir: fixture.path.join("config"),
+            data_dir: fixture.path.join("data"),
+            cache_dir: fixture.path.join("cache"),
+            state_dir: fixture.path.join("state"),
+            log_file: fixture.path.join("state/linsync.log"),
+        };
+        // Install the prediffer under the user plugins dir (data_dir/plugins).
+        let plugin_dir = paths.user_plugins_dir().join("example.norm");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        write_transform_prediffer(&plugin_dir, "tr 'A-Z' 'a-z'");
+        let mut manifest = sample_manifest("example.norm");
+        manifest.entry = vec!["prediff.sh".to_owned()];
+        write_manifest(&plugin_dir, &manifest);
+
+        let ids = vec!["example.norm".to_owned()];
+
+        // No override → resolves (installed + globally enabled by default).
+        assert_eq!(
+            resolve_enabled_prediffers(&paths, &ids, None).len(),
+            1,
+            "the prediffer resolves with no override"
+        );
+
+        // Profile override disabling it → skipped.
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert("example.norm".to_owned(), false);
+        assert!(
+            resolve_enabled_prediffers(&paths, &ids, Some(&overrides)).is_empty(),
+            "a per-profile disable override skips the prediffer"
+        );
+    }
+
+    #[test]
+    fn word_position_confidence_is_optional() {
+        // OCR engines may omit per-word confidence; it must deserialize to None
+        // and a mixed-presence output must round-trip without losing positions.
+        let with: WordPosition = serde_json::from_str(
+            r#"{"text":"x","line":0,"x":1,"y":2,"width":3,"height":4,"confidence":88}"#,
+        )
+        .unwrap();
+        assert_eq!(with.confidence, Some(88));
+        let without: WordPosition =
+            serde_json::from_str(r#"{"text":"y","line":0,"x":1,"y":2,"width":3,"height":4}"#)
+                .unwrap();
+        assert_eq!(without.confidence, None);
+
+        let output: PluginOperationOutput = serde_json::from_str(
+            r#"{"role":"left","kind":"text","inline_text":"x y","word_positions":[[
+                {"text":"x","line":0,"x":0,"y":0,"width":1,"height":1},
+                {"text":"y","line":0,"x":2,"y":0,"width":1,"height":1,"confidence":50}
+            ]]}"#,
+        )
+        .unwrap();
+        let words = output.word_positions.expect("positions present");
+        assert_eq!(words[0][0].confidence, None);
+        assert_eq!(words[0][1].confidence, Some(50));
     }
 
     #[test]
@@ -3583,6 +3950,7 @@ emit '{"index":1,"msg":"bbbbbbbbbb"}'
             sandbox: PluginSandbox::default(),
             streaming: false,
             options_schema: vec![],
+            normalization_categories: vec![],
         }
     }
 

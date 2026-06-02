@@ -85,7 +85,7 @@ pub struct RenderedPageSummary {
 }
 
 /// Result produced by a document compare.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentCompareResult {
     /// Displayable name of the helper that extracted the left side (e.g. `"pdftotext"`).
     pub left_extractor: String,
@@ -95,6 +95,14 @@ pub struct DocumentCompareResult {
     pub text_result: Option<crate::text::TextCompareResult>,
     /// Per-page image comparison (only populated when `mode` is `Rendered`).
     pub rendered_pages: Vec<RenderedPageSummary>,
+    /// Per-word OCR bounding boxes for the left side (grouped per line), when
+    /// `mode` is `OcrText` and the OCR engine returned positions. `None`
+    /// otherwise. Lets a client overlay per-word diff highlights on the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_word_positions: Option<Vec<Vec<crate::plugin::WordPosition>>>,
+    /// Per-word OCR bounding boxes for the right side; see `left_word_positions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_word_positions: Option<Vec<Vec<crate::plugin::WordPosition>>>,
 }
 
 impl DocumentCompareResult {
@@ -108,6 +116,75 @@ impl DocumentCompareResult {
         }
         true
     }
+
+    /// Render a standalone HTML report of this document comparison so a saved
+    /// result can be re-rendered by `report --from-json`.
+    ///
+    /// For `Text`/`OcrText` mode the meaningful artifact is the line-level text
+    /// diff, so this reuses the (already fixture-tested) text-engine report. For
+    /// `Rendered` mode it emits a per-page summary table with the extractor
+    /// attribution (the page rasters themselves are not part of the result).
+    pub fn to_html_report(&self) -> String {
+        if let Some(text) = &self.text_result {
+            return text.to_html_report();
+        }
+
+        let mut html = String::new();
+        html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">\n");
+        html.push_str("<title>LinSync document report</title>\n");
+        html.push_str(
+            "<style>\n\
+             body{font-family:system-ui,sans-serif;margin:1.5rem;}\n\
+             table{border-collapse:collapse;margin-top:0.5rem;}\n\
+             td,th{border:1px solid #ccc;padding:2px 6px;font-family:monospace;text-align:left;}\n\
+             .equal{color:#1a7f37;}\n\
+             .diff{color:#b00020;}\n\
+             </style>\n</head><body>\n",
+        );
+        html.push_str("<h1>LinSync document report</h1>\n");
+        html.push_str(&format!(
+            "<p>Rendered via {} (left) / {} (right).</p>\n",
+            escape_document_html(&self.left_extractor),
+            escape_document_html(&self.right_extractor)
+        ));
+        let differing = self.rendered_pages.iter().filter(|p| !p.equal).count();
+        let status = if self.is_equal() {
+            "<span class=\"equal\">equal</span>"
+        } else {
+            "<span class=\"diff\">different</span>"
+        };
+        html.push_str(&format!(
+            "<p>Result: {status} — {} of {} page(s) differ.</p>\n",
+            differing,
+            self.rendered_pages.len()
+        ));
+        html.push_str("<table>\n<thead><tr><th>Page</th><th>Status</th><th>Diff ratio</th><th>Differing pixels</th></tr></thead>\n<tbody>\n");
+        for page in &self.rendered_pages {
+            let (class, label) = if page.one_sided {
+                ("diff", "one-sided".to_owned())
+            } else if page.equal {
+                ("equal", "equal".to_owned())
+            } else {
+                ("diff", "different".to_owned())
+            };
+            html.push_str(&format!(
+                "<tr><td>{}</td><td class=\"{class}\">{label}</td><td>{:.4}%</td><td>{}</td></tr>\n",
+                page.page + 1,
+                page.diff_ratio * 100.0,
+                page.differing_pixels
+            ));
+        }
+        html.push_str("</tbody></table>\n</body></html>\n");
+        html
+    }
+}
+
+/// Minimal HTML escaper for the few attribution strings rendered above.
+fn escape_document_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Error returned when a document compare fails.
@@ -232,15 +309,20 @@ fn extractor_name(plugin: &DiscoveredPlugin) -> String {
         .unwrap_or_else(|| plugin.manifest.id.clone())
 }
 
-/// Extract text from one side using the discovered plugin.
+/// Extract text from one side using the discovered plugin. When `want_positions`
+/// is set (OCR mode), also returns the per-word bounding boxes the engine
+/// reported (`None` when it returned none).
+type ExtractedText = (String, Option<Vec<Vec<crate::plugin::WordPosition>>>);
+
 fn extract_text_with_plugin(
     plugin: &DiscoveredPlugin,
     path: &Path,
     role: &str,
     timeout_secs: u64,
     language: &str,
+    want_positions: bool,
     temp_root: Option<&Path>,
-) -> Result<String, DocumentCompareError> {
+) -> Result<ExtractedText, DocumentCompareError> {
     let opts = PluginExecutionOptions {
         timeout: Duration::from_secs(timeout_secs),
         temp_root: temp_root.map(Path::to_path_buf),
@@ -248,6 +330,7 @@ fn extract_text_with_plugin(
     };
     let operation_options = PluginTextOperationOptions {
         language: Some(language.to_owned()),
+        want_positions,
         ..PluginTextOperationOptions::default()
     };
     let input = PluginInputDescriptor::for_file(role, path);
@@ -258,7 +341,7 @@ fn extract_text_with_plugin(
         &operation_options,
         &opts,
     )?;
-    Ok(text_result.text)
+    Ok((text_result.text, text_result.word_positions))
 }
 
 /// Compare two document files using the appropriate helper plugin.
@@ -298,20 +381,25 @@ pub fn compare_document_files(
     let right_name = extractor_name(&right_plugin);
 
     let temp_root = options.temp_root.as_deref();
-    let left_text = extract_text_with_plugin(
+    // Request per-word positions only for OCR mode (the only path that can
+    // produce them); text extractors ignore the flag.
+    let want_positions = matches!(options.mode, DocumentCompareMode::OcrText);
+    let (left_text, left_word_positions) = extract_text_with_plugin(
         &left_plugin,
         left,
         "left",
         options.timeout_secs,
         &options.ocr_language,
+        want_positions,
         temp_root,
     )?;
-    let right_text = extract_text_with_plugin(
+    let (right_text, right_word_positions) = extract_text_with_plugin(
         &right_plugin,
         right,
         "right",
         options.timeout_secs,
         &options.ocr_language,
+        want_positions,
         temp_root,
     )?;
 
@@ -334,6 +422,8 @@ pub fn compare_document_files(
         right_extractor: right_name,
         text_result: Some(text_result),
         rendered_pages: Vec::new(),
+        left_word_positions,
+        right_word_positions,
     })
 }
 
@@ -460,6 +550,8 @@ fn compare_document_rendered(
         right_extractor: name,
         text_result: None,
         rendered_pages,
+        left_word_positions: None,
+        right_word_positions: None,
     })
 }
 
@@ -475,6 +567,95 @@ fn compare_document_rendered(
         path: left.display().to_string(),
         mime_hint: "rendered mode requires the image-compare feature".to_owned(),
     })
+}
+
+#[cfg(test)]
+mod roundtrip_tests {
+    use super::*;
+    use crate::text::{TextCompareOptions, compare_text};
+
+    fn text_mode_result() -> DocumentCompareResult {
+        let text = compare_text(
+            "left.pdf",
+            "alpha\nbeta\n",
+            "right.pdf",
+            "alpha\nBETA\n",
+            &TextCompareOptions::default(),
+        );
+        DocumentCompareResult {
+            left_extractor: "pdftotext".to_owned(),
+            right_extractor: "pdftotext".to_owned(),
+            text_result: Some(text),
+            rendered_pages: Vec::new(),
+            left_word_positions: None,
+            right_word_positions: None,
+        }
+    }
+
+    fn rendered_mode_result() -> DocumentCompareResult {
+        DocumentCompareResult {
+            left_extractor: "pdftoppm".to_owned(),
+            right_extractor: "pdftoppm".to_owned(),
+            text_result: None,
+            left_word_positions: None,
+            right_word_positions: None,
+            rendered_pages: vec![
+                RenderedPageSummary {
+                    page: 0,
+                    equal: true,
+                    diff_ratio: 0.0,
+                    differing_pixels: 0,
+                    one_sided: false,
+                },
+                RenderedPageSummary {
+                    page: 1,
+                    equal: false,
+                    diff_ratio: 0.25,
+                    differing_pixels: 42,
+                    one_sided: false,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn document_result_json_round_trips_text_mode() {
+        let result = text_mode_result();
+        let json = serde_json::to_string(&result).unwrap();
+        let back: DocumentCompareResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.left_extractor, "pdftotext");
+        assert!(back.text_result.is_some());
+        assert_eq!(back.is_equal(), result.is_equal());
+        assert!(!back.is_equal(), "the BETA line differs");
+    }
+
+    #[test]
+    fn document_result_json_round_trips_rendered_mode() {
+        let result = rendered_mode_result();
+        let json = serde_json::to_string(&result).unwrap();
+        let back: DocumentCompareResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.rendered_pages.len(), 2);
+        assert!(back.text_result.is_none());
+        assert!(!back.is_equal());
+        assert_eq!(back.rendered_pages[1].differing_pixels, 42);
+    }
+
+    #[test]
+    fn text_mode_report_reuses_text_engine_report() {
+        let html = text_mode_result().to_html_report();
+        assert!(html.contains("<html"));
+        // The text-engine report carries the changed content.
+        assert!(html.contains("BETA") || html.contains("beta"));
+    }
+
+    #[test]
+    fn rendered_mode_report_lists_pages_and_extractor() {
+        let html = rendered_mode_result().to_html_report();
+        assert!(html.contains("LinSync document report"));
+        assert!(html.contains("pdftoppm"), "extractor attribution rendered");
+        assert!(html.contains("different"), "the differing page is flagged");
+        assert!(html.contains("Page"), "per-page table header");
+    }
 }
 
 #[cfg(all(test, feature = "image-compare"))]

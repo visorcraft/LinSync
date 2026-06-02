@@ -130,6 +130,66 @@ fn document_compare_different_pdfs_exit_1() {
 }
 
 #[test]
+fn document_save_result_then_report_from_json_round_trips() {
+    if !tools_available(&["pdftotext", "bash"]) {
+        eprintln!("SKIP: pdftotext or bash not on PATH");
+        return;
+    }
+    build_fixtures();
+
+    let left = document_fixture_dir().join("simple.pdf");
+    let right = document_fixture_dir().join("simple-changed.pdf");
+    let tmp = std::env::temp_dir().join(format!("linsync-doc-rt-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let saved = tmp.join("result.json");
+    let report = tmp.join("report.html");
+
+    let out = Command::new(cli_bin())
+        .args([
+            "compare",
+            "--type",
+            "document",
+            "--quiet",
+            "--save-result",
+            saved.to_str().unwrap(),
+            left.to_str().unwrap(),
+            right.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run linsync-cli");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "different documents exit 1; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&saved).unwrap()).expect("valid envelope JSON");
+    assert_eq!(envelope["kind"], serde_json::json!("document"));
+    assert_eq!(envelope["schema_version"], serde_json::json!(1));
+
+    let report_out = Command::new(cli_bin())
+        .args([
+            "report",
+            "--from-json",
+            saved.to_str().unwrap(),
+            "--output",
+            report.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run linsync-cli report");
+    assert_eq!(
+        report_out.status.code(),
+        Some(1),
+        "report exit mirrors result equality (different => 1)"
+    );
+    let html = std::fs::read_to_string(&report).expect("report written");
+    assert!(html.contains("<html"), "an HTML report was produced");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
 fn document_compare_invalid_page_range_rejected() {
     // Pure arg validation — needs no external tools or fixtures.
     let out = Command::new(cli_bin())

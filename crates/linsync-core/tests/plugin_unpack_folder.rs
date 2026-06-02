@@ -43,6 +43,7 @@ fn build_test_manifest_for_executable(script: &Path) -> PluginManifest {
         sandbox: PluginSandbox::default(),
         streaming: false,
         options_schema: vec![],
+        normalization_categories: vec![],
     }
 }
 

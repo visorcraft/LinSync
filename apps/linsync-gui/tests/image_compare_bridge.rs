@@ -107,9 +107,14 @@ fn image_formats_response_matches_compiled_decoder_features() {
     assert!(globs.contains(&"*.webp"));
     assert!(globs.contains(&"*.tif"));
     assert!(globs.contains(&"*.tiff"));
+    // GIF (animation) and HDR/EXR decoders are now compiled in; BMP is still off.
+    assert!(labels.contains(&"GIF"));
+    assert!(globs.contains(&"*.gif"));
+    assert!(globs.contains(&"*.hdr"));
+    assert!(globs.contains(&"*.exr"));
     assert!(
-        !globs.contains(&"*.bmp") && !globs.contains(&"*.gif"),
-        "the default build does not enable BMP/GIF decoders, so the UI must not advertise them"
+        !globs.contains(&"*.bmp"),
+        "the BMP decoder is not enabled, so the UI must not advertise it"
     );
 }
 

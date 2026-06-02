@@ -24,6 +24,12 @@ image = { version = "0.25", default-features = false, features = [
     "jpeg",
     "webp",
     "tiff",
+    # Animation (GIF, plus the APNG/animated-WebP frame iterators) and HDR
+    # decoders for the advanced image-compare modes. All license-clean under
+    # deny.toml (gif: MIT/Apache-2.0; exr: BSD-3-Clause; hdr: built-in).
+    "gif",
+    "hdr",
+    "exr",
 ] }
 lab = "0.11"
 libc = "0.2"

@@ -4,8 +4,8 @@
 mod image_compare_tests {
     use ::image::{ImageBuffer, Rgba, RgbaImage};
     use linsync_core::image::{
-        ImageCompareError, ImageCompareMode, ImageCompareOptions, ImageCompareResult,
-        compare_images, compare_images_streaming,
+        FrameCompareMode, ImageCompareError, ImageCompareMode, ImageCompareOptions,
+        ImageCompareResult, compare_images, compare_images_streaming,
     };
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -53,11 +53,14 @@ mod image_compare_tests {
     #[test]
     fn tolerance_mode_builder_round_trip() {
         let opts = ImageCompareOptions {
-            mode: ImageCompareMode::Tolerance(10),
+            mode: ImageCompareMode::Tolerance { tolerance: 10 },
             tolerance: 10,
             ..ImageCompareOptions::default()
         };
-        assert!(matches!(opts.mode, ImageCompareMode::Tolerance(10)));
+        assert!(matches!(
+            opts.mode,
+            ImageCompareMode::Tolerance { tolerance: 10 }
+        ));
     }
 
     #[test]
@@ -85,6 +88,10 @@ mod image_compare_tests {
             overlay: Vec::new(),
             padded: false,
             diff_regions: Vec::new(),
+            color_type_left: None,
+            color_type_right: None,
+            frame_count: None,
+            per_frame_summaries: Vec::new(),
         };
         assert!(result.equal);
         assert_eq!(result.differing_pixels, 0);
@@ -191,7 +198,7 @@ mod image_compare_tests {
         let left = save_png(&dir, "left.png", &red);
         let right = save_png(&dir, "right.png", &slightly_off);
         let opts = ImageCompareOptions {
-            mode: ImageCompareMode::Tolerance(0),
+            mode: ImageCompareMode::Tolerance { tolerance: 0 },
             ..ImageCompareOptions::default()
         };
         let result = compare_images(&left, &right, &opts).unwrap();
@@ -207,7 +214,7 @@ mod image_compare_tests {
         let left = save_png(&dir, "left.png", &red);
         let right = save_png(&dir, "right.png", &slightly_off);
         let opts = ImageCompareOptions {
-            mode: ImageCompareMode::Tolerance(1),
+            mode: ImageCompareMode::Tolerance { tolerance: 1 },
             tolerance: 1,
             ..ImageCompareOptions::default()
         };
@@ -225,7 +232,7 @@ mod image_compare_tests {
         let right = save_png(&dir, "right.png", &shifted);
 
         let opts_strict = ImageCompareOptions {
-            mode: ImageCompareMode::Tolerance(4),
+            mode: ImageCompareMode::Tolerance { tolerance: 4 },
             tolerance: 4,
             ..ImageCompareOptions::default()
         };
@@ -233,7 +240,7 @@ mod image_compare_tests {
         assert!(!strict.equal, "delta=5 exceeds tolerance=4");
 
         let opts_loose = ImageCompareOptions {
-            mode: ImageCompareMode::Tolerance(5),
+            mode: ImageCompareMode::Tolerance { tolerance: 5 },
             tolerance: 5,
             ..ImageCompareOptions::default()
         };
@@ -249,7 +256,7 @@ mod image_compare_tests {
         let left = save_png(&dir, "left.png", &black);
         let right = save_png(&dir, "right.png", &white);
         let opts = ImageCompareOptions {
-            mode: ImageCompareMode::Tolerance(255),
+            mode: ImageCompareMode::Tolerance { tolerance: 255 },
             tolerance: 255,
             ..ImageCompareOptions::default()
         };
@@ -348,5 +355,158 @@ mod image_compare_tests {
         assert!(!result.equal);
         assert_eq!(result.differing_pixels, 1);
         assert_eq!(result.diff_bbox, Some((63, 63, 63, 63)));
+    }
+
+    #[test]
+    fn frame_mode_defaults_to_first_frame() {
+        // Backward compatibility: existing callers/profiles see FirstFrame.
+        assert_eq!(
+            ImageCompareOptions::default().frame_mode,
+            FrameCompareMode::FirstFrame
+        );
+    }
+
+    #[test]
+    fn color_type_metadata_is_reported() {
+        let dir = TempDir::new().unwrap();
+        let img: RgbaImage = ImageBuffer::from_pixel(4, 4, Rgba([1, 2, 3, 255]));
+        let left = save_png(&dir, "l.png", &img);
+        let right = save_png(&dir, "r.png", &img);
+        let result = compare_images(&left, &right, &ImageCompareOptions::default()).unwrap();
+        assert_eq!(result.color_type_left.as_deref(), Some("Rgba8"));
+        assert_eq!(result.color_type_right.as_deref(), Some("Rgba8"));
+    }
+
+    fn write_two_frame_gif(dir: &TempDir, name: &str, f0: &RgbaImage, f1: &RgbaImage) -> PathBuf {
+        use ::image::codecs::gif::GifEncoder;
+        use ::image::{Delay, Frame};
+        let path = dir.path().join(name);
+        let file = std::fs::File::create(&path).unwrap();
+        let mut encoder = GifEncoder::new(file);
+        let delay = Delay::from_numer_denom_ms(100, 1);
+        encoder
+            .encode_frame(Frame::from_parts(f0.clone(), 0, 0, delay))
+            .unwrap();
+        encoder
+            .encode_frame(Frame::from_parts(f1.clone(), 0, 0, delay))
+            .unwrap();
+        drop(encoder);
+        path
+    }
+
+    #[test]
+    fn all_frames_mode_compares_every_frame() {
+        let dir = TempDir::new().unwrap();
+        let red: RgbaImage = ImageBuffer::from_pixel(8, 8, Rgba([255, 0, 0, 255]));
+        let green: RgbaImage = ImageBuffer::from_pixel(8, 8, Rgba([0, 255, 0, 255]));
+        let blue: RgbaImage = ImageBuffer::from_pixel(8, 8, Rgba([0, 0, 255, 255]));
+        // Both share frame 0 (red); frame 1 differs (green vs blue).
+        let left = write_two_frame_gif(&dir, "left.gif", &red, &green);
+        let right = write_two_frame_gif(&dir, "right.gif", &red, &blue);
+
+        // FirstFrame (default) only looks at frame 0 → equal, no per-frame data.
+        let first = compare_images(&left, &right, &ImageCompareOptions::default()).unwrap();
+        assert!(first.equal, "the first frames are identical");
+        assert!(first.per_frame_summaries.is_empty());
+        assert_eq!(first.frame_count, None);
+
+        // AllFrames compares both frames → differs, with a per-frame breakdown.
+        let opts = ImageCompareOptions {
+            frame_mode: FrameCompareMode::AllFrames,
+            ..ImageCompareOptions::default()
+        };
+        let all = compare_images(&left, &right, &opts).unwrap();
+        assert_eq!(all.frame_count, Some(2), "two frames per side");
+        assert_eq!(all.per_frame_summaries.len(), 2);
+        assert!(all.per_frame_summaries[0].equal, "frame 0 (red) matches");
+        assert!(
+            !all.per_frame_summaries[1].equal,
+            "frame 1 (green vs blue) differs"
+        );
+        assert!(!all.equal, "overall different because a frame differs");
+    }
+
+    #[test]
+    fn all_frames_flags_frame_count_mismatch() {
+        let dir = TempDir::new().unwrap();
+        let red: RgbaImage = ImageBuffer::from_pixel(8, 8, Rgba([255, 0, 0, 255]));
+        let green: RgbaImage = ImageBuffer::from_pixel(8, 8, Rgba([0, 255, 0, 255]));
+        let two_frame = write_two_frame_gif(&dir, "two.gif", &red, &green);
+        // A single-frame PNG vs a two-frame GIF: frame 1 is one-sided.
+        let single = save_png(&dir, "single.png", &red);
+        let opts = ImageCompareOptions {
+            frame_mode: FrameCompareMode::AllFrames,
+            ..ImageCompareOptions::default()
+        };
+        let result = compare_images(&single, &two_frame, &opts).unwrap();
+        assert_eq!(result.frame_count, Some(2));
+        assert!(
+            result.per_frame_summaries[1].one_sided,
+            "extra frame is one-sided"
+        );
+        // The one-sided frame's full pixel count is counted as differing (8x8),
+        // and folded into the aggregate rather than silently dropped.
+        assert_eq!(
+            result.per_frame_summaries[1].differing_pixels, 64,
+            "a one-sided 8x8 frame counts all 64 pixels as differing"
+        );
+        assert!(
+            result.differing_pixels >= 64,
+            "the one-sided frame's pixels are included in the aggregate"
+        );
+        assert!(!result.equal);
+    }
+
+    #[test]
+    fn hdr_files_decode_and_report_float_color_type() {
+        use ::image::{DynamicImage, ImageBuffer, Rgb};
+        let dir = TempDir::new().unwrap();
+        // Two identical Radiance-HDR images (32-bit float) — exercises the newly
+        // enabled `hdr` decoder and the color-type metadata for an HDR source.
+        let make = |name: &str| {
+            let buf: ImageBuffer<Rgb<f32>, Vec<f32>> =
+                ImageBuffer::from_pixel(4, 4, Rgb([0.5f32, 0.25, 0.125]));
+            let path = dir.path().join(name);
+            DynamicImage::ImageRgb32F(buf)
+                .save(&path)
+                .expect("encode .hdr");
+            path
+        };
+        let left = make("a.hdr");
+        let right = make("b.hdr");
+        let result = compare_images(&left, &right, &ImageCompareOptions::default()).unwrap();
+        assert!(result.equal, "identical HDR images compare equal");
+        let ct = result.color_type_left.as_deref().unwrap_or("");
+        assert!(
+            ct.contains("32F"),
+            "HDR decodes to a 32-bit float color type, got {ct:?}"
+        );
+    }
+
+    #[test]
+    fn all_frames_dimension_mismatch_marks_padded() {
+        // Two 2-frame animations of different sizes (GIF coalesces every frame
+        // to the logical-screen size, so per-frame dims are uniform within a
+        // file): AllFrames must report padded=true and not-equal. This also
+        // covers the per-frame-pair padding path feeding the overall flag.
+        let dir = TempDir::new().unwrap();
+        let small_a: RgbaImage = ImageBuffer::from_pixel(8, 8, Rgba([10, 20, 30, 255]));
+        let small_b: RgbaImage = ImageBuffer::from_pixel(8, 8, Rgba([40, 50, 60, 255]));
+        let big_a: RgbaImage = ImageBuffer::from_pixel(12, 12, Rgba([10, 20, 30, 255]));
+        let big_b: RgbaImage = ImageBuffer::from_pixel(12, 12, Rgba([40, 50, 60, 255]));
+        let left = write_two_frame_gif(&dir, "left.gif", &small_a, &small_b);
+        let right = write_two_frame_gif(&dir, "right.gif", &big_a, &big_b);
+
+        let opts = ImageCompareOptions {
+            frame_mode: FrameCompareMode::AllFrames,
+            ..ImageCompareOptions::default()
+        };
+        let result = compare_images(&left, &right, &opts).unwrap();
+        assert_eq!(result.frame_count, Some(2));
+        assert!(
+            result.padded,
+            "different animation dimensions must set padded=true"
+        );
+        assert!(!result.equal, "size-mismatched frames make the pair differ");
     }
 }

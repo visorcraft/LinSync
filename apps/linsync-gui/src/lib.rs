@@ -65,7 +65,7 @@ fn error_json(message: impl Into<String>) -> String {
 fn image_mode_label(mode: &linsync_core::ImageCompareMode) -> &'static str {
     match mode {
         linsync_core::ImageCompareMode::Exact => "exact",
-        linsync_core::ImageCompareMode::Tolerance(_) => "tolerance",
+        linsync_core::ImageCompareMode::Tolerance { .. } => "tolerance",
         linsync_core::ImageCompareMode::Perceptual => "perceptual",
     }
 }
@@ -124,11 +124,11 @@ pub fn image_compare_bridge_response_with_profile(
         .unwrap_or(false);
 
     let mode = match mode_str.as_deref() {
-        Some("tolerance") => ImageCompareMode::Tolerance(
-            image_query_param(query, "tolerance")
+        Some("tolerance") => ImageCompareMode::Tolerance {
+            tolerance: image_query_param(query, "tolerance")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(profile_options.tolerance),
-        ),
+        },
         Some("perceptual") => ImageCompareMode::Perceptual,
         Some("exact") => ImageCompareMode::Exact,
         Some(_) | None => profile_options.mode.clone(),
@@ -139,11 +139,17 @@ pub fn image_compare_bridge_response_with_profile(
     let delta_e = image_query_param(query, "delta_e")
         .and_then(|v| v.parse().ok())
         .unwrap_or(profile_options.delta_e_threshold);
+    let frame_mode = match image_query_param(query, "frames").as_deref() {
+        Some("all") => linsync_core::FrameCompareMode::AllFrames,
+        Some("first") => linsync_core::FrameCompareMode::FirstFrame,
+        _ => profile_options.frame_mode,
+    };
 
     let opts = ImageCompareOptions {
         mode,
         tolerance,
         delta_e_threshold: delta_e,
+        frame_mode,
         ..profile_options.clone()
     };
 
@@ -172,6 +178,17 @@ pub fn image_compare_bridge_response_with_profile(
         "padded": result.padded,
         "diff_regions": result.diff_regions,
     });
+    if let Some(ct) = &result.color_type_left {
+        json["color_type_left"] = serde_json::Value::String(ct.clone());
+    }
+    if let Some(ct) = &result.color_type_right {
+        json["color_type_right"] = serde_json::Value::String(ct.clone());
+    }
+    if let Some(count) = result.frame_count {
+        json["frame_count"] = serde_json::json!(count);
+        json["per_frame_summaries"] =
+            serde_json::to_value(&result.per_frame_summaries).unwrap_or_default();
+    }
 
     if let Some(uri) = overlay_path_uri {
         json["overlay_path"] = serde_json::Value::String(uri);
@@ -407,6 +424,18 @@ pub fn document_compare_bridge_response_with_profile(
     }
     if let Some(ref rt) = right_text {
         json["right_text"] = serde_json::Value::String(rt.clone());
+    }
+    // OCR word boxes (when the engine returned them) so the page can overlay
+    // per-word highlights on the source. Omitted when absent.
+    if let Some(ref pos) = result.left_word_positions
+        && let Ok(value) = serde_json::to_value(pos)
+    {
+        json["left_word_positions"] = value;
+    }
+    if let Some(ref pos) = result.right_word_positions
+        && let Ok(value) = serde_json::to_value(pos)
+    {
+        json["right_word_positions"] = value;
     }
 
     json_with_schema(json)
@@ -707,6 +736,7 @@ pub mod test_support {
             sandbox: PluginSandbox::default(),
             streaming: false,
             options_schema: vec![],
+            normalization_categories: vec![],
         };
         let text = serde_json::to_string_pretty(&manifest).unwrap();
         std::fs::write(plugin_dir.join(PLUGIN_MANIFEST_FILE), text).unwrap();

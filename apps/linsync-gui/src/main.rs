@@ -2037,6 +2037,22 @@ fn folder_tab_cancellable(
     })
 }
 
+/// The active profile's per-plugin enable/disable overrides, or an empty map
+/// when no user profile is selected (a built-in or no active profile has no
+/// overrides). Threaded into plugin resolution so a profile that disables a
+/// plugin is honored in the GUI exactly as in the CLI.
+fn active_profile_plugin_overrides(paths: &AppPaths) -> std::collections::BTreeMap<String, bool> {
+    let store =
+        ProfileStore::with_builtins(paths.profiles_dir(), paths.active_profile_pointer_file());
+    match store.load_active_pointer() {
+        Ok(Some(id)) => store
+            .load(&id)
+            .map(|profile| profile.plugin_enablement)
+            .unwrap_or_default(),
+        _ => std::collections::BTreeMap::new(),
+    }
+}
+
 /// If `left` and `right` are two files of the same archive extension for which
 /// an *enabled* unpacker/virtualizer plugin is installed, return that plugin.
 /// This is what lets the GUI auto-route an archive pair to a folder-style diff.
@@ -2059,7 +2075,8 @@ fn archive_pair_unpacker(
     if right_ext.as_deref() != Some(ext.as_str()) {
         return None;
     }
-    linsync_core::resolve_enabled_virtualizer_for_extension(paths, &ext)
+    let overrides = active_profile_plugin_overrides(paths);
+    linsync_core::resolve_enabled_virtualizer_for_extension(paths, &ext, Some(&overrides))
 }
 
 /// Compare two archives via `plugin` (unpack + nested recursion one level) and
@@ -2299,6 +2316,10 @@ fn try_prediffer_compare(
 ) -> Option<TextCompareResult> {
     let paths = linsync_core::paths::AppPaths::from_env();
     let discovery = discover_installed_plugins(&paths);
+    // Honor plugin enablement: a prediffer disabled globally (plugins.json) or
+    // by the active profile's per-plugin override must not auto-apply.
+    let global_enabled = linsync_core::load_plugin_enabled_map(&paths);
+    let overrides = active_profile_plugin_overrides(&paths);
     let ext = left
         .extension()
         .or_else(|| right.extension())?
@@ -2306,6 +2327,11 @@ fn try_prediffer_compare(
         .to_lowercase();
     let matched = discovery.plugins.iter().find(|p| {
         p.manifest.classes.contains(&PluginClass::Prediffer)
+            && linsync_core::is_plugin_enabled_for_profile(
+                &global_enabled,
+                &overrides,
+                &p.manifest.id,
+            )
             && p.manifest
                 .extensions
                 .iter()
@@ -3547,6 +3573,9 @@ fn bridge_response_with_token(
         "/profiles/active/get" => profiles_active_get_bridge_response(paths),
         "/profiles/active/set" => profiles_active_set_bridge_response(query, paths),
         "/profiles/active/prediffer" => profiles_active_prediffer_bridge_response(query, paths),
+        "/profiles/active/plugin-enabled" => {
+            profiles_active_plugin_enabled_bridge_response(query, paths)
+        }
         "/raw-compare" => raw_compare_bridge_response(query, paths, state),
         "/compare/image" => {
             let params = query_params(query);
@@ -3864,6 +3893,71 @@ fn profiles_active_prediffer_bridge_response(query: &str, paths: &AppPaths) -> V
         "ok": true,
         "profile": active_id.to_string(),
         "prediffers": profile.text.prediffer_plugins,
+    })
+    .to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
+}
+
+/// Set or clear a per-plugin enable/disable override on the active profile
+/// (`?id=PLUGIN_ID&enabled=true|false`). Unlike the global `plugins.json`
+/// toggle, this override is scoped to the active profile and wins over the
+/// global state when that profile drives a comparison. Only user profiles are
+/// editable; built-in profiles (and "no active profile") are rejected with 409.
+fn profiles_active_plugin_enabled_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(plugin_id) = query_value(&params, "id") else {
+        return bridge_error(400, "Bad Request", "missing id parameter");
+    };
+    let Some(enabled_raw) = query_value(&params, "enabled") else {
+        return bridge_error(400, "Bad Request", "missing enabled parameter");
+    };
+    let enabled = enabled_raw != "false";
+
+    let store =
+        ProfileStore::with_builtins(paths.profiles_dir(), paths.active_profile_pointer_file());
+    let active_id = match store.load_active_pointer() {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return bridge_error(
+                409,
+                "Conflict",
+                "no active profile selected; select a user profile to set per-profile plugin state",
+            );
+        }
+        Err(err) => return bridge_error(500, "Internal Server Error", &err.to_string()),
+    };
+    if find_builtin(&active_id).is_some() {
+        return bridge_error(
+            409,
+            "Conflict",
+            "built-in profiles are read-only; copy to a user profile to set per-profile plugin state",
+        );
+    }
+    let mut profile = match store.load(&active_id) {
+        Ok(p) => p,
+        Err(err) => return bridge_error(404, "Not Found", &err.to_string()),
+    };
+    // Record the override. We always store the explicit boolean (rather than
+    // dropping back to "default") so the GUI can show a clear per-profile state;
+    // the resolver treats a present entry as authoritative over the global map.
+    //
+    // This is an unsynchronized load-modify-write to the profile file, matching
+    // the sibling /profiles/active/{set,prediffer} endpoints: the GUI drives one
+    // edit at a time, so concurrent edits to the same profile are not a concern
+    // here. If a multi-writer scenario ever arises, add file-level locking
+    // across all profile-mutating endpoints rather than just this one.
+    profile
+        .plugin_enablement
+        .insert(plugin_id.to_owned(), enabled);
+    if let Err(err) = store.save(&profile) {
+        return bridge_error(500, "Internal Server Error", &err.to_string());
+    }
+    let body = serde_json::json!({
+        "ok": true,
+        "profile": active_id.to_string(),
+        "plugin_id": plugin_id,
+        "enabled": enabled,
+        "plugin_enablement": profile.plugin_enablement,
     })
     .to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
@@ -5822,20 +5916,26 @@ fn active_profile_prediffer_info(paths: &AppPaths) -> serde_json::Value {
         return serde_json::json!({ "id": null, "editable": false, "prediffers": [] });
     };
     let editable = find_builtin(&active_id).is_none();
-    let prediffers = if editable {
+    let (prediffers, plugin_enablement) = if editable {
         store
             .load(&active_id)
-            .map(|p| p.text.prediffer_plugins)
+            .map(|p| (p.text.prediffer_plugins, p.plugin_enablement))
             .unwrap_or_default()
     } else {
         find_builtin(&active_id)
-            .map(|p| p.text.prediffer_plugins.clone())
+            .map(|p| {
+                (
+                    p.text.prediffer_plugins.clone(),
+                    p.plugin_enablement.clone(),
+                )
+            })
             .unwrap_or_default()
     };
     serde_json::json!({
         "id": active_id.to_string(),
         "editable": editable,
         "prediffers": prediffers,
+        "plugin_enablement": plugin_enablement,
     })
 }
 
@@ -7756,6 +7856,96 @@ mod tests {
     }
 
     #[test]
+    fn active_profile_plugin_enabled_toggle_round_trips() {
+        let paths = test_app_paths("profile-plugin-enabled");
+        let store = linsync_core::ProfileStore::with_builtins(
+            paths.profiles_dir(),
+            paths.active_profile_pointer_file(),
+        );
+        let id = linsync_core::ProfileId::new("my-user-profile".to_owned()).unwrap();
+        store
+            .save(&linsync_core::CompareProfile::new(id.clone(), "My Profile"))
+            .unwrap();
+        store.save_active_pointer(&id).unwrap();
+        let state = test_bridge_state(None);
+
+        // Disable a plugin for the active user profile.
+        let set = json_response_body(
+            &String::from_utf8(bridge_response(
+                "GET /profiles/active/plugin-enabled?id=org.example.unzip&enabled=false HTTP/1.1\r\n",
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        assert_eq!(set["ok"], serde_json::json!(true), "set: {set}");
+        assert_eq!(set["enabled"], serde_json::json!(false));
+        assert_eq!(
+            set["plugin_enablement"]["org.example.unzip"],
+            serde_json::json!(false)
+        );
+
+        // It persisted to disk.
+        let loaded = store.load(&id).unwrap();
+        assert_eq!(
+            loaded.plugin_enablement.get("org.example.unzip"),
+            Some(&false)
+        );
+
+        // /plugins/list surfaces the active profile's override map.
+        let list = json_response_body(
+            &String::from_utf8(bridge_response(
+                "GET /plugins/list HTTP/1.1\r\n",
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        assert_eq!(
+            list["active_profile"]["plugin_enablement"]["org.example.unzip"],
+            serde_json::json!(false)
+        );
+
+        // Re-enabling overwrites the override.
+        let reenable = json_response_body(
+            &String::from_utf8(bridge_response(
+                "GET /profiles/active/plugin-enabled?id=org.example.unzip&enabled=true HTTP/1.1\r\n",
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        assert_eq!(reenable["enabled"], serde_json::json!(true));
+
+        // Missing 'enabled' parameter is a 400.
+        let bad = String::from_utf8(bridge_response(
+            "GET /profiles/active/plugin-enabled?id=org.example.unzip HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .unwrap();
+        assert!(
+            bad.starts_with("HTTP/1.1 400"),
+            "missing enabled => 400: {bad}"
+        );
+
+        // A built-in active profile is read-only (409).
+        store
+            .save_active_pointer(&linsync_core::ProfileId::new("default".to_owned()).unwrap())
+            .unwrap();
+        let rejected = String::from_utf8(bridge_response(
+            "GET /profiles/active/plugin-enabled?id=org.example.unzip&enabled=false HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .unwrap();
+        assert!(
+            rejected.starts_with("HTTP/1.1 409"),
+            "editing a built-in profile should 409: {rejected}"
+        );
+    }
+
+    #[test]
     fn capabilities_reports_web_engine_flag() {
         let paths = test_app_paths("capabilities");
         let state = test_bridge_state(None);
@@ -8152,6 +8342,97 @@ mod tests {
             first_asc, first_desc,
             "descending sort should change which entry is first"
         );
+    }
+
+    #[test]
+    fn folder_query_paginates_a_large_windowed_folder() {
+        // The windowed-folder path is served via /folder/query a page at a time.
+        // Generate a >FOLDER_WINDOW_THRESHOLD entry pair and verify the GUI's
+        // paging contract: a bounded page, an accurate total, and offset paging
+        // that walks the whole set. (Visual ListView rendering can't be
+        // confirmed under the no-WM Xvfb review harness — this asserts the model
+        // the view consumes, which is the part that was previously only
+        // serialization-tested.)
+        let root = test_file_root("folder-window-page");
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let count = FOLDER_WINDOW_THRESHOLD + 50;
+        for i in 0..count {
+            // Same content on both sides → equal entries; cheap to create.
+            let name = format!("file-{i:05}.txt");
+            std::fs::write(left.join(&name), b"x").unwrap();
+            std::fs::write(right.join(&name), b"x").unwrap();
+        }
+
+        let paths = test_app_paths("folder-window-page");
+        let state = test_bridge_state(None);
+        let page = |offset: usize, limit: usize| -> serde_json::Value {
+            json_response_body(
+                &String::from_utf8(bridge_response(
+                    &format!(
+                        "GET /folder/query?left={}&right={}&offset={offset}&limit={limit} HTTP/1.1\r\n",
+                        urlencoding::encode(left.to_str().unwrap()),
+                        urlencoding::encode(right.to_str().unwrap())
+                    ),
+                    &paths,
+                    &state,
+                ))
+                .expect("utf-8"),
+            )
+        };
+
+        let first = page(0, 5000);
+        assert_eq!(
+            first["totalMatched"].as_u64().unwrap(),
+            count as u64,
+            "the full entry count is reported"
+        );
+        assert_eq!(
+            first["entries"].as_array().unwrap().len(),
+            5000,
+            "the page is bounded by the requested limit"
+        );
+        assert_eq!(first["hasMore"], serde_json::json!(true));
+
+        // The next page returns the remainder and reports no more pages.
+        let second = page(5000, 5000);
+        assert_eq!(
+            second["entries"].as_array().unwrap().len(),
+            count - 5000,
+            "the second page carries the remaining entries"
+        );
+        assert_eq!(second["offset"].as_u64().unwrap(), 5000);
+        assert_eq!(second["hasMore"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn folder_query_handles_empty_folders() {
+        // Boundary case: two empty folders must page cleanly — zero total, no
+        // entries, no further pages.
+        let root = test_file_root("folder-query-empty");
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let paths = test_app_paths("folder-query-empty");
+        let state = test_bridge_state(None);
+        let body = json_response_body(
+            &String::from_utf8(bridge_response(
+                &format!(
+                    "GET /folder/query?left={}&right={}&offset=0&limit=5000 HTTP/1.1\r\n",
+                    urlencoding::encode(left.to_str().unwrap()),
+                    urlencoding::encode(right.to_str().unwrap())
+                ),
+                &paths,
+                &state,
+            ))
+            .expect("utf-8"),
+        );
+        assert_eq!(body["totalMatched"].as_u64().unwrap(), 0);
+        assert_eq!(body["entries"].as_array().unwrap().len(), 0);
+        assert_eq!(body["hasMore"], serde_json::json!(false));
     }
 
     #[test]
@@ -9725,6 +10006,7 @@ mod tests {
             sandbox: linsync_core::PluginSandbox::default(),
             streaming: false,
             options_schema: vec![],
+            normalization_categories: vec![],
         };
         let manifest_text = serde_json::to_string_pretty(&manifest).unwrap();
         fs::write(
@@ -9931,6 +10213,73 @@ mod tests {
         assert!(first["base_lines"].is_array());
         // output_text should be non-empty.
         assert!(!body["output_text"].as_str().unwrap_or("").is_empty());
+    }
+
+    #[test]
+    fn bridge_merge3_midfile_conflict_yields_in_range_scroll_indices() {
+        // Regression coverage for the conflict scroll-to-line fix: a conflict in
+        // the middle of a 40-line file must produce per-side line arrays whose
+        // QML scroll formula (currentConflictStart=0, End=len-1) yields indices
+        // that are always within each side's own line array — never an
+        // out-of-range positionViewAtIndex call.
+        let root = test_file_root("merge3-midfile");
+        let base = root.join("base.txt");
+        let left = root.join("left.txt");
+        let right = root.join("right.txt");
+        // 40-line files; line 20 diverges between left and right.
+        let make = |marker: &str| {
+            (1..=40)
+                .map(|n| {
+                    if n == 20 {
+                        format!("line-20-{marker}")
+                    } else {
+                        format!("line-{n}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        };
+        fs::write(&base, make("base")).unwrap();
+        fs::write(&left, make("left")).unwrap();
+        fs::write(&right, make("right")).unwrap();
+
+        let paths = test_app_paths("merge3-midfile");
+        let state = test_bridge_state(None);
+        let query = format!(
+            "base={}&left={}&right={}",
+            url_encode(&base),
+            url_encode(&left),
+            url_encode(&right)
+        );
+        let response = String::from_utf8(bridge_response(
+            &format!("GET /merge3/start?{query} HTTP/1.1\r\n"),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(response.contains("HTTP/1.1 200 OK"), "got: {response}");
+        let body = json_response_body(&response);
+        let conflicts = body["conflicts"].as_array().expect("conflicts array");
+        assert!(!conflicts.is_empty(), "a divergent line must conflict");
+
+        for conflict in conflicts {
+            for side in ["base_lines", "left_lines", "right_lines"] {
+                let lines = conflict[side].as_array().expect("per-side line array");
+                assert!(
+                    !lines.is_empty(),
+                    "{side} must be non-empty so the scroll index is valid"
+                );
+                // The QML formula: start = 0, end = len - 1 (both in [0, len-1]).
+                let start = 0usize;
+                let end = lines.len() - 1;
+                assert!(start < lines.len(), "{side} start index in range");
+                assert!(
+                    end < lines.len() && end >= start,
+                    "{side} end index in range and >= start"
+                );
+            }
+        }
     }
 
     #[test]
@@ -11327,7 +11676,10 @@ mod tests {
         assert!(globs.contains(&"*.tif"));
         assert!(globs.contains(&"*.tiff"));
         assert!(!globs.contains(&"*.bmp"));
-        assert!(!globs.contains(&"*.gif"));
+        // GIF (animation) and HDR/EXR decoders are now compiled in.
+        assert!(globs.contains(&"*.gif"));
+        assert!(globs.contains(&"*.hdr"));
+        assert!(globs.contains(&"*.exr"));
     }
 
     #[test]

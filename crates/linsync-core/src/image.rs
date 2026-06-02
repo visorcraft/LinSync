@@ -41,6 +41,9 @@ pub fn supported_image_formats() -> Vec<ImageFormatSupport> {
         ImageFormatSupport::new("JPEG", &["jpg", "jpeg", "jfif"]),
         ImageFormatSupport::new("WebP", &["webp"]),
         ImageFormatSupport::new("TIFF", &["tif", "tiff"]),
+        ImageFormatSupport::new("GIF", &["gif"]),
+        ImageFormatSupport::new("Radiance HDR", &["hdr"]),
+        ImageFormatSupport::new("OpenEXR", &["exr"]),
         #[cfg(feature = "image-avif")]
         ImageFormatSupport::new("AVIF", &["avif", "avifs"]),
     ]
@@ -52,9 +55,43 @@ pub enum ImageCompareMode {
     /// Byte-exact RGBA8 match on every channel.
     Exact,
     /// Per-channel absolute difference must not exceed the tolerance.
-    Tolerance(u8),
+    ///
+    /// A struct variant (rather than a newtype) so the internally-tagged
+    /// (`{"kind": "tolerance", "tolerance": N}`) representation serializes —
+    /// serde cannot serialize an internally-tagged newtype variant wrapping a
+    /// bare integer. The unit variants keep their `{"kind": "…"}` form, so
+    /// existing on-disk profile JSON is unaffected.
+    Tolerance { tolerance: u8 },
     /// CIEDE2000 delta-E per pixel must not exceed `delta_e_threshold`.
     Perceptual,
+}
+
+/// How animated images (GIF, APNG, animated WebP) are compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameCompareMode {
+    /// Compare only the first frame (today's behavior, the default). A
+    /// still image is always a single "first frame".
+    #[default]
+    FirstFrame,
+    /// Decode every frame and compare corresponding frames pairwise, reporting a
+    /// per-frame summary. Frame-count mismatches mark the extra frames different.
+    AllFrames,
+}
+
+/// Per-frame outcome of an `AllFrames` animated-image comparison.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrameSummary {
+    /// Zero-based frame index.
+    pub frame: usize,
+    /// Whether the two frames compared equal.
+    pub equal: bool,
+    /// Fraction of differing pixels (0.0–1.0); 1.0 for a one-sided frame.
+    pub diff_ratio: f64,
+    /// Number of differing pixels.
+    pub differing_pixels: u64,
+    /// True when the frame exists on only one side (frame-count mismatch).
+    pub one_sided: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,6 +106,10 @@ pub struct ImageCompareOptions {
     pub trust_extension_fallback: bool,
     /// Number of image rows decoded per stripe when streaming large images.
     pub stream_stripe_rows: u32,
+    /// How animated images are compared. Defaults to `FirstFrame` so existing
+    /// behavior (and existing profiles) are unchanged.
+    #[serde(default)]
+    pub frame_mode: FrameCompareMode,
 }
 
 impl Default for ImageCompareOptions {
@@ -79,6 +120,7 @@ impl Default for ImageCompareOptions {
             delta_e_threshold: 2.3,
             trust_extension_fallback: false,
             stream_stripe_rows: 64,
+            frame_mode: FrameCompareMode::FirstFrame,
         }
     }
 }
@@ -100,6 +142,20 @@ pub struct ImageCompareResult {
     /// True when images had different dimensions and were padded to a common canvas.
     pub padded: bool,
     pub diff_regions: Vec<DiffRegion>,
+    /// Decoded color type of each side (e.g. `"Rgba8"`, `"Rgb32F"` for HDR),
+    /// surfaced so a client can flag a color-type/bit-depth mismatch. `None` for
+    /// results that predate metadata capture (e.g. a JSON round-trip).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_type_left: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_type_right: Option<String>,
+    /// Total frame count for an `AllFrames` animated compare (`None` for a
+    /// single-frame/first-frame compare).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_count: Option<usize>,
+    /// Per-frame summaries for an `AllFrames` animated compare; empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub per_frame_summaries: Vec<FrameSummary>,
 }
 
 #[derive(Debug, Clone)]
@@ -132,12 +188,20 @@ pub fn compare_images(
     right: &Path,
     options: &ImageCompareOptions,
 ) -> Result<ImageCompareResult, ImageCompareError> {
+    // Animated comparison is its own path (it decodes every frame and cannot use
+    // the large-image streaming shortcut).
+    if matches!(options.frame_mode, FrameCompareMode::AllFrames) {
+        return compare_images_all_frames(left, right, options);
+    }
     if should_stream(left, right) {
         return compare_images_streaming(left, right, options);
     }
 
     let left_img = open_image(left)?;
     let right_img = open_image(right)?;
+
+    let color_left = format!("{:?}", left_img.color());
+    let color_right = format!("{:?}", right_img.color());
 
     let orig_left_dims = left_img.dimensions();
     let orig_right_dims = right_img.dimensions();
@@ -150,7 +214,9 @@ pub fn compare_images(
 
     let mut result = match &options.mode {
         ImageCompareMode::Exact => compare_exact(&left_img, &right_img),
-        ImageCompareMode::Tolerance(tol) => compare_tolerance(&left_img, &right_img, *tol),
+        ImageCompareMode::Tolerance { tolerance } => {
+            compare_tolerance(&left_img, &right_img, *tolerance)
+        }
         ImageCompareMode::Perceptual => {
             compare_perceptual(&left_img, &right_img, options.delta_e_threshold)
         }
@@ -164,6 +230,9 @@ pub fn compare_images(
         result.equal = false;
     }
 
+    result.color_type_left = Some(color_left);
+    result.color_type_right = Some(color_right);
+
     Ok(result)
 }
 
@@ -174,6 +243,9 @@ pub fn compare_images_streaming(
 ) -> Result<ImageCompareResult, ImageCompareError> {
     let left_img = open_image(left)?;
     let right_img = open_image(right)?;
+
+    let color_left = format!("{:?}", left_img.color());
+    let color_right = format!("{:?}", right_img.color());
 
     let orig_left_dims = left_img.dimensions();
     let orig_right_dims = right_img.dimensions();
@@ -230,7 +302,203 @@ pub fn compare_images_streaming(
         result.equal = false;
     }
 
+    result.color_type_left = Some(color_left);
+    result.color_type_right = Some(color_right);
+
     Ok(result)
+}
+
+/// Decode every frame of an animated image (GIF, APNG, animated WebP) to RGBA8.
+/// Still images (or formats/files without animation) yield a single frame, so a
+/// caller in `AllFrames` mode degrades gracefully to a one-frame comparison.
+fn decode_image_frames(path: &Path) -> Result<Vec<DynamicImage>, ImageCompareError> {
+    use ::image::{AnimationDecoder, ImageFormat};
+
+    let format = ImageReader::open(path)
+        .ok()
+        .and_then(|reader| reader.with_guessed_format().ok())
+        .and_then(|reader| reader.format());
+
+    let collected: Option<Vec<::image::Frame>> = match format {
+        Some(ImageFormat::Gif) => std::fs::File::open(path).ok().and_then(|file| {
+            ::image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file))
+                .ok()
+                .and_then(|decoder| decoder.into_frames().collect_frames().ok())
+        }),
+        Some(ImageFormat::WebP) => std::fs::File::open(path).ok().and_then(|file| {
+            ::image::codecs::webp::WebPDecoder::new(std::io::BufReader::new(file))
+                .ok()
+                .filter(|decoder| decoder.has_animation())
+                .and_then(|decoder| decoder.into_frames().collect_frames().ok())
+        }),
+        Some(ImageFormat::Png) => std::fs::File::open(path).ok().and_then(|file| {
+            ::image::codecs::png::PngDecoder::new(std::io::BufReader::new(file))
+                .ok()
+                .filter(|decoder| decoder.is_apng().unwrap_or(false))
+                .and_then(|decoder| decoder.apng().ok())
+                .and_then(|decoder| decoder.into_frames().collect_frames().ok())
+        }),
+        _ => None,
+    };
+
+    if let Some(frames) = collected
+        && !frames.is_empty()
+    {
+        return Ok(frames
+            .into_iter()
+            .map(|frame| DynamicImage::ImageRgba8(frame.into_buffer()))
+            .collect());
+    }
+    // Not animated (or a single-frame source): decode the one image.
+    Ok(vec![open_image(path)?])
+}
+
+/// Compare two already-decoded frames, padding to a common canvas when their
+/// dimensions differ (mirrors [`compare_images`] for in-memory images).
+fn compare_decoded(
+    left: &DynamicImage,
+    right: &DynamicImage,
+    options: &ImageCompareOptions,
+) -> Result<ImageCompareResult, ImageCompareError> {
+    let orig_left = left.dimensions();
+    let orig_right = right.dimensions();
+    if orig_left != orig_right {
+        let (l, r) = pad_to_common_canvas(left.clone(), right.clone());
+        let mut result = compare_decoded_same_size(&l, &r, options)?;
+        result.left_dims = orig_left;
+        result.right_dims = orig_right;
+        result.padded = true;
+        result.equal = false;
+        Ok(result)
+    } else {
+        compare_decoded_same_size(left, right, options)
+    }
+}
+
+fn compare_decoded_same_size(
+    left: &DynamicImage,
+    right: &DynamicImage,
+    options: &ImageCompareOptions,
+) -> Result<ImageCompareResult, ImageCompareError> {
+    match &options.mode {
+        ImageCompareMode::Exact => compare_exact(left, right),
+        ImageCompareMode::Tolerance { tolerance } => compare_tolerance(left, right, *tolerance),
+        ImageCompareMode::Perceptual => compare_perceptual(left, right, options.delta_e_threshold),
+    }
+}
+
+/// Compare every frame of two animated (or still) images pairwise. Reports a
+/// per-frame summary plus aggregate pixel counts; a frame-count mismatch marks
+/// the extra frames as one-sided (their full pixel count counted as differing)
+/// and the overall result as different. Aggregate `differing_pixels`/`diff_ratio`
+/// are pixel-count-weighted across frames (a larger frame contributes more); use
+/// `per_frame_summaries` for un-weighted per-frame ratios.
+pub fn compare_images_all_frames(
+    left: &Path,
+    right: &Path,
+    options: &ImageCompareOptions,
+) -> Result<ImageCompareResult, ImageCompareError> {
+    let left_frames = decode_image_frames(left)?;
+    let right_frames = decode_image_frames(right)?;
+    let frame_count = left_frames.len().max(right_frames.len());
+
+    // Inner comparisons run as a single still frame (avoid recursing here).
+    let inner = ImageCompareOptions {
+        frame_mode: FrameCompareMode::FirstFrame,
+        ..options.clone()
+    };
+
+    let color_left = left_frames.first().map(|f| format!("{:?}", f.color()));
+    let color_right = right_frames.first().map(|f| format!("{:?}", f.color()));
+    let left_dims = left_frames
+        .first()
+        .map(|f| f.dimensions())
+        .unwrap_or((0, 0));
+    let right_dims = right_frames
+        .first()
+        .map(|f| f.dimensions())
+        .unwrap_or((0, 0));
+
+    let mut summaries = Vec::with_capacity(frame_count);
+    // Aggregate metrics are pixel-count-weighted across frames: each frame
+    // contributes its own (possibly padded) pixel count, so a high-resolution
+    // frame weighs more than a low-resolution one. The per-frame summaries carry
+    // the un-weighted per-frame ratios.
+    let mut total_pixels: u64 = 0;
+    let mut differing_pixels: u64 = 0;
+    let mut any_diff = left_frames.len() != right_frames.len();
+    let mut any_padded = left_dims != right_dims;
+
+    for index in 0..frame_count {
+        match (left_frames.get(index), right_frames.get(index)) {
+            (Some(l), Some(r)) => {
+                let cmp = compare_decoded(l, r, &inner)?;
+                total_pixels += cmp.total_pixels;
+                differing_pixels += cmp.differing_pixels;
+                if !cmp.equal {
+                    any_diff = true;
+                }
+                if cmp.padded {
+                    any_padded = true;
+                }
+                summaries.push(FrameSummary {
+                    frame: index,
+                    equal: cmp.equal,
+                    diff_ratio: cmp.diff_ratio,
+                    differing_pixels: cmp.differing_pixels,
+                    one_sided: false,
+                });
+            }
+            other => {
+                // The frame exists on only one side: count all of its pixels as
+                // differing so the aggregate reflects the missing content rather
+                // than silently dropping it.
+                let present = match other {
+                    (Some(frame), None) | (None, Some(frame)) => Some(frame),
+                    _ => None,
+                };
+                let pixels = present
+                    .map(|f| {
+                        let (w, h) = f.dimensions();
+                        w as u64 * h as u64
+                    })
+                    .unwrap_or(0);
+                total_pixels += pixels;
+                differing_pixels += pixels;
+                any_diff = true;
+                summaries.push(FrameSummary {
+                    frame: index,
+                    equal: false,
+                    diff_ratio: 1.0,
+                    differing_pixels: pixels,
+                    one_sided: true,
+                });
+            }
+        }
+    }
+
+    Ok(ImageCompareResult {
+        equal: !any_diff,
+        left_dims,
+        right_dims,
+        total_pixels,
+        differing_pixels,
+        diff_ratio: if total_pixels == 0 {
+            0.0
+        } else {
+            differing_pixels as f64 / total_pixels as f64
+        },
+        mode_used: options.mode.clone(),
+        diff_bbox: None,
+        overlay: Vec::new(),
+        // Padded if any frame pair needed a common canvas (not just the first).
+        padded: any_padded,
+        diff_regions: Vec::new(),
+        color_type_left: color_left,
+        color_type_right: color_right,
+        frame_count: Some(frame_count),
+        per_frame_summaries: summaries,
+    })
 }
 
 fn should_stream(left: &Path, right: &Path) -> bool {
@@ -385,7 +653,7 @@ fn compare_tolerance(
         total,
         differing,
         bbox,
-        ImageCompareMode::Tolerance(tolerance),
+        ImageCompareMode::Tolerance { tolerance },
         diff_regions,
     ))
 }
@@ -463,6 +731,10 @@ pub(crate) fn build_result(
         overlay: Vec::new(),
         padded,
         diff_regions,
+        color_type_left: None,
+        color_type_right: None,
+        frame_count: None,
+        per_frame_summaries: Vec::new(),
     }
 }
 
@@ -547,13 +819,17 @@ pub fn generate_overlay(
         overlay: overlay_rgba,
         padded,
         diff_regions,
+        color_type_left: None,
+        color_type_right: None,
+        frame_count: None,
+        per_frame_summaries: Vec::new(),
     })
 }
 
 fn pixels_differ(left: &[u8; 4], right: &[u8; 4], options: &ImageCompareOptions) -> bool {
     match &options.mode {
         ImageCompareMode::Exact => left != right,
-        ImageCompareMode::Tolerance(tolerance) => left
+        ImageCompareMode::Tolerance { tolerance } => left
             .iter()
             .zip(right.iter())
             .any(|(&l, &r)| l.abs_diff(r) > *tolerance),
@@ -709,6 +985,89 @@ fn find_diff_regions(diff_mask: &[Vec<bool>], width: u32, height: u32) -> Vec<Di
 }
 
 impl ImageCompareResult {
+    /// Human-readable label for the compare mode that produced this result.
+    pub fn mode_label(&self) -> String {
+        match &self.mode_used {
+            ImageCompareMode::Exact => "exact".to_owned(),
+            ImageCompareMode::Tolerance { tolerance } => format!("tolerance ({tolerance})"),
+            ImageCompareMode::Perceptual => "perceptual".to_owned(),
+        }
+    }
+
+    /// Render a standalone HTML report of this image comparison. The raster
+    /// overlay is intentionally excluded (it is `#[serde(skip)]` and not carried
+    /// across a JSON round-trip); the report summarizes dimensions, the compare
+    /// mode, pixel difference counts, and the detected diff regions so a saved
+    /// result can be re-rendered by `report --from-json`.
+    pub fn to_html_report(&self) -> String {
+        let mut html = String::new();
+        html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">\n");
+        html.push_str("<title>LinSync image report</title>\n");
+        html.push_str(
+            "<style>\n\
+             body{font-family:system-ui,sans-serif;margin:1.5rem;}\n\
+             table{border-collapse:collapse;margin-top:0.5rem;}\n\
+             td,th{border:1px solid #ccc;padding:2px 6px;font-family:monospace;text-align:left;}\n\
+             .equal{color:#1a7f37;}\n\
+             .diff{color:#b00020;}\n\
+             </style>\n</head><body>\n",
+        );
+        html.push_str("<h1>LinSync image report</h1>\n");
+        let status = if self.equal {
+            "<span class=\"equal\">equal</span>"
+        } else {
+            "<span class=\"diff\">different</span>"
+        };
+        html.push_str(&format!("<p>Result: {status}</p>\n"));
+        html.push_str("<table>\n<tbody>\n");
+        html.push_str(&format!(
+            "<tr><th>Left dimensions</th><td>{}&times;{}</td></tr>\n",
+            self.left_dims.0, self.left_dims.1
+        ));
+        html.push_str(&format!(
+            "<tr><th>Right dimensions</th><td>{}&times;{}</td></tr>\n",
+            self.right_dims.0, self.right_dims.1
+        ));
+        html.push_str(&format!(
+            "<tr><th>Compare mode</th><td>{}</td></tr>\n",
+            self.mode_label()
+        ));
+        html.push_str(&format!(
+            "<tr><th>Differing pixels</th><td>{} of {} ({:.4}%)</td></tr>\n",
+            self.differing_pixels,
+            self.total_pixels,
+            self.diff_ratio * 100.0
+        ));
+        if self.padded {
+            html.push_str("<tr><th>Canvas</th><td>padded (dimensions differed)</td></tr>\n");
+        }
+        if let Some((x0, y0, x1, y1)) = self.diff_bbox {
+            html.push_str(&format!(
+                "<tr><th>Diff bounding box</th><td>({x0}, {y0}) – ({x1}, {y1})</td></tr>\n"
+            ));
+        }
+        html.push_str(&format!(
+            "<tr><th>Diff regions</th><td>{}</td></tr>\n",
+            self.diff_regions.len()
+        ));
+        html.push_str("</tbody></table>\n");
+        if !self.diff_regions.is_empty() {
+            html.push_str("<h2>Diff regions</h2>\n<table>\n");
+            html.push_str(
+                "<thead><tr><th>#</th><th>x</th><th>y</th><th>width</th><th>height</th><th>pixels</th></tr></thead>\n<tbody>\n",
+            );
+            for region in &self.diff_regions {
+                html.push_str(&format!(
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                    region.id, region.x, region.y, region.width, region.height, region.pixel_count
+                ));
+            }
+            html.push_str("</tbody></table>\n");
+        }
+        html.push_str("</body></html>\n");
+        html
+    }
+
     pub fn diff_region_count(&self) -> usize {
         self.diff_regions.len()
     }
@@ -750,7 +1109,10 @@ mod tests {
         assert!(extensions.contains(&"tif"));
         assert!(extensions.contains(&"tiff"));
         assert!(!extensions.contains(&"bmp"));
-        assert!(!extensions.contains(&"gif"));
+        // GIF/HDR/EXR decoders are now enabled for animation + HDR support.
+        assert!(extensions.contains(&"gif"));
+        assert!(extensions.contains(&"hdr"));
+        assert!(extensions.contains(&"exr"));
 
         #[cfg(feature = "image-avif")]
         {
@@ -830,6 +1192,10 @@ mod tests {
             diff_bbox: Some((0, 0, 9, 9)),
             overlay: Vec::new(),
             padded: false,
+            color_type_left: None,
+            color_type_right: None,
+            frame_count: None,
+            per_frame_summaries: Vec::new(),
             diff_regions: vec![
                 DiffRegion {
                     id: 0,
@@ -863,6 +1229,83 @@ mod tests {
     }
 
     #[test]
+    fn result_json_round_trips_excluding_overlay() {
+        let result = ImageCompareResult {
+            equal: false,
+            left_dims: (12, 8),
+            right_dims: (12, 8),
+            total_pixels: 96,
+            differing_pixels: 7,
+            diff_ratio: 7.0 / 96.0,
+            mode_used: ImageCompareMode::Tolerance { tolerance: 5 },
+            diff_bbox: Some((1, 1, 4, 4)),
+            overlay: vec![1, 2, 3, 4], // skipped on serialize
+            padded: false,
+            color_type_left: None,
+            color_type_right: None,
+            frame_count: None,
+            per_frame_summaries: Vec::new(),
+            diff_regions: vec![DiffRegion {
+                id: 0,
+                x: 1,
+                y: 1,
+                width: 3,
+                height: 3,
+                pixel_count: 7,
+            }],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(!json.contains("overlay"), "overlay is #[serde(skip)]");
+        let back: ImageCompareResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.equal, result.equal);
+        assert_eq!(back.left_dims, result.left_dims);
+        assert_eq!(back.right_dims, result.right_dims);
+        assert_eq!(back.differing_pixels, result.differing_pixels);
+        assert_eq!(back.mode_used, result.mode_used);
+        assert_eq!(back.diff_bbox, result.diff_bbox);
+        assert_eq!(back.diff_regions, result.diff_regions);
+        assert!(back.overlay.is_empty(), "overlay defaults to empty on load");
+    }
+
+    #[test]
+    fn to_html_report_contains_summary_and_regions() {
+        let result = ImageCompareResult {
+            equal: false,
+            left_dims: (12, 8),
+            right_dims: (10, 8),
+            total_pixels: 96,
+            differing_pixels: 7,
+            diff_ratio: 7.0 / 96.0,
+            mode_used: ImageCompareMode::Tolerance { tolerance: 5 },
+            diff_bbox: Some((1, 1, 4, 4)),
+            overlay: Vec::new(),
+            padded: true,
+            color_type_left: None,
+            color_type_right: None,
+            frame_count: None,
+            per_frame_summaries: Vec::new(),
+            diff_regions: vec![DiffRegion {
+                id: 0,
+                x: 1,
+                y: 1,
+                width: 3,
+                height: 3,
+                pixel_count: 7,
+            }],
+        };
+        let html = result.to_html_report();
+        assert!(html.contains("<html"));
+        assert!(html.contains("tolerance (5)"), "mode label rendered");
+        assert!(html.contains("different"), "status rendered");
+        assert!(html.contains("padded"), "padding noted");
+        assert!(html.contains("Diff regions"));
+        assert!(
+            html.contains("12") && html.contains("8"),
+            "dimensions rendered"
+        );
+    }
+
+    #[test]
     fn diff_regions_serialized_in_result() {
         let result = ImageCompareResult {
             equal: false,
@@ -875,6 +1318,10 @@ mod tests {
             diff_bbox: None,
             overlay: Vec::new(),
             padded: false,
+            color_type_left: None,
+            color_type_right: None,
+            frame_count: None,
+            per_frame_summaries: Vec::new(),
             diff_regions: vec![DiffRegion {
                 id: 0,
                 x: 1,

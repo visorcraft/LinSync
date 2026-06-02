@@ -36,18 +36,32 @@ Kirigami.ScrollablePage {
     signal pluginTrustAndEnableRequested(string id, string name)
     // Ask Main.qml to add/remove a prediffer from the active profile's chain.
     signal pluginProfilePrediffferToggled(string id, bool enabled)
+    // Ask Main.qml to set a per-profile enable/disable override for any plugin.
+    signal pluginProfileEnabledToggled(string id, bool enabled)
 
     // Active profile (from /plugins/list): whether it can be edited (user
-    // profile) and which prediffer plugin ids it currently routes.
+    // profile), which prediffer plugin ids it currently routes, and the
+    // per-plugin enable/disable override map for that profile.
     property string activeProfileId: ""
     property bool activeProfileEditable: false
     property var activeProfilePrediffers: []
+    property var activeProfilePluginEnablement: ({})
 
     function isPrediffer(modelData) {
         return modelData && modelData.classes && modelData.classes.indexOf("prediffer") !== -1
     }
     function inActiveProfile(id) {
         return page.activeProfilePrediffers.indexOf(id) !== -1
+    }
+    // Whether the active profile enables this plugin: the per-profile override
+    // wins, else fall back to the plugin's global enabled state.
+    function enabledInActiveProfile(modelData) {
+        if (!modelData)
+            return true
+        var ov = page.activeProfilePluginEnablement
+        if (ov && Object.prototype.hasOwnProperty.call(ov, modelData.id))
+            return ov[modelData.id] === true
+        return modelData.enabled === true
     }
 
     property string _trustPluginId: ""
@@ -116,6 +130,7 @@ Kirigami.ScrollablePage {
         page.activeProfileId = ap.id || ""
         page.activeProfileEditable = !!ap.editable
         page.activeProfilePrediffers = ap.prediffers || []
+        page.activeProfilePluginEnablement = ap.plugin_enablement || ({})
     }
 
     padding: 0
@@ -732,6 +747,21 @@ Kirigami.ScrollablePage {
                             Controls.ToolTip.text: qsTr("Route this prediffer in the active profile “%1”").arg(page.activeProfileId)
                             Controls.ToolTip.visible: hovered
                             onToggled: page.pluginProfilePrediffferToggled(modelData.id, checked)
+                        }
+
+                        // "Enabled in profile": a per-profile enable/disable
+                        // override for any plugin class. Overrides the global
+                        // switch when the active (editable) profile drives a
+                        // comparison.
+                        Controls.CheckBox {
+                            Layout.alignment: Qt.AlignVCenter
+                            visible: page.activeProfileEditable
+                            text: qsTr("Enabled in profile")
+                            checked: page.enabledInActiveProfile(modelData)
+                            enabled: page.bridgeConnected
+                            Controls.ToolTip.text: qsTr("Enable or disable this plugin only for the active profile “%1” (overrides the global switch)").arg(page.activeProfileId)
+                            Controls.ToolTip.visible: hovered
+                            onToggled: page.pluginProfileEnabledToggled(modelData.id, checked)
                         }
 
                         Controls.Button {

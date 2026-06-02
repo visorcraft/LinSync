@@ -41,6 +41,7 @@ fn make_manifest(id: &str, name: &str, version: &str) -> PluginManifest {
         sandbox: PluginSandbox::default(),
         streaming: false,
         options_schema: vec![],
+        normalization_categories: vec![],
     }
 }
 

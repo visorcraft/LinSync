@@ -125,6 +125,14 @@ pub struct CompareProfile {
     pub document: DocumentCompareOptions,
     #[serde(default)]
     pub webpage: WebpageCompareOptions,
+    /// Per-profile plugin enable/disable overrides, keyed by plugin id. An
+    /// entry here wins over the global `plugins.json` enabled map, which in turn
+    /// wins over the default (enabled). Plugin ids are globally unique, so a
+    /// single id-keyed map covers every plugin class. Empty for built-in
+    /// profiles and for any profile that does not override anything; omitted
+    /// from the JSON when empty so existing profiles round-trip unchanged.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub plugin_enablement: std::collections::BTreeMap<String, bool>,
     /// Catch-all for fields produced by a richer build (e.g. a GUI
     /// build that enabled `image-compare` and `document-compare`) so
     /// that round-tripping a profile through a slimmer build does not
@@ -152,6 +160,7 @@ impl CompareProfile {
             #[cfg(feature = "document-compare")]
             document: DocumentCompareOptions::default(),
             webpage: WebpageCompareOptions::default(),
+            plugin_enablement: std::collections::BTreeMap::new(),
             extra: serde_json::Map::new(),
         }
     }
@@ -483,6 +492,37 @@ mod tests {
                 "org.example.strip".to_string()
             ],
             "a profile must carry its prediffer plugin ids across save/load"
+        );
+    }
+
+    #[test]
+    fn round_trip_preserves_plugin_enablement() {
+        let (_dir, store) = temp_store();
+        let mut p = CompareProfile::new(ProfileId::new("enable").unwrap(), "Enablement");
+        p.plugin_enablement
+            .insert("org.example.normalize".into(), false);
+        p.plugin_enablement.insert("org.example.unzip".into(), true);
+        store.save(&p).unwrap();
+
+        let loaded = store.load(&p.id).unwrap();
+        assert_eq!(
+            loaded.plugin_enablement.get("org.example.normalize"),
+            Some(&false),
+            "a per-profile plugin override must survive save/load"
+        );
+        assert_eq!(
+            loaded.plugin_enablement.get("org.example.unzip"),
+            Some(&true)
+        );
+    }
+
+    #[test]
+    fn empty_plugin_enablement_is_omitted_from_json() {
+        let p = CompareProfile::new(ProfileId::new("empty").unwrap(), "Empty");
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(
+            !json.contains("plugin_enablement"),
+            "an empty override map must not be serialized so existing profiles round-trip unchanged"
         );
     }
 

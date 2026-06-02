@@ -1,6 +1,10 @@
 [licenses]
 version = 2
 confidence-threshold = 0.8
+# Enabling the image crate's gif/hdr/exr decoders pulls in these transitive
+# image-decoder crates, all already covered by the allow-list below:
+#   exr (BSD-3-Clause), gif (MIT OR Apache-2.0), color_quant (MIT),
+#   lebe (BSD-3-Clause), bit_field (MIT), zune-inflate (MIT OR Apache-2.0).
 allow = [
     "Apache-2.0",
     # libfuzzer-sys is triple-licensed: MIT OR Apache-2.0 WITH

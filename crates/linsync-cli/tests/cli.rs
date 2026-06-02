@@ -66,6 +66,40 @@ fn compare_returns_zero_for_equal_files() {
 }
 
 #[test]
+fn prediffer_conflict_policy_flag_is_accepted() {
+    // The flag parses for each accepted value and an unknown value is rejected.
+    let left = fixture("text/equal-left.txt");
+    let right = fixture("text/equal-right.txt");
+    for value in ["chain", "first-wins", "last-wins"] {
+        let output = run(&[
+            "compare",
+            "--prediffer-conflict-policy",
+            value,
+            "--json",
+            left.to_str().unwrap(),
+            right.to_str().unwrap(),
+        ]);
+        assert!(
+            output.status.success(),
+            "policy '{value}' should be accepted; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let bad = run(&[
+        "compare",
+        "--prediffer-conflict-policy",
+        "nonsense",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        bad.status.code(),
+        Some(2),
+        "an unknown policy value is a usage error"
+    );
+}
+
+#[test]
 fn compare_returns_one_for_different_files() {
     let left = fixture("text/left.txt");
     let right = fixture("text/right.txt");

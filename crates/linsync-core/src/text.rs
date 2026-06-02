@@ -126,6 +126,13 @@ pub struct TextCompareOptions {
     /// normalize each side. Empty = no prediffer routing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prediffer_plugins: Vec<String>,
+    /// How overlapping prediffers in [`prediffer_plugins`] are resolved when the
+    /// chain runs (see [`crate::plugin::PredifferConflictPolicy`]). Defaults to
+    /// `Chain` (run all, today's behavior), so existing profiles are unchanged.
+    ///
+    /// [`prediffer_plugins`]: Self::prediffer_plugins
+    #[serde(default)]
+    pub prediffer_conflict_policy: crate::plugin::PredifferConflictPolicy,
 }
 
 fn default_min_move_lines() -> usize {
@@ -154,6 +161,7 @@ impl Default for TextCompareOptions {
             find: None,
             bookmarks: Vec::new(),
             prediffer_plugins: Vec::new(),
+            prediffer_conflict_policy: crate::plugin::PredifferConflictPolicy::default(),
         }
     }
 }
@@ -816,20 +824,26 @@ pub fn compare_text_files_with_prediffer_chain(
     prediffers: &[crate::plugin::DiscoveredPlugin],
     execution_options: &crate::plugin::PluginExecutionOptions,
 ) -> io::Result<TextCompareResult> {
+    // Drop overlapping prediffers per the configured conflict policy before
+    // running the chain. `Chain` (the default) keeps every stage, so this is a
+    // no-op for existing configurations.
+    let resolved =
+        crate::plugin::resolve_prediffer_conflicts(prediffers, options.prediffer_conflict_policy);
+    let chain = resolved.as_slice();
     let left_document =
-        match crate::plugin::run_prediffer_chain(prediffers, "left", left, execution_options) {
+        match crate::plugin::run_prediffer_chain(chain, "left", left, execution_options) {
             Some(text) => TextDocument::from_text(&left.display().to_string(), &text),
             None => TextDocument::from_path_with_encoding(left, options.encoding)?,
         };
     let right_document =
-        match crate::plugin::run_prediffer_chain(prediffers, "right", right, execution_options) {
+        match crate::plugin::run_prediffer_chain(chain, "right", right, execution_options) {
             Some(text) => TextDocument::from_text(&right.display().to_string(), &text),
             None => TextDocument::from_path_with_encoding(right, options.encoding)?,
         };
     let mut result = compare_documents(left_document, right_document, options);
     // Record the confinement helper processes ran under when a prediffer
     // actually participated, so clients can surface it on the result.
-    if !prediffers.is_empty() {
+    if !chain.is_empty() {
         result.sandbox = Some(crate::plugin::active_sandbox_status());
     }
     Ok(result)

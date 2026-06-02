@@ -29,6 +29,7 @@ fn make_manifest(dir: &std::path::Path) -> PluginManifest {
         },
         streaming: false,
         options_schema: vec![],
+        normalization_categories: vec![],
     }
 }
 

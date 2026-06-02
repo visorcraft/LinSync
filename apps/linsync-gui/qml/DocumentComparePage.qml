@@ -331,6 +331,29 @@ Controls.Pane {
                     color: root.activeDisabledText
                     font.pointSize: 9
                 }
+                // OCR word-position summary. The page shows extracted text (not
+                // the rendered source image), so these are surfaced as a count;
+                // the boxes themselves are carried in the result for callers and
+                // a future rendered-page overlay.
+                Controls.Label {
+                    function wordCount(lines) {
+                        if (!lines) return 0
+                        var n = 0
+                        for (var i = 0; i < lines.length; ++i)
+                            n += (lines[i] ? lines[i].length : 0)
+                        return n
+                    }
+                    visible: root.lastResult !== null
+                        && (root.lastResult.left_word_positions !== undefined
+                            || root.lastResult.right_word_positions !== undefined)
+                    text: root.lastResult !== null
+                        ? qsTr("OCR word positions: %1 left / %2 right")
+                            .arg(wordCount(root.lastResult.left_word_positions))
+                            .arg(wordCount(root.lastResult.right_word_positions))
+                        : ""
+                    color: root.activeDisabledText
+                    font.pointSize: 9
+                }
             }
         }
 

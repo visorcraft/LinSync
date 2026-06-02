@@ -7,16 +7,17 @@
 - Add an `image` compare mode to `linsync-core` backed entirely by pure-Rust image processing.
 - Surface the mode through the CLI (`compare --type image`) and a dedicated GUI
   page.
-- Support PNG, JPEG, WebP, and TIFF by default, with AVIF available when the
-  `image-avif` cargo feature is enabled.
+- Support PNG, JPEG, WebP, TIFF, GIF, Radiance HDR (`.hdr`), and OpenEXR (`.exr`)
+  by default, with AVIF available when the `image-avif` cargo feature is enabled.
 - Three tolerance levels: exact pixel, per-channel tolerance, and perceptual deltaE (CIEDE2000).
+- Optional frame-by-frame comparison of animated GIF / APNG / animated WebP.
 
 ## Non-goals
 
 - RAW camera formats (CR2, NEF, ARW, DNG, etc.).
-- Frame-by-frame animated image diffing.
-- ICC color-profile conversion, HDR validation, or color management beyond the
-  decoded 8-bit RGBA sample values.
+- ICC color-profile conversion, true HDR validation, or color management beyond
+  the decoded 8-bit RGBA sample values (HDR/EXR inputs are tone-mapped to RGBA8
+  before comparison — see the limitations section).
 - Editing source images or writing visual changes back into either input file.
 
 ## Compare modes
@@ -38,6 +39,36 @@ Pixels are converted from sRGB to CIELAB, then CIEDE2000 delta-E is computed per
 
 **Algorithm choice — CIEDE2000:** `dssim` yields a single scalar, not per-pixel data. Y′CbCr is fast but not perceptually uniform (false positives near hue boundaries). CIEDE2000 is the industry-standard per-pixel metric, available via the `lab` crate (MIT), and feeds directly into the diff overlay.
 
+## Animated (frame) compare
+
+Animated GIF, APNG, and animated WebP can be compared either as a single still
+image or frame-by-frame, selected by `ImageCompareOptions.frame_mode`
+(`FrameCompareMode`, serialized snake_case):
+
+- **`first_frame` (default):** Compare only the first decoded frame — today's
+  behavior and the only path for still images (a still is always a single "first
+  frame"). Existing profiles are unchanged because this is the serde default.
+- **`all_frames`:** Decode every frame of both inputs and compare corresponding
+  frames pairwise. The result reports the total `frame_count` and a
+  `per_frame_summaries` array of `FrameSummary { frame, equal, diff_ratio,
+  differing_pixels, one_sided }`. A frame-count mismatch marks the extra frames
+  as `one_sided` (and therefore different). Inputs whose decoder exposes only a
+  single still frame degrade gracefully to a one-frame comparison, so
+  `all_frames` is safe to request on any input.
+
+The pixel comparison inside each frame uses the same exact / tolerance /
+perceptual mode as a still compare. The CLI selects the mode with
+`--image-frames first|all` and the bridge with `?frames=first|all`.
+
+## Color-type metadata
+
+Each comparison records the decoded color type of both sides on the result as
+`color_type_left` / `color_type_right` (the `image` crate's `ColorType` debug
+string, e.g. `"Rgba8"`, `"Rgb16"`, `"Rgb32F"` for HDR/EXR). These are surfaced so
+a client can flag a color-type or bit-depth mismatch even when the tone-mapped
+RGBA8 pixels happen to compare equal. They are `None` for results that predate
+metadata capture (for example a JSON round-trip of an older saved result).
+
 ## Engine choice
 
 **Pure-Rust: `image` + `lab`.**
@@ -57,10 +88,14 @@ ImageMagick would only be reconsidered if performance benchmarks show pure-Rust 
 | WebP   | `image` feature `webp` | MIT | Yes         |
 | AVIF   | Optional `image-avif` feature | MIT + BSD-2-Clause | Yes |
 | TIFF   | `image` feature `tiff` | MIT | Yes          |
+| GIF    | `image` feature `gif` (`gif`, `color_quant`) | MIT, MIT OR Apache-2.0 | Yes |
+| Radiance HDR | `image` feature `hdr` | MIT | Yes      |
+| OpenEXR | `image` feature `exr` (`exr`, `lebe`, `bit_field`, `zune-inflate`) | BSD-3-Clause, MIT, MIT OR Apache-2.0 | Yes |
 
 Note: AVIF support is intentionally feature-gated because its dependency graph
-is larger than the default image stack. Verify at each lockfile update via
-`just deny`.
+is larger than the default image stack. The `gif`, `hdr`, and `exr` features are
+enabled by default and add the transitive decoder crates listed above (all on
+`deny.toml`'s allow-list). Verify at each lockfile update via `just deny`.
 
 Format detection uses **magic bytes** via `image`'s `ImageReader::open`. Extension-based fallback is an explicit opt-in flag in `ImageCompareOptions` (default false). Magic-bytes-first is the right default: LinSync operates on paths where extensions may be absent or wrong.
 
@@ -100,22 +135,30 @@ intentional limitations:
   sRGB before converting to Lab, so files that rely on embedded display profiles
   or wide-gamut interpretation can report differences that are not visually
   representative on a managed display.
-- **HDR and high bit depth:** Inputs are reduced to 8-bit RGBA through the
-  `image` crate before comparison. High-bit-depth PNG/TIFF, HDR transfer
-  functions, and scene-referred values lose precision and tone-mapping context.
-  Image compare is therefore appropriate for release-artifact checks, not for
-  validating HDR mastering or color-pipeline fidelity.
+- **HDR, EXR, and high bit depth:** Radiance HDR (`.hdr`) and OpenEXR (`.exr`)
+  now decode (via the `image` crate's `hdr`/`exr` features), but every input —
+  including high-bit-depth PNG/TIFF and 32-bit-float HDR/EXR — is **tone-mapped /
+  reduced to 8-bit RGBA8** before comparison. The float-to-8-bit conversion loses
+  precision and discards the original transfer function and scene-referred values,
+  so two HDR images that differ only below the 8-bit quantization step can compare
+  equal. The decoded `color_type_left`/`color_type_right` metadata lets a client
+  notice the higher-precision source even though the comparison itself runs at
+  8 bits. Image compare is therefore appropriate for release-artifact checks, not
+  for validating HDR mastering or color-pipeline fidelity. **ICC profile
+  interpretation stays out of scope** — see the ICC bullet above.
 - **Alpha:** Exact and tolerance modes include alpha as a fourth channel, so
   transparency changes are differences. Perceptual mode currently ignores alpha
   and computes CIEDE2000 from RGB only; a pure alpha change with identical RGB
   samples is not reported in perceptual mode. Dimension padding uses transparent
   black pixels, so padded extents are visible to exact/tolerance comparisons and
   may be invisible to perceptual comparison if only alpha differs.
-- **Animated inputs:** LinSync does not perform timeline or frame-by-frame
-  comparison for animated GIF, APNG, animated WebP, or animated AVIF. If the
-  decoder exposes a single still frame, LinSync compares that still image; if
-  not, the input fails as unsupported or undecodable. Use a dedicated animation
-  tool when frame timing, disposal modes, or per-frame changes matter.
+- **Animated inputs:** LinSync compares the first frame by default
+  (`frame_mode: first_frame`) and can compare every frame pairwise with
+  `frame_mode: all_frames` for GIF, APNG, and animated WebP (see "Animated (frame)
+  compare" above). What it still does **not** model is the animation *timeline*:
+  per-frame delays, disposal/blend modes, and loop counts are ignored — frames are
+  compared by index, not by playback time. Animated AVIF is not frame-decoded. Use
+  a dedicated animation tool when frame timing or disposal semantics matter.
 
 ## API surface
 
@@ -128,6 +171,7 @@ pub struct ImageCompareOptions {
     pub delta_e_threshold: f32,           // default 2.3, Perceptual mode
     pub trust_extension_fallback: bool,   // default false
     pub stream_stripe_rows: u32,          // default 64
+    pub frame_mode: FrameCompareMode,     // FirstFrame (default) | AllFrames
 }
 
 pub struct ImageCompareResult {
@@ -143,6 +187,10 @@ pub struct ImageCompareResult {
     pub overlay: Vec<u8>,  // RGBA8; empty for CLI, populated for GUI
     pub padded: bool,
     pub diff_regions: Vec<DiffRegion>,
+    pub color_type_left: Option<String>,   // decoded ColorType, e.g. "Rgba8"
+    pub color_type_right: Option<String>,
+    pub frame_count: Option<usize>,        // Some(n) for AllFrames, else None
+    pub per_frame_summaries: Vec<FrameSummary>, // empty unless AllFrames
 }
 
 pub fn compare_images(
@@ -164,8 +212,16 @@ image engine. JSON summary is written to stdout; the overlay buffer is
 suppressed in CLI mode. Exit codes: 0 = equal, 1 = different, 2 = error.
 
 ```
-linsync-cli compare --type image [--tolerance N] [--delta-e N] a.png b.png
+linsync-cli compare --type image [--image-mode exact|tolerance|perceptual] \
+    [--image-tolerance N] [--image-delta-e N] [--image-frames first|all] \
+    [--save-result FILE] a.png b.png
 ```
+
+`--image-frames all` selects animated frame-by-frame compare; the JSON summary
+then includes `frame_count` and a `differing_frames` count. `--save-result FILE`
+writes a `{schema_version: 1, kind: "image", result}` envelope that
+`report --from-json FILE` re-renders to HTML via
+`ImageCompareResult::to_html_report` (see `docs/feature-matrix.md`).
 
 ## GUI integration
 
@@ -176,7 +232,9 @@ The page hosts left, right, and overlay image panes, an opacity `Slider`, a
 controls, zoom/fit/split controls, and a "Run Compare" button. The button calls
 the HTTP bridge with `GET /compare/image?...&overlay=true`; the bridge returns
 `ImageCompareResult` as JSON, writes the overlay buffer to a temp file, and
-returns a `file://` URI that QML loads into the overlay pane.
+returns a `file://` URI that QML loads into the overlay pane. The bridge accepts a
+`?frames=first|all` override (alongside `?mode`, `?tolerance`, `?delta_e`) to
+select frame-by-frame animated compare.
 
 ## Sandbox interaction
 

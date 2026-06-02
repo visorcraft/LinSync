@@ -69,6 +69,7 @@ fn builtin_shell(id: &str, name: &str, description: &str) -> CompareProfile {
         #[cfg(feature = "document-compare")]
         document: DocumentCompareOptions::default(),
         webpage: WebpageCompareOptions::default(),
+        plugin_enablement: std::collections::BTreeMap::new(),
         extra: serde_json::Map::new(),
     }
 }

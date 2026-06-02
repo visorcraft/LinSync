@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Last regenerated: 2026-05-26
+Last regenerated: 2026-06-02
 
 This notice file covers the current LinSync source tree and Cargo dependency
 set. It must be regenerated or reviewed before every public binary release.
@@ -34,14 +34,19 @@ compatibility review.
 | `aho-corasick` | 1.1.4 | Unlicense OR MIT |
 | `arrayref` | 0.3.9 | BSD-2-Clause |
 | `arrayvec` | 0.7.6 | MIT OR Apache-2.0 |
+| `bit_field` | 0.10.3 | MIT |
 | `blake3` | 1.8.5 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
 | `cc` | 1.2.62 | MIT OR Apache-2.0 |
 | `cfg-if` | 1.0.4 | MIT OR Apache-2.0 |
+| `color_quant` | 1.1.0 | MIT |
 | `constant_time_eq` | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | `cpufeatures` | 0.3.0 | MIT OR Apache-2.0 |
+| `exr` | 1.74.0 | BSD-3-Clause |
 | `find-msvc-tools` | 0.1.9 | MIT OR Apache-2.0 |
+| `gif` | 0.14.2 | MIT OR Apache-2.0 |
 | `itoa` | 1.0.18 | MIT OR Apache-2.0 |
 | `lazy_static` | 1.5.0 | MIT OR Apache-2.0 |
+| `lebe` | 0.5.3 | BSD-3-Clause |
 | `libc` | 0.2.186 | MIT OR Apache-2.0 |
 | `log` | 0.4.29 | MIT OR Apache-2.0 |
 | `memchr` | 2.8.0 | Unlicense OR MIT |
@@ -71,6 +76,7 @@ compatibility review.
 | `tracing-subscriber` | 0.3.23 | MIT |
 | `unicode-ident` | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | `zmij` | 1.0.21 | MIT |
+| `zune-inflate` | 0.2.54 | MIT OR Apache-2.0 |
 
 The table above reflects `cargo tree --workspace` against `Cargo.lock` and is
 verified during pre-release with the `just deny` (cargo-deny) and `just audit`

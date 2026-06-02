@@ -51,6 +51,7 @@ src = inputs[0].get("path", "")
 role = inputs[0].get("role", "left")
 options = req.get("options", {})
 language = options.get("language", "eng") or "eng"
+want_positions = bool(options.get("want_positions", False))
 
 if not os.path.isfile(src):
     print(json.dumps({
@@ -65,9 +66,15 @@ if not os.path.isfile(src):
 out_base = os.path.join(tmp, "ocr-output")
 out_txt = out_base + ".txt"
 
+# When the caller wants per-word boxes, also emit Tesseract's TSV so we can
+# parse word geometry alongside the plain text transcript.
+configs = ["txt"]
+if want_positions:
+    configs.append("tsv")
+
 try:
     result = subprocess.run(
-        ["tesseract", src, out_base, "-l", language, "txt"],
+        ["tesseract", src, out_base, "-l", language, *configs],
         capture_output=True, timeout=120
     )
 except subprocess.TimeoutExpired:
@@ -90,17 +97,64 @@ if result.returncode != 0:
     }))
     sys.exit(0)
 
+output = {
+    "role": role,
+    "kind": "text",
+    "path": out_txt,
+    "encoding": "utf-8",
+    "line_ending": "lf",
+}
+
+# Parse Tesseract's TSV into per-line word bounding boxes when requested. The
+# TSV columns are: level page block par line word left top width height conf text.
+# Words are level 5; we group them into per-line arrays. This assumes Tesseract
+# emits rows in reading order (it does); a (block, par, line) tuple seen earlier
+# keeps its array slot. Confidence parsing is best-effort — a non-numeric value
+# is dropped (field omitted) rather than failing the whole extraction.
+if want_positions:
+    tsv_path = out_base + ".tsv"
+    positions = []
+    line_index = {}
+    try:
+        with open(tsv_path, encoding="utf-8") as fh:
+            fh.readline()  # skip the header row
+            for row in fh:
+                cols = row.rstrip("\n").split("\t")
+                if len(cols) < 12 or cols[0] != "5":
+                    continue
+                text = cols[11]
+                if not text.strip():
+                    continue
+                key = (cols[2], cols[3], cols[4])  # block, par, line
+                if key not in line_index:
+                    line_index[key] = len(positions)
+                    positions.append([])
+                li = line_index[key]
+                word = {
+                    "text": text,
+                    "line": li,
+                    "x": int(cols[6]),
+                    "y": int(cols[7]),
+                    "width": int(cols[8]),
+                    "height": int(cols[9]),
+                }
+                try:
+                    conf = int(round(float(cols[10])))
+                    if conf >= 0:
+                        word["confidence"] = conf
+                except ValueError:
+                    pass
+                positions[li].append(word)
+        if positions:
+            output["word_positions"] = positions
+    except OSError:
+        pass  # positions are best-effort; fall back to text only
+
 print(json.dumps({
     "protocol_version": 1,
     "request_id": request_id,
     "status": "ok",
-    "outputs": [{
-        "role": role,
-        "kind": "text",
-        "path": out_txt,
-        "encoding": "utf-8",
-        "line_ending": "lf"
-    }],
+    "outputs": [output],
     "diagnostics": []
 }))
 PY

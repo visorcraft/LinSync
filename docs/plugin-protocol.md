@@ -63,6 +63,7 @@ older LinSync versions unless the manifest declares a newer required schema.
   "extensions": ["txt", "log"],
   "capabilities": ["streaming-output", "deterministic-output"],
   "deterministic": true,
+  "normalization_categories": ["whitespace", "timestamps"],
   "sandbox": {
     "network": false,
     "writes_input": false,
@@ -86,6 +87,16 @@ Required fields:
 - `capabilities`: protocol features supported by the helper.
 - `deterministic`: whether identical inputs should produce identical outputs.
 - `sandbox`: declared trust and access requirements.
+
+Optional fields:
+
+- `normalization_categories`: for `prediffer` plugins, the named normalization
+  categories the helper claims (free-form strings, e.g. `"whitespace"`,
+  `"timestamps"`). Two prediffers in a chain that share a category *overlap*; the
+  host applies the active [`PredifferConflictPolicy`](#prediffer-conflict-policy)
+  to decide which to keep. Defaults to an empty list (`#[serde(default)]`), which
+  means the plugin never conflicts with another, so the whole chain runs
+  unchanged — existing manifests stay valid and behave exactly as before.
 
 Manifest validation must reject unknown required schema versions, missing entry
 executables, path traversal in relative entries, duplicate plugin IDs, and
@@ -142,7 +153,8 @@ Large file contents are passed by path or file descriptor, not embedded in JSON.
   "options": {
     "encoding": "utf-8",
     "line_ending": "lf",
-    "language": "eng"
+    "language": "eng",
+    "want_positions": true
   }
 }
 ```
@@ -150,6 +162,13 @@ Large file contents are passed by path or file descriptor, not embedded in JSON.
 `options.language` is an optional ISO 639-2 language hint (omitted when unset).
 Text-extractor / OCR plugins (e.g. `tesseract-ocr`) use it to select the
 recognition language; plugins that do not need it ignore the field.
+
+`options.want_positions` is an optional, advisory boolean. When `true` it asks an
+OCR engine to also emit per-word bounding boxes (see
+[`word_positions`](#per-word-positions-ocr) below). It defaults to `false` and is
+**omitted from the request JSON entirely when unset** (`skip_serializing_if`), so
+existing plugins never see the field and are unaffected. Plugins that do not
+support positions simply ignore it and return text only.
 
 Supported initial operations:
 
@@ -187,6 +206,59 @@ subject to the configured output size limit.
   "diagnostics": []
 }
 ```
+
+### Per-word positions (OCR) {#per-word-positions-ocr}
+
+OCR-engine plugins that received `options.want_positions: true` may attach a
+`word_positions` array to a text output. It is grouped **per text line** (an
+array of arrays) in OCR reading order, where each inner array holds the words on
+that line:
+
+```json
+{
+  "protocol_version": 1,
+  "request_id": "8fd58b42-8f4d-4ca8-a6f2-40d2757f1a63",
+  "status": "ok",
+  "outputs": [
+    {
+      "role": "source",
+      "kind": "text",
+      "inline_text": "Hello world\nSecond line",
+      "encoding": "utf-8",
+      "line_ending": "lf",
+      "word_positions": [
+        [
+          { "text": "Hello", "line": 0, "x": 12, "y": 8,  "width": 64, "height": 22, "confidence": 96 },
+          { "text": "world", "line": 0, "x": 84, "y": 8,  "width": 70, "height": 22, "confidence": 94 }
+        ],
+        [
+          { "text": "Second", "line": 1, "x": 12, "y": 40, "width": 80, "height": 22, "confidence": 91 },
+          { "text": "line",   "line": 1, "x": 98, "y": 40, "width": 44, "height": 22, "confidence": 90 }
+        ]
+      ]
+    }
+  ],
+  "diagnostics": []
+}
+```
+
+Each `WordPosition` object has:
+
+- `text` — the recognized word.
+- `line` — 0-based line index this word belongs to (the OCR reading order;
+  matches the outer array index).
+- `x`, `y`, `width`, `height` — the word's bounding box in **image-resolution
+  pixels**, origin top-left (`u32`).
+- `confidence` — optional integer percent the engine reports, `0`–`100`; omitted
+  when unknown.
+
+`word_positions` is fully **optional and backward-compatible**: older plugins
+omit it and it deserializes to `None`, and `WordPosition.confidence` is likewise
+optional. The protocol version stays **`1`** — this is a purely additive field.
+The bundled `tesseract-ocr` plugin populates it by parsing Tesseract's TSV output
+(level-5 word rows, grouped by block/paragraph/line) when `want_positions` is
+set. See `docs/document-compare-implementation.md` for how the document engine
+threads these onto `DocumentCompareResult.{left,right}_word_positions`.
 
 Error responses use `status: "error"` and must include a stable code:
 
@@ -264,6 +336,28 @@ filesystem/network policy is unenforced.
 
 `docs/sandbox-design.md` and the `linsync-sandbox` crate documentation
 cover the strategy detection logic and the Flatpak portal interaction.
+
+## Prediffer Conflict Policy {#prediffer-conflict-policy}
+
+When more than one `prediffer` runs in a chain, two prediffers can normalize the
+same aspect of the text — for instance both collapsing whitespace, or both
+rewriting timestamps. The manifest's `normalization_categories` field lets a
+prediffer declare which categories it touches; two prediffers that share a
+category *overlap*. The host resolves overlaps with a `PredifferConflictPolicy`,
+selected per compare via the `--prediffer-conflict-policy` CLI flag (or the
+profile's `prediffer_conflict_policy` field). The serialized values are
+snake_case:
+
+| Policy        | Behavior                                                                                       |
+| ------------- | ---------------------------------------------------------------------------------------------- |
+| `chain` (default) | Run every prediffer in the configured order. Today's behavior — no prediffer is dropped.    |
+| `first_wins`  | When two prediffers share a category, keep the **first** and drop the later overlapping one(s). |
+| `last_wins`   | When two prediffers share a category, keep the **last** and drop the earlier overlapping one(s). |
+
+Order is preserved among the kept prediffers, and a prediffer that declares **no**
+categories never conflicts and is always kept (so a chain of category-less
+prediffers behaves identically under every policy). `resolve_prediffer_conflicts`
+in `linsync-core::plugin` implements this filtering.
 
 ## `unpack_folder` Operation
 

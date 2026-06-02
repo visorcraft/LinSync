@@ -210,6 +210,7 @@ LinSync 1.1 added three specialized compare engines.
 cargo run -p linsync-cli -- compare --type image left.png right.png
 cargo run -p linsync-cli -- compare --type image --image-mode tolerance --image-tolerance 0.02 left.png right.png
 cargo run -p linsync-cli -- compare --type image --image-mode perceptual --image-delta-e 2.0 left.png right.png
+cargo run -p linsync-cli -- compare --type image --image-frames all left.gif right.gif
 cargo run -p linsync-cli -- compare --type image --json left.png right.png
 ```
 
@@ -224,15 +225,30 @@ list from the running build, renders a red diff overlay with region
 navigation, and can save the generated overlay PNG to a user-selected
 path.
 
+Supported formats now include GIF, Radiance HDR (`.hdr`), and OpenEXR
+(`.exr`) alongside PNG, JPEG, WebP, and TIFF. HDR/EXR inputs are
+tone-mapped to 8-bit RGBA before comparison, so they are suitable for
+release-artifact checks rather than HDR-mastering fidelity. For animated
+GIF / APNG / WebP, add `--image-frames all` (default `first`) to compare
+every frame pairwise; the result reports the total frame count and which
+frames differ. Animation timing and disposal modes are not modelled —
+frames are compared by index.
+
 ### Document
 
 ```sh
 cargo run -p linsync-cli -- compare --type document left.pdf right.pdf
 cargo run -p linsync-cli -- compare --type document --document-mode ocr_text --ocr-language eng left.pdf right.pdf
+cargo run -p linsync-cli -- compare --type document --document-mode rendered --document-pages 2-4 left.pdf right.pdf
 ```
 
-Routes through helper plugins (Tesseract, Poppler, LibreOffice). Text
-and OCR-text modes are functional; rendered-document mode is not.
+Routes through helper plugins (Tesseract, Poppler, LibreOffice). Text,
+OCR-text, and rendered (per-page image diff, optionally narrowed with
+`--document-pages FIRST-LAST`) modes are all functional. In OCR mode the
+engine also asks the OCR engine for per-word bounding boxes (when the
+plugin supports it) and surfaces them as positional data on the result
+(`left_word_positions` / `right_word_positions`); these are exposed as
+data and word counts, not as a visual overlay drawn on a rendered page.
 
 ### Webpage
 
@@ -317,6 +333,18 @@ changed members are representable UTF-8 text. Use `--preview` to print
 the patch without writing a file. HTML reports support text and folder
 comparisons, selected folder columns, expanded/collapsed tree state,
 and optional nested text file reports.
+
+You can also save a comparison result and re-render it later without
+recomparing. `compare … --save-result FILE` writes a small JSON envelope,
+and `report --from-json FILE --output report.html` re-renders it to HTML:
+
+```sh
+cargo run -p linsync-cli -- compare --type image --save-result result.json left.png right.png
+cargo run -p linsync-cli -- report --from-json result.json --output report.html
+```
+
+The round-trip works for text, folder, table, binary, image, and
+document results.
 
 ## Specialized Compare Commands
 
@@ -420,6 +448,26 @@ The Plugins page lists discovered plugins with class chips, license
 expression, source badge, and an enable/disable toggle. Per-plugin
 options are edited through a dialog wired to
 `/plugins/options/{get,set}`.
+
+In addition to the global enable/disable toggle, a plugin can be enabled
+or disabled **per compare profile**: select a user profile and set the
+per-profile override, which is stored on the profile and takes precedence
+over the global setting. (Built-in profiles are read-only — copy one to a
+user profile first.)
+
+When more than one prediffer runs in a chain, two prediffers can
+normalize the same thing. A prediffer's manifest can declare
+`normalization_categories`; when two prediffers share a category, the
+`--prediffer-conflict-policy` flag on `compare` (or the profile's
+equivalent setting) decides what happens:
+
+```sh
+cargo run -p linsync-cli -- compare --prediffer-conflict-policy first-wins left.txt right.txt
+```
+
+`chain` (the default) runs every prediffer; `first-wins` keeps the first
+of two overlapping prediffers and drops the later one(s); `last-wins`
+keeps the last. Prediffers that declare no categories never conflict.
 
 See `docs/plugin-protocol.md` for the helper protocol.
 

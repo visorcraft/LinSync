@@ -430,6 +430,7 @@ fn plugin_manifest(id: &str, entry: &str) -> PluginManifest {
         sandbox: PluginSandbox::default(),
         streaming: false,
         options_schema: vec![],
+        normalization_categories: vec![],
     }
 }
 
@@ -576,7 +577,7 @@ fn image_compare(c: &mut Criterion) {
 
     group.bench_function("tolerance_identical", |b| {
         let opts = ImageCompareOptions {
-            mode: ImageCompareMode::Tolerance(10),
+            mode: ImageCompareMode::Tolerance { tolerance: 10 },
             ..ImageCompareOptions::default()
         };
         b.iter(|| compare_images(&fix.left_path, &fix.right_path, &opts).unwrap());
@@ -584,7 +585,7 @@ fn image_compare(c: &mut Criterion) {
 
     group.bench_function("tolerance_differing", |b| {
         let opts = ImageCompareOptions {
-            mode: ImageCompareMode::Tolerance(10),
+            mode: ImageCompareMode::Tolerance { tolerance: 10 },
             ..ImageCompareOptions::default()
         };
         b.iter(|| compare_images(&fix.left_path, &fix.right_alt_path, &opts).unwrap());
