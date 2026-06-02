@@ -1,15 +1,25 @@
 //! Qt WebEngine wrapper for LinSync webpage compare (rendered + screenshot sub-modes).
 //!
-//! This crate is only available when the `web-engine` feature is enabled on
-//! `linsync-core`.  In the default build, this crate is not compiled and the
+//! This crate is only compiled when the `web-engine` feature is enabled on
+//! `linsync-core`. In the default build it is not depended on and the
 //! rendered/screenshot sub-modes are absent from the public API.
 //!
-//! # Phase 9.7-bis
+//! # Architecture: out-of-process renderer
 //!
-//! The real implementation (cxx-qt bindings to `QWebEngineView` and
-//! `QWebEngineProfile`) is deferred to Phase 9.7-bis.  This stub defines the
-//! public API surface and returns `Err(WebEngineError::NotImplemented)` for all
-//! operations so that Tasks 9.8, 9.9, and 9.10 can compile and be wired end-to-end.
+//! Rendering a page needs a running Qt event loop and a Chromium compositor.
+//! That cannot run inside a synchronous library call when the caller (the GUI
+//! bridge) already owns a `QGuiApplication`, and the CLI has no event loop at
+//! all. So [`render_url`] spawns a short-lived `qml6` process running a
+//! generated `WebEngineView` document that loads the URL, grabs the rendered
+//! view to an image, saves it as PNG, and exits — the same out-of-process
+//! pattern LinSync already uses for plugins and the external QML host. This
+//! works uniformly for both the CLI and the GUI, and renders headlessly under
+//! `QT_QPA_PLATFORM=offscreen`.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{Duration, Instant};
 
 /// Errors from the web-engine wrapper.
 #[derive(Debug)]
@@ -24,10 +34,7 @@ impl std::fmt::Display for WebEngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotImplemented => {
-                write!(
-                    f,
-                    "Qt WebEngine bindings not yet implemented (Phase 9.7-bis)"
-                )
+                write!(f, "Qt WebEngine rendering is not available in this build")
             }
             Self::InitFailed(s) => write!(f, "Qt WebEngine initialization failed: {s}"),
             Self::PageLoadFailed { url, reason } => {
@@ -45,7 +52,7 @@ impl std::error::Error for WebEngineError {}
 pub struct WebEngineOptions {
     /// Directory for the isolated `QWebEngineProfile` storage.
     /// Typically `$XDG_CACHE_HOME/linsync/webcompare/profile/`.
-    pub profile_storage_dir: std::path::PathBuf,
+    pub profile_storage_dir: PathBuf,
     /// Viewport width in logical pixels.  Default 1280.
     pub viewport_width: u32,
     /// Viewport height in logical pixels.  Default 900.
@@ -57,7 +64,7 @@ pub struct WebEngineOptions {
 impl Default for WebEngineOptions {
     fn default() -> Self {
         Self {
-            profile_storage_dir: std::path::PathBuf::from("/tmp/linsync-webengine-profile"),
+            profile_storage_dir: std::env::temp_dir().join("linsync-webengine-profile"),
             viewport_width: 1280,
             viewport_height: 900,
             timeout_secs: 30,
@@ -65,29 +72,183 @@ impl Default for WebEngineOptions {
     }
 }
 
-/// Render `url` in an isolated Qt WebEngine profile and return the path to a PNG screenshot.
+/// Locate a Qt 6 QML runner (`qml6`, then `qml`), honoring `LINSYNC_QML_RUNNER`.
+fn resolve_qml_runner() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("LINSYNC_QML_RUNNER") {
+        let path = PathBuf::from(explicit);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    for candidate in ["qml6", "qml"] {
+        if Command::new(candidate)
+            .arg("--help")
+            .output()
+            .map(|o| o.status.success() || !o.stdout.is_empty() || !o.stderr.is_empty())
+            .unwrap_or(false)
+        {
+            return Some(PathBuf::from(candidate));
+        }
+    }
+    None
+}
+
+/// Escape a string for embedding inside a QML double-quoted string literal.
+fn qml_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// A stable, filesystem-safe hash of a URL for naming its PNG.
+fn url_hash(url: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Render `url` in an isolated Qt WebEngine session and return the path to a PNG
+/// screenshot written to `output_dir/<url_hash>.png`.
 ///
-/// The PNG is written to `output_dir/<url_hash>.png`.
-///
-/// # Errors
-///
-/// Returns [`WebEngineError::NotImplemented`] in the current stub.
-/// The real implementation (Phase 9.7-bis) will initialize a `QApplication` /
-/// `QWebEngineView` in the calling thread, navigate to the URL, wait for
-/// `loadFinished`, then call `QWebEngineView::grab()` and save the result as PNG.
+/// Spawns a `qml6` subprocess running a generated `WebEngineView` that loads the
+/// URL, grabs the rendered view, and saves a PNG. Returns
+/// [`WebEngineError::NotImplemented`] when no QML runner is available (so callers
+/// can fall back to HTML-source compare), and a specific error on load/capture
+/// failure or timeout.
 pub fn render_url(
     url: &str,
-    output_dir: &std::path::Path,
+    output_dir: &Path,
     options: &WebEngineOptions,
-) -> Result<std::path::PathBuf, WebEngineError> {
-    let _ = (url, output_dir, options);
-    Err(WebEngineError::NotImplemented)
+) -> Result<PathBuf, WebEngineError> {
+    let Some(runner) = resolve_qml_runner() else {
+        return Err(WebEngineError::NotImplemented);
+    };
+    std::fs::create_dir_all(output_dir).map_err(|e| WebEngineError::InitFailed(e.to_string()))?;
+    std::fs::create_dir_all(&options.profile_storage_dir)
+        .map_err(|e| WebEngineError::InitFailed(e.to_string()))?;
+
+    let output_png = output_dir.join(format!("{}.png", url_hash(url)));
+    let _ = std::fs::remove_file(&output_png);
+
+    let width = options.viewport_width.max(1);
+    let height = options.viewport_height.max(1);
+    let timeout_ms = u64::from(options.timeout_secs.max(1)).saturating_mul(1000);
+
+    // The renderer document: load the URL, grab the view to the configured
+    // size, save the PNG, and exit. A guard timer exits non-zero if the page
+    // never finishes loading.
+    let renderer_qml = format!(
+        r#"import QtQuick
+import QtWebEngine
+
+Item {{
+    width: {width}; height: {height}
+    Timer {{
+        interval: {timeout_ms}; running: true; repeat: false
+        onTriggered: Qt.exit(4)
+    }}
+    WebEngineView {{
+        id: view
+        anchors.fill: parent
+        url: "{url}"
+        onLoadingChanged: function(info) {{
+            if (info.status === WebEngineView.LoadSucceededStatus) {{
+                view.grabToImage(function(result) {{
+                    var ok = result.saveToFile("{output}");
+                    Qt.exit(ok ? 0 : 3);
+                }}, Qt.size({width}, {height}));
+            }} else if (info.status === WebEngineView.LoadFailedStatus) {{
+                Qt.exit(2);
+            }}
+        }}
+    }}
+}}
+"#,
+        width = width,
+        height = height,
+        timeout_ms = timeout_ms,
+        url = qml_escape(url),
+        output = qml_escape(&output_png.to_string_lossy()),
+    );
+
+    // Write the renderer into the profile dir (it contains only the public URL
+    // and output path, so no owner-only handling is required).
+    let renderer_path = options
+        .profile_storage_dir
+        .join(format!("render-{}.qml", url_hash(url)));
+    {
+        let mut file = std::fs::File::create(&renderer_path)
+            .map_err(|e| WebEngineError::InitFailed(e.to_string()))?;
+        file.write_all(renderer_qml.as_bytes())
+            .map_err(|e| WebEngineError::InitFailed(e.to_string()))?;
+    }
+
+    let mut command = Command::new(&runner);
+    command
+        .arg(&renderer_path)
+        // Headless rendering: offscreen platform + GPU-less Chromium.
+        .env("QT_QPA_PLATFORM", "offscreen")
+        .env("QTWEBENGINE_DISABLE_SANDBOX", "1")
+        .env(
+            "QTWEBENGINE_CHROMIUM_FLAGS",
+            "--disable-gpu --no-sandbox --disable-dev-shm-usage",
+        );
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| WebEngineError::InitFailed(format!("failed to launch {runner:?}: {e}")))?;
+
+    // Wait with a hard wall-clock ceiling (the QML guard timer should exit
+    // first; this is a backstop against a hung runner).
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms + 5_000);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = std::fs::remove_file(&renderer_path);
+                    return Err(WebEngineError::PageLoadFailed {
+                        url: url.to_owned(),
+                        reason: "render timed out".to_owned(),
+                    });
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&renderer_path);
+                return Err(WebEngineError::InitFailed(e.to_string()));
+            }
+        }
+    };
+    let _ = std::fs::remove_file(&renderer_path);
+
+    if !status.success() {
+        let code = status.code().unwrap_or(-1);
+        return Err(match code {
+            2 => WebEngineError::PageLoadFailed {
+                url: url.to_owned(),
+                reason: "page reported a load failure".to_owned(),
+            },
+            3 => WebEngineError::CaptureFailed("grabToImage could not save the PNG".to_owned()),
+            4 => WebEngineError::PageLoadFailed {
+                url: url.to_owned(),
+                reason: "render timed out".to_owned(),
+            },
+            other => WebEngineError::InitFailed(format!("renderer exited with code {other}")),
+        });
+    }
+
+    if output_png.is_file() {
+        Ok(output_png)
+    } else {
+        Err(WebEngineError::CaptureFailed(
+            "renderer exited successfully but no PNG was produced".to_owned(),
+        ))
+    }
 }
 
 /// Delete all Qt WebEngine profile data under `profile_storage_dir`.
-///
-/// Calls `QWebEngineProfile::deleteAllCookies()` before removing the directory.
-/// In this stub, simply removes the directory if it exists.
 pub fn clear_profile(options: &WebEngineOptions) -> Result<(), WebEngineError> {
     let dir = &options.profile_storage_dir;
     if dir.exists() {
@@ -101,22 +262,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn render_url_returns_not_implemented() {
-        let opts = WebEngineOptions::default();
-        let tmp = tempfile::tempdir().unwrap();
-        let err = render_url("http://example.com/", tmp.path(), &opts).unwrap_err();
-        assert!(matches!(err, WebEngineError::NotImplemented));
+    fn clear_profile_is_idempotent_when_dir_missing() {
+        let opts = WebEngineOptions {
+            profile_storage_dir: std::env::temp_dir().join("linsync-test-nonexistent-profile-dir"),
+            ..Default::default()
+        };
+        clear_profile(&opts).unwrap();
     }
 
     #[test]
-    fn clear_profile_is_idempotent_when_dir_missing() {
-        let opts = WebEngineOptions {
-            profile_storage_dir: std::path::PathBuf::from(
-                "/tmp/linsync-test-nonexistent-profile-dir",
-            ),
-            ..Default::default()
-        };
-        // Should not error even though directory doesn't exist.
-        clear_profile(&opts).unwrap();
+    fn qml_escape_quotes_and_backslashes() {
+        assert_eq!(qml_escape(r#"a"b\c"#), r#"a\"b\\c"#);
+    }
+
+    /// Live render of a local HTML page to PNG. Ignored by default because it
+    /// requires `qml6` + qt6-webengine and an offscreen GL context; run with
+    /// `--ignored` where those are present.
+    #[test]
+    #[ignore = "requires qml6 + qt6-webengine and an offscreen GL context"]
+    fn render_local_html_produces_png() {
+        let tmp = tempfile::tempdir().unwrap();
+        let html = tmp.path().join("page.html");
+        std::fs::write(
+            &html,
+            "<!doctype html><html><body style='background:#0a0'>hi</body></html>",
+        )
+        .unwrap();
+        let url = format!("file://{}", html.display());
+        let out_dir = tmp.path().join("out");
+        let png = render_url(&url, &out_dir, &WebEngineOptions::default())
+            .expect("render should produce a PNG");
+        let bytes = std::fs::read(&png).unwrap();
+        assert!(bytes.len() > 100, "PNG should be non-trivial");
+        assert_eq!(&bytes[1..4], b"PNG", "output is a PNG");
     }
 }
