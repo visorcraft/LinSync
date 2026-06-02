@@ -25,6 +25,9 @@ depends=(
     'kirigami'
     'hicolor-icon-theme'
     'bubblewrap'
+    # Provides the QtWebEngine QML module the rendered/screenshot webpage modes
+    # render through (the binary is built with the web-engine feature).
+    'qt6-webengine'
 )
 makedepends=(
     'cargo'
@@ -45,7 +48,7 @@ _srcdir="${startdir}/../.."
 build() {
     cd "${_srcdir}"
     QT_VERSION_MAJOR=6 cargo build --release --workspace \
-        --features 'linsync/cxxqt linsync/cxxqt-app'
+        --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine'
 }
 
 check() {

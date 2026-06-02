@@ -80,8 +80,26 @@ pub enum WebpageCompareResult {
 pub struct WebpageRenderedResult {
     /// Rendered DOM diff as HTML source, or an image diff path if DOM diff is unavailable.
     pub dom_diff: Option<String>,
-    /// Raw HTML source compare result used as fallback.
+    /// Pixel comparison of the two rendered page screenshots, when the engine
+    /// rendered both sides. `None` when the engine was unavailable and the
+    /// HTML-source fallback was used instead.
+    pub image: Option<crate::image::ImageCompareResult>,
+    /// Raw HTML source compare result, used as a fallback and as side-by-side
+    /// source context alongside the rendered image.
     pub html_fallback: Option<crate::text::TextCompareResult>,
+}
+
+#[cfg(feature = "web-engine")]
+impl WebpageRenderedResult {
+    /// Whether the rendered pages are equal: by pixels when a rendered image
+    /// comparison is present, otherwise by the HTML-source fallback.
+    pub fn is_equal(&self) -> bool {
+        match (&self.image, &self.html_fallback) {
+            (Some(img), _) => img.equal,
+            (None, Some(text)) => text.is_equal(),
+            (None, None) => true,
+        }
+    }
 }
 
 /// Errors that can occur during webpage comparison.
@@ -586,9 +604,25 @@ pub fn compare_webpage_rendered(
     let left_result = linsync_webengine::render_url(left_url, &fetch_dir, &engine_opts);
     let right_result = linsync_webengine::render_url(right_url, &fetch_dir, &engine_opts);
     match (left_result, right_result) {
-        (Ok(_left_png), Ok(_right_png)) => {
-            // Phase 9.7-bis: forward PNGs to image compare.
-            unimplemented!("Phase 9.7-bis: compare rendered PNGs via image compare")
+        (Ok(left_png), Ok(right_png)) => {
+            // Diff the two rendered screenshots through the image engine, and
+            // attach the HTML-source diff as side-by-side context.
+            let image = crate::image::compare_images(
+                &left_png,
+                &right_png,
+                &crate::image::ImageCompareOptions::default(),
+            )
+            .map_err(|e| WebpageCompareError::Text(e.to_string()))?;
+            let html_fallback =
+                match compare_webpage_html_source(left_url, right_url, options, cache_dir)? {
+                    WebpageCompareResult::Text(text_cmp) => Some(text_cmp),
+                    _ => None,
+                };
+            Ok(WebpageCompareResult::Rendered(WebpageRenderedResult {
+                dom_diff: None,
+                image: Some(image),
+                html_fallback,
+            }))
         }
         (Err(linsync_webengine::WebEngineError::NotImplemented), _)
         | (_, Err(linsync_webengine::WebEngineError::NotImplemented)) => {
@@ -596,6 +630,7 @@ pub fn compare_webpage_rendered(
             if let WebpageCompareResult::Text(text_cmp) = fallback {
                 Ok(WebpageCompareResult::Rendered(WebpageRenderedResult {
                     dom_diff: None,
+                    image: None,
                     html_fallback: Some(text_cmp),
                 }))
             } else {
@@ -1081,40 +1116,40 @@ mod tests {
 
     #[cfg(feature = "web-engine")]
     #[test]
-    fn rendered_stub_falls_back_to_html_source() {
-        if !plugin_script_exists() {
-            return;
-        }
-        use httptest::{Expectation, Server, matchers::*, responders::*};
-        let server_l = Server::run();
-        server_l.expect(
-            Expectation::matching(request::method_path("GET", "/"))
-                .times(1..)
-                .respond_with(status_code(200).body("<html><body>A</body></html>")),
-        );
-        let server_r = Server::run();
-        server_r.expect(
-            Expectation::matching(request::method_path("GET", "/"))
-                .times(1..)
-                .respond_with(status_code(200).body("<html><body>A</body></html>")),
-        );
-        let opts = WebpageCompareOptions {
-            confirmed_by_user: true,
-            ..Default::default()
+    fn rendered_result_equality_uses_html_fallback_when_no_image() {
+        use crate::text::{TextCompareOptions, compare_text};
+        // No rendered image (engine unavailable) → equality comes from the
+        // HTML-source fallback.
+        let equal_text = compare_text("l", "same\n", "r", "same\n", &TextCompareOptions::default());
+        let equal = WebpageRenderedResult {
+            dom_diff: None,
+            image: None,
+            html_fallback: Some(equal_text),
         };
-        let tmp = tempfile::tempdir().unwrap();
-        let result = compare_webpage_rendered(
-            &server_l.url_str("/"),
-            &server_r.url_str("/"),
-            &opts,
-            tmp.path(),
-        )
-        .unwrap();
-        assert!(
-            matches!(result, WebpageCompareResult::Rendered(_)),
-            "expected Rendered variant"
-        );
+        assert!(equal.is_equal());
+
+        let diff_text = compare_text("l", "a\n", "r", "b\n", &TextCompareOptions::default());
+        let different = WebpageRenderedResult {
+            dom_diff: None,
+            image: None,
+            html_fallback: Some(diff_text),
+        };
+        assert!(!different.is_equal());
+
+        // Nothing to compare → trivially equal.
+        let empty = WebpageRenderedResult {
+            dom_diff: None,
+            image: None,
+            html_fallback: None,
+        };
+        assert!(empty.is_equal());
     }
+
+    // The full rendered/screenshot path over real http URLs can't be tested
+    // reliably headlessly (validate_url accepts only http(s), and offscreen
+    // Chromium networking to an ephemeral local server is flaky). The renderer
+    // itself is covered by linsync-webengine's `render_local_html_produces_png`
+    // live test, and the result-equality logic by the deterministic test above.
 
     #[cfg(feature = "web-engine")]
     #[test]

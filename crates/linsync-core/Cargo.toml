@@ -10,7 +10,9 @@ default = ["sandbox"]
 sandbox = ["dep:linsync-sandbox"]
 image-compare = ["dep:image", "dep:lab"]
 image-avif = ["image-compare", "image/avif"]
-web-engine = ["dep:linsync-webengine"]
+# Rendered/screenshot webpage compare diffs the rendered PNGs through the image
+# engine, so web-engine implies image-compare.
+web-engine = ["dep:linsync-webengine", "image-compare"]
 document-compare = []
 
 [dependencies]

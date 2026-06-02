@@ -1745,12 +1745,12 @@ wd!:target</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="5341"/>
+        <location filename="../qml/Main.qml" line="5345"/>
         <source>Comparing %1/%2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="5343"/>
+        <location filename="../qml/Main.qml" line="5347"/>
         <source>Comparing — %1</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2547,141 +2547,154 @@ wd!:target</source>
 <context>
     <name>WebpageComparePage</name>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="138"/>
+        <location filename="../qml/WebpageComparePage.qml" line="141"/>
         <source>Error: bridge request failed</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="143"/>
+        <location filename="../qml/WebpageComparePage.qml" line="146"/>
         <source>Error: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="146"/>
+        <location filename="../qml/WebpageComparePage.qml" line="149"/>
         <source>Compare complete</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="198"/>
+        <location filename="../qml/WebpageComparePage.qml" line="201"/>
         <source>Comparing %1/%2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="208"/>
+        <location filename="../qml/WebpageComparePage.qml" line="211"/>
         <source>Webcompare cache cleared</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="232"/>
+        <location filename="../qml/WebpageComparePage.qml" line="235"/>
         <source>Webpage compare fetches content from the internet. Third-party resources on each page may also be requested.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="252"/>
+        <location filename="../qml/WebpageComparePage.qml" line="255"/>
         <source>Pages to compare</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="264"/>
-        <location filename="../qml/WebpageComparePage.qml" line="271"/>
+        <location filename="../qml/WebpageComparePage.qml" line="267"/>
+        <location filename="../qml/WebpageComparePage.qml" line="274"/>
         <source>Left URL</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="274"/>
-        <location filename="../qml/WebpageComparePage.qml" line="281"/>
+        <location filename="../qml/WebpageComparePage.qml" line="277"/>
+        <location filename="../qml/WebpageComparePage.qml" line="284"/>
         <source>Right URL</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="284"/>
-        <location filename="../qml/WebpageComparePage.qml" line="299"/>
+        <location filename="../qml/WebpageComparePage.qml" line="287"/>
+        <location filename="../qml/WebpageComparePage.qml" line="312"/>
         <source>Compare mode</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="290"/>
+        <location filename="../qml/WebpageComparePage.qml" line="296"/>
+        <location filename="../qml/WebpageComparePage.qml" line="303"/>
         <source>HTML source</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="291"/>
+        <location filename="../qml/WebpageComparePage.qml" line="297"/>
+        <location filename="../qml/WebpageComparePage.qml" line="304"/>
         <source>Extracted text</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="292"/>
+        <location filename="../qml/WebpageComparePage.qml" line="298"/>
+        <location filename="../qml/WebpageComparePage.qml" line="305"/>
         <source>Resource tree</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="316"/>
+        <location filename="../qml/WebpageComparePage.qml" line="299"/>
+        <source>Rendered (pixels)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/WebpageComparePage.qml" line="300"/>
+        <source>Screenshot</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../qml/WebpageComparePage.qml" line="329"/>
         <source>Compare…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="320"/>
+        <location filename="../qml/WebpageComparePage.qml" line="333"/>
         <source>Compare</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="324"/>
-        <location filename="../qml/WebpageComparePage.qml" line="327"/>
+        <location filename="../qml/WebpageComparePage.qml" line="337"/>
+        <location filename="../qml/WebpageComparePage.qml" line="340"/>
         <source>Clear webcompare cache</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="371"/>
+        <location filename="../qml/WebpageComparePage.qml" line="384"/>
         <source>Result</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="392"/>
+        <location filename="../qml/WebpageComparePage.qml" line="405"/>
         <source>Output truncated — showing the first 4000 lines.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="412"/>
+        <location filename="../qml/WebpageComparePage.qml" line="425"/>
         <source>Left</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="428"/>
+        <location filename="../qml/WebpageComparePage.qml" line="441"/>
         <source>Right</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="497"/>
+        <location filename="../qml/WebpageComparePage.qml" line="510"/>
         <source>Filter resources…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="506"/>
+        <location filename="../qml/WebpageComparePage.qml" line="519"/>
         <source>Filter webpage resources by path</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="511"/>
+        <location filename="../qml/WebpageComparePage.qml" line="524"/>
         <source>%1 resources</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="626"/>
+        <location filename="../qml/WebpageComparePage.qml" line="639"/>
         <source>No comparison run yet</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="635"/>
+        <location filename="../qml/WebpageComparePage.qml" line="648"/>
         <source>Enter two URLs above and click Compare… to begin.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="648"/>
+        <location filename="../qml/WebpageComparePage.qml" line="661"/>
         <source>Fetch from the internet?</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../qml/WebpageComparePage.qml" line="658"/>
+        <location filename="../qml/WebpageComparePage.qml" line="671"/>
         <source>LinSync will fetch the following URLs:
 
   Left:  %1

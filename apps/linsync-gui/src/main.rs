@@ -3289,6 +3289,7 @@ fn bridge_response_with_token(
         "/plugins/install" => plugins_install_bridge_response(query, paths),
         "/plugins/remove" => plugins_remove_bridge_response(query, paths),
         "/plugins/trust" => plugins_trust_bridge_response(query, paths),
+        "/capabilities" => capabilities_bridge_response(),
         "/folder/query" => folder_query_bridge_response(query),
         "/compare/text/window" => text_window_bridge_response(query),
         "/folder/op/plan" => folder_op_plan_bridge_response(query, paths, state),
@@ -4470,6 +4471,16 @@ fn folder_query_bridge_response(query: &str) -> Vec<u8> {
 /// (`?left=&right=&offset=&limit=`), so the GUI can render large diffs without
 /// loading every row into the view. Syntax/find work is materialized only for
 /// the returned window; `total_rows` drives pagination.
+/// Report compile-time capabilities so the QML can hide modes the binary can't
+/// serve (e.g. webpage rendered/screenshot, which need the `web-engine` build).
+fn capabilities_bridge_response() -> Vec<u8> {
+    let body = serde_json::json!({
+        "web_engine": cfg!(feature = "web-engine"),
+    })
+    .to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
+}
+
 fn text_window_bridge_response(query: &str) -> Vec<u8> {
     let params = query_params(query);
     let (Some(left), Some(right)) = (query_value(&params, "left"), query_value(&params, "right"))
@@ -7025,23 +7036,31 @@ mod tests {
     }
 
     #[test]
-    fn webpage_qml_hides_default_build_unsupported_modes() {
+    fn webpage_qml_gates_rendered_modes_on_web_engine() {
         let source_file =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/WebpageComparePage.qml");
         let qml =
             fs::read_to_string(&source_file).expect("WebpageComparePage.qml should be readable");
+        // Always-available modes.
         for mode in ["html", "text", "tree"] {
             assert!(
                 qml.contains(&format!("value: \"{mode}\"")),
                 "WebpageComparePage should expose implemented mode {mode}"
             );
         }
+        // Rendered/screenshot are offered, but only behind the web-engine
+        // capability flag (set from /capabilities), so a non-web-engine build
+        // never shows them.
         for mode in ["rendered", "screenshot"] {
             assert!(
-                !qml.contains(&format!("value: \"{mode}\"")),
-                "WebpageComparePage should not offer unsupported default-build mode {mode}"
+                qml.contains(&format!("value: \"{mode}\"")),
+                "WebpageComparePage should offer web-engine mode {mode}"
             );
         }
+        assert!(
+            qml.contains("webEngineAvailable"),
+            "rendered/screenshot modes must be gated on webEngineAvailable"
+        );
     }
 
     #[test]
@@ -7196,6 +7215,29 @@ mod tests {
         assert!(
             tab.get("left_rows").is_none() && tab.get("right_rows").is_none(),
             "folder response should not duplicate virtual table data into text rows: {body}"
+        );
+    }
+
+    #[test]
+    fn capabilities_reports_web_engine_flag() {
+        let paths = test_app_paths("capabilities");
+        let state = test_bridge_state(None);
+        let body = json_response_body(
+            &String::from_utf8(bridge_response(
+                "GET /capabilities HTTP/1.1\r\n",
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        assert!(
+            body["web_engine"].is_boolean(),
+            "capabilities reports the web_engine flag: {body}"
+        );
+        // The default test build has no web-engine feature.
+        assert_eq!(
+            body["web_engine"],
+            serde_json::json!(cfg!(feature = "web-engine"))
         );
     }
 

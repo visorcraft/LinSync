@@ -36,6 +36,9 @@ Controls.Pane {
     property string rightUrl: ""
     property string subMode: "html"
     property bool busy: false
+    // True when the binary was built with Qt WebEngine (set from /capabilities);
+    // gates the rendered/screenshot modes.
+    property bool webEngineAvailable: false
     property string resultSummary: ""
     property var resultRows: []
     property bool resultEqual: false
@@ -286,11 +289,21 @@ Controls.Pane {
                         id: subModeCombo
                         Layout.preferredWidth: 280
                         implicitHeight: 30
-                        model: [
-                            { text: qsTr("HTML source"), value: "html" },
-                            { text: qsTr("Extracted text"), value: "text" },
-                            { text: qsTr("Resource tree"), value: "tree" }
-                        ]
+                        // Rendered/screenshot need the web-engine build; offered
+                        // only when /capabilities reports it (see Main.qml).
+                        model: root.webEngineAvailable
+                            ? [
+                                { text: qsTr("HTML source"), value: "html" },
+                                { text: qsTr("Extracted text"), value: "text" },
+                                { text: qsTr("Resource tree"), value: "tree" },
+                                { text: qsTr("Rendered (pixels)"), value: "rendered" },
+                                { text: qsTr("Screenshot"), value: "screenshot" }
+                            ]
+                            : [
+                                { text: qsTr("HTML source"), value: "html" },
+                                { text: qsTr("Extracted text"), value: "text" },
+                                { text: qsTr("Resource tree"), value: "tree" }
+                            ]
                         textRole: "text"
                         valueRole: "value"
                         onActivated: {

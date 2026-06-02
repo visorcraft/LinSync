@@ -965,16 +965,43 @@ pub fn webpage_compare_bridge_response_with_profile(
         }
         #[cfg(feature = "web-engine")]
         Ok(linsync_core::WebpageCompareResult::Rendered(r)) => {
-            let summary = if r.html_fallback.as_ref().is_some_and(|t| t.is_equal()) {
-                "identical (rendered fallback)".to_owned()
-            } else {
-                "different".to_owned()
+            let equal = r.is_equal();
+            let summary = match (&r.image, equal) {
+                (Some(img), false) => {
+                    format!("different ({:.2}% of pixels)", img.diff_ratio * 100.0)
+                }
+                (Some(_), true) => "identical (rendered pixels match)".to_owned(),
+                (None, true) => "identical (HTML-source fallback)".to_owned(),
+                (None, false) => "different (HTML-source fallback)".to_owned(),
             };
-            json_with_schema(serde_json::json!({"summary": summary}))
+            let mut body = serde_json::json!({ "summary": summary, "equal": equal });
+            if let Some(img) = &r.image {
+                body["image"] = serde_json::json!({
+                    "equal": img.equal,
+                    "diff_ratio": img.diff_ratio,
+                    "differing_pixels": img.differing_pixels,
+                    "left_dims": img.left_dims,
+                    "right_dims": img.right_dims,
+                });
+            }
+            json_with_schema(body)
         }
         #[cfg(feature = "web-engine")]
-        Ok(linsync_core::WebpageCompareResult::Screenshot(_)) => {
-            json_with_schema(serde_json::json!({"summary": "screenshot captured"}))
+        Ok(linsync_core::WebpageCompareResult::Screenshot(img)) => {
+            let summary = if img.equal {
+                "identical (screenshots match)".to_owned()
+            } else {
+                format!("different ({:.2}% of pixels)", img.diff_ratio * 100.0)
+            };
+            json_with_schema(serde_json::json!({
+                "summary": summary,
+                "equal": img.equal,
+                "diff_ratio": img.diff_ratio,
+                "differing_pixels": img.differing_pixels,
+                "total_pixels": img.total_pixels,
+                "left_dims": img.left_dims,
+                "right_dims": img.right_dims,
+            }))
         }
         Err(e) => error_json(e.to_string()),
     }

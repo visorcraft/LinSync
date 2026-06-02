@@ -30,11 +30,19 @@ appdir="${1:-"${root}/target/appimage/LinSync.AppDir"}"
 output="${2:-"${root}/target/appimage/LinSync-${VERSION}-x86_64.AppImage"}"
 
 QT_VERSION_MAJOR=6 cargo build --workspace --release \
-    --features 'linsync/cxxqt linsync/cxxqt-app'
+    --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine'
 
 rm -rf "${appdir}"
 install -Dm755 "${root}/target/release/linsync" "${appdir}/usr/bin/linsync"
 install -Dm755 "${root}/target/release/linsync-cli" "${appdir}/usr/bin/linsync-cli"
+
+# The rendered/screenshot webpage modes (web-engine feature) shell out to a
+# `qml6` process running a QtWebEngine view, so bundle the qml runner alongside
+# the binaries. If qml6 isn't present at build time the AppImage still works —
+# those modes degrade to the HTML-source fallback at runtime.
+if qml6_bin="$(command -v qml6 2>/dev/null)"; then
+    install -Dm755 "$qml6_bin" "${appdir}/usr/bin/qml6"
+fi
 mkdir -p "${appdir}/usr/share/linsync"
 cp -R "${root}/apps/linsync-gui/qml" "${appdir}/usr/share/linsync/qml"
 install -Dm644 "${root}/packaging/distro/git-mergetool.gitconfig" \
@@ -68,6 +76,10 @@ if ! command -v linuxdeploy >/dev/null 2>&1; then
     exit 0
 fi
 
+# EXTRA_QT_MODULES forces linuxdeploy-plugin-qt to bundle QtWebEngine (and its
+# QtWebEngineProcess + resources): the app uses the in-process cxx-qt host, so
+# the plugin would not otherwise detect WebEngine usage from the app's QML.
+EXTRA_QT_MODULES="${EXTRA_QT_MODULES:-webenginequick}" \
 linuxdeploy --appdir "$appdir" --plugin qt --output appimage \
     --custom-apprun "$apprun_src" \
     --desktop-file "${appdir}/usr/share/applications/com.visorcraft.LinSync.desktop"

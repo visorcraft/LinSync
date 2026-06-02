@@ -32,6 +32,9 @@ Requires:       qt6-qtbase
 Requires:       qt6-qtdeclarative
 Requires:       kf6-kirigami
 Requires:       hicolor-icon-theme
+# QtWebEngine QML module for the rendered/screenshot webpage modes (the binary
+# is built with the web-engine feature).
+Requires:       qt6-qtwebengine
 # Fallback plugin sandbox backend for kernels without Landlock (< 5.13).
 Requires:       bubblewrap
 
@@ -49,7 +52,7 @@ integration.
 
 %build
 QT_VERSION_MAJOR=6 cargo build --release --workspace \
-    --features 'linsync/cxxqt linsync/cxxqt-app'
+    --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine'
 
 %install
 # Honour CARGO_TARGET_DIR if the build set it (containerised builds put

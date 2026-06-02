@@ -4926,6 +4926,10 @@ Kirigami.ApplicationWindow {
                 activeHighlight:    root.activeHighlight
                 separatorColor:     root.separatorColor
                 onSessionUpdated: context => root.applyLaunchContext(context, false)
+                Component.onCompleted: root.bridgeGet("/capabilities", function (ok, payload) {
+                    if (ok && payload)
+                        webpageComparePage.webEngineAvailable = payload.web_engine === true
+                })
             }
 
             DocumentComparePage {
