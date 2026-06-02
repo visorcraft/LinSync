@@ -27,7 +27,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -37,7 +37,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Qt 6 + C++ toolchain + mold/sccache
         run: |
           sudo apt-get update
@@ -60,7 +60,7 @@ jobs:
     name: test (stable)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Qt 6 + runtime + C++ toolchain + mold/sccache
         run: |
           sudo apt-get update
@@ -111,7 +111,7 @@ jobs:
             sccache \
             ninja \
             mesa
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build GUI binary (cxx-qt in-process host)
@@ -157,7 +157,7 @@ jobs:
             mesa \
             xorg-server-xvfb \
             imagemagick
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build GUI binary
@@ -173,7 +173,7 @@ jobs:
         run: bash scripts/gui-screenshot.sh
       - name: Upload screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linsync-screenshots-${{ github.sha }}
           path: target/screenshots/*.png
@@ -182,7 +182,7 @@ jobs:
     name: accessibility label grep
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check every Button/Switch/SpinBox/ComboBox/TextField has a label
         run: bash scripts/gui-smoke.sh --check-a11y
 
@@ -200,7 +200,7 @@ jobs:
       CC: cc
       CXX: c++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: EmbarkStudios/cargo-deny-action@v2
 
@@ -208,7 +208,7 @@ jobs:
     name: cargo-audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -218,7 +218,7 @@ jobs:
     name: appstream metadata
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: sudo apt-get update && sudo apt-get install -y appstream
       - run: appstreamcli validate --no-net packaging/com.visorcraft.LinSync.metainfo.xml
 
@@ -226,7 +226,7 @@ jobs:
     name: desktop file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: sudo apt-get update && sudo apt-get install -y desktop-file-utils
       - run: desktop-file-validate packaging/com.visorcraft.LinSync.desktop
 
