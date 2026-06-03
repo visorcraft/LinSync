@@ -83,6 +83,11 @@ if ! command -v linuxdeploy >/dev/null 2>&1; then
     exit 0
 fi
 
+# Force Qt6 qmake for linuxdeploy-plugin-qt (in mixed Qt5/Qt6 envs the
+# first qmake on PATH is often Qt5's, causing "Could not find Qt modules").
+QMAKE="${QMAKE:-$(command -v qmake6 || command -v qmake-qt6 || echo /usr/bin/qmake6)}"
+export QMAKE
+
 # EXTRA_QT_MODULES forces linuxdeploy-plugin-qt to bundle QtWebEngine (and its
 # QtWebEngineProcess + resources): the app uses the in-process cxx-qt host, so
 # the plugin would not otherwise detect WebEngine usage from the app's QML.

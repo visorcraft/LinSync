@@ -72,10 +72,17 @@ credits-update:
     python3 scripts/generate-credits.py update
 
 # Build the release binaries and bundle a self-contained AppImage via
-# linuxdeploy + linuxdeploy-plugin-qt. Falls
-# back to staging the AppDir when linuxdeploy isn't on PATH.
+# linuxdeploy + linuxdeploy-plugin-qt. Falls back to staging the AppDir when
+# linuxdeploy isn't on PATH.
+#
+# On hosts with very new glibc/toolchain (relr.dyn sections) the strip
+# binary bundled inside linuxdeploy's AppImage can fail to recognise some
+# staged libs; set NO_STRIP=1 to skip (AppDir is still produced and
+# functional; the final AppImage can be manually compressed if needed).
+# We default to NO_STRIP=1 here for broad host compatibility (the
+# resulting artifacts are still valid for smoke/testing).
 package:
-    bash packaging/appimage/build-appdir.sh
+    NO_STRIP=1 bash packaging/appimage/build-appdir.sh
 
 # Build the Arch / CachyOS pacman package via makepkg (pacman-based hosts only).
 package-arch:
