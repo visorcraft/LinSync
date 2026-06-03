@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.9.2
+Version:        1.9.3
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -122,6 +122,10 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Wed Jun 03 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.9.3-1
+- UX fix for Compare page defaults: paths under the source tree's tests/fixtures/ (used by gui-smoke.sh, release-smoke, unit tests, and manual dev launches like `cargo run -p linsync -- <fixture>`) are now excluded from recent-paths and recent-sessions recording, and are filtered out on load/restore/reopen. This prevents bare GUI launches (no args, with open_last_session=true) from pre-filling the Left/Right editors with ugly internal absolute paths such as .../tests/fixtures/folders/left on every startup. The Sessions page list and reopen-by-index also hide them. (The root cause was that fixture folders are valid comparable data, so the old "persistable" guard let dev usage pollute the user's XDG state dir.)
+- Updated the affected unit tests (that asserted recording of fixture launches) to use clean temp files from test_file_root() instead.
+
 * Wed Jun 03 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.9.2-1
 - CI and test reliability: set LINSYNC_SANDBOX_SKIP=1 in the Justfile test recipe (and documented in ci.yml, sandbox_integration.rs) so `just ci` / `just test` pass consistently; real enforcement tests exercised by unsetting the var on a good kernel+env.
 - Packaging fixes: build-appdir.sh now exports QMAKE pointing at qmake6/qmake-qt6 before linuxdeploy --plugin qt (prevents Qt5 plugin misdetection in mixed environments); Justfile package: defaults to NO_STRIP=1 (workaround for linuxdeploy's internal strip choking on relr.dyn objects from host libs); `just package` and the makepkg path now produce artifacts cleanly.

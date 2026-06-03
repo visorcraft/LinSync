@@ -90,15 +90,23 @@ fn run(paths: &AppPaths, args: Vec<OsString>) -> Result<ExitCode, String> {
     {
         let recent_store =
             RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths));
-        if let Ok(recent) = recent_store.load_or_default()
-            && let Some(session) = recent.sessions.first()
-        {
-            // Prefer restoring the full multi-tab workspace; fall back to the
-            // single active tab when no multi-tab snapshot is present.
-            launch_context = Some(restore_multi_tab_context(session).unwrap_or_else(|| {
-                let tab = build_tab_for_session_file(session, &GuiCompareOptions::default());
-                GuiLaunchContext::single_tab(tab)
-            }));
+        if let Ok(mut recent) = recent_store.load_or_default() {
+            // Drop any entries that point at our internal test fixtures (leftover
+            // pollution from dev / smoke runs that used `cargo run -p linsync -- ...`).
+            // This keeps the auto-restore from ever pre-filling the Compare page
+            // with /.../tests/fixtures/... paths.
+            recent.sessions.retain(|s| {
+                !path_looks_like_internal_test_fixture(&s.session.left)
+                    && !path_looks_like_internal_test_fixture(&s.session.right)
+            });
+            if let Some(session) = recent.sessions.first() {
+                // Prefer restoring the full multi-tab workspace; fall back to the
+                // single active tab when no multi-tab snapshot is present.
+                launch_context = Some(restore_multi_tab_context(session).unwrap_or_else(|| {
+                    let tab = build_tab_for_session_file(session, &GuiCompareOptions::default());
+                    GuiLaunchContext::single_tab(tab)
+                }));
+            }
         }
     }
 
@@ -1575,8 +1583,31 @@ fn restore_multi_tab_context(session: &SessionFile) -> Option<GuiLaunchContext> 
     ))
 }
 
+/// Heuristic: never treat paths under the source tree's tests/fixtures/ as
+/// persistable "recent" entries. These fixtures are used by gui-smoke.sh,
+/// release-smoke, unit tests, and manual `cargo run -p linsync -- <fixture>`
+/// invocations during development. Recording them causes the auto-restore of
+/// the "last session" (when open_last_session is true) to pre-fill the Compare
+/// page's Left/Right fields with ugly internal paths on subsequent bare
+/// launches — terrible UX.
+fn path_looks_like_internal_test_fixture(p: &Path) -> bool {
+    let s = p.to_string_lossy().to_ascii_lowercase();
+    // Covers /tests/fixtures/ (unix), \tests\fixtures\ (windows), and
+    // trailing cases.
+    s.contains("/tests/fixtures/") || s.contains("\\tests\\fixtures\\")
+        || s.ends_with("/tests/fixtures") || s.ends_with("\\tests\\fixtures")
+}
+
 fn tab_has_persistable_paths(tab: &GuiCompareTab) -> bool {
-    tab.validation.compatible && !tab.left_path.is_empty() && !tab.right_path.is_empty()
+    if !tab.validation.compatible || tab.left_path.is_empty() || tab.right_path.is_empty() {
+        return false;
+    }
+    if path_looks_like_internal_test_fixture(Path::new(&tab.left_path))
+        || path_looks_like_internal_test_fixture(Path::new(&tab.right_path))
+    {
+        return false;
+    }
+    true
 }
 
 fn persist_tab_snapshot(session: &mut SessionFile, tab: &GuiCompareTab) {
@@ -5122,7 +5153,7 @@ fn copy_clipboard_bridge_response(query: &str) -> Vec<u8> {
 
 fn sessions_recent_bridge_response(paths: &AppPaths) -> Vec<u8> {
     let store = RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths));
-    let recent: RecentSessions = match store.load_or_default() {
+    let mut recent: RecentSessions = match store.load_or_default() {
         Ok(value) => value,
         Err(err) => {
             return bridge_error(
@@ -5132,6 +5163,12 @@ fn sessions_recent_bridge_response(paths: &AppPaths) -> Vec<u8> {
             );
         }
     };
+    // Hide any leftover internal test-fixture sessions from the Sessions page list
+    // (and from being re-opened). Prevents dev/smoke pollution from showing up.
+    recent.sessions.retain(|s| {
+        !path_looks_like_internal_test_fixture(&s.session.left)
+            && !path_looks_like_internal_test_fixture(&s.session.right)
+    });
     let entries: Vec<serde_json::Value> = recent
         .sessions
         .iter()
@@ -5165,12 +5202,16 @@ fn sessions_reopen_bridge_response(
         return bridge_error(400, "Bad Request", "missing index");
     };
     let recent_store = RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths));
-    let recent = match recent_store.load_or_default() {
+    let mut recent = match recent_store.load_or_default() {
         Ok(value) => value,
         Err(err) => {
             return bridge_error(500, "Internal Server Error", &err.to_string());
         }
     };
+    recent.sessions.retain(|s| {
+        !path_looks_like_internal_test_fixture(&s.session.left)
+            && !path_looks_like_internal_test_fixture(&s.session.right)
+    });
     let Some(session_file) = recent.sessions.get(index) else {
         return bridge_error(404, "Not Found", "recent session index out of range");
     };
@@ -8940,9 +8981,14 @@ mod tests {
 
     #[test]
     fn launch_context_records_recent_paths_and_sessions_in_xdg_store() {
-        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let left = fixture_root.join("tests/fixtures/text/left.txt");
-        let right = fixture_root.join("tests/fixtures/text/right.txt");
+        // Use files that are *not* under tests/fixtures so the "don't record
+        // internal test fixtures as recent" guard does not suppress them.
+        let root = test_file_root("recent-record");
+        let left = root.join("left.txt");
+        let right = root.join("right.txt");
+        fs::write(&left, "hello\nworld\n").expect("write left");
+        fs::write(&right, "hello\nthere\n").expect("write right");
+
         let paths = test_app_paths("recent");
         let context = build_context_for_paths(&left, &right);
         let context_path =
@@ -9931,9 +9977,13 @@ mod tests {
 
     #[test]
     fn bridge_sessions_recent_returns_persisted_pairs() {
-        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let left = fixture_root.join("tests/fixtures/text/left.txt");
-        let right = fixture_root.join("tests/fixtures/text/right.txt");
+        // Non-fixture paths so the internal-test guard does not suppress recording.
+        let root = test_file_root("sessions-recent");
+        let left = root.join("l.txt");
+        let right = root.join("r.txt");
+        fs::write(&left, "a\nb\n").unwrap();
+        fs::write(&right, "a\nc\n").unwrap();
+
         let paths = test_app_paths("bridge-sessions-recent");
         let context = build_context_for_paths(&left, &right);
         let _ = write_launch_context(&paths, &context).expect("context write should succeed");

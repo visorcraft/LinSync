@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.9.3" date="2026-06-03">
+      <description>
+        <p>Fix horrible first-launch UX on the Compare page: the Left and Right path fields no longer default to internal test fixture directories such as <code>.../tests/fixtures/folders/left</code> (and the text pair). These fixtures are used by the smoke scripts, unit tests, and manual dev runs; previously they were eligible for "recent sessions" recording (because they are valid comparable data) and would be auto-restored on every bare GUI launch when the "Restore last session" setting was on. Now paths under <code>tests/fixtures/</code> are excluded from recording (in tab_has_persistable_paths) and filtered out of the recent list on restore and on the Sessions page. Updated the tests that directly exercised recording of fixture launches to use clean temp files instead. The root cause was lack of a guard for repo-internal test data in the persist-recent path.</p>
+      </description>
+    </release>
     <release version="1.9.2" date="2026-06-03">
       <description>
         <p>CI, packaging, and release tooling robustness release. Make <code>just ci</code> / <code>just test</code> reliable across containers, GitHub runners, and dev shells by setting <code>LINSYNC_SANDBOX_SKIP=1</code> (matching the CI job contract; real Landlock enforcement tests remain runnable explicitly on suitable kernels). Packaging: AppImage/AppDir build now forces Qt 6 qmake detection and defaults to <code>NO_STRIP=1</code> to avoid failures from linuxdeploy's bundled strip on modern glibc/toolchains with <code>.relr.dyn</code> sections; <code>just package</code> now produces usable artifacts out of the box. Release smoke now passes fully: complete the parity-acceptance rows for all specialized compare areas (image, document, webpage, archive) and the standalone plugin sandbox entry so <code>scripts/check-parity-acceptance.py</code> (invoked by <code>release-smoke.sh</code>) succeeds. Also includes minor cleanups for index stat caching on binary test fixtures.</p>

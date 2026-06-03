@@ -1,3 +1,21 @@
+linsync (1.9.3-1) unstable; urgency=medium
+
+  * UX: prevent the Compare page's Left/Right path editors from defaulting to
+    internal test fixture paths (e.g. .../tests/fixtures/folders/left) on bare
+    GUI launches. Paths under the source tree's tests/fixtures/ (used heavily
+    by gui-smoke.sh, release-smoke, unit tests, and dev `cargo run -p linsync -- ...`)
+    are now excluded from recent-paths and recent-sessions storage by
+    tab_has_persistable_paths(), and filtered out of the in-memory recent list
+    on load/restore. The Sessions page (/sessions/recent) and reopen handler
+    also drop them. This stops dev/smoke usage from permanently polluting the
+    user's XDG_STATE_HOME recent-sessions.json (and thus the auto-restore when
+    open_last_session=true). Updated the affected tests to use clean temp files.
+  * The root cause was that the fixtures are real, comparable data (so
+    validation.compatible was true) and there was no exclusion for repo-internal
+    test data in the "persist recent" path.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 03 Jun 2026 18:15:00 -0500
+
 linsync (1.9.2-1) unstable; urgency=medium
 
   * CI and test reliability: set LINSYNC_SANDBOX_SKIP=1 in the Justfile `test:`
