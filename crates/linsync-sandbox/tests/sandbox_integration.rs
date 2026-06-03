@@ -1,8 +1,13 @@
 //! Integration tests for the sandbox backends.
 //!
 //! Gated on Linux + Landlock ABI >= 1 being available + LINSYNC_SANDBOX_SKIP not set.
-//! CI runs these in a separate `sandbox-stress` job on Ubuntu 24.04 (kernel 6.8).
-//! The standard CI job sets LINSYNC_SANDBOX_SKIP=1.
+//! The standard CI test job and `just ci` / `just test` set LINSYNC_SANDBOX_SKIP=1
+//! for reliability (Landlock probe can report ABI>=1 but fs enforcement may be a
+//! no-op in containers/CI/dev shells). Real enforcement is exercised by running
+//! the integration test directly without the var on a kernel+env where it works:
+//!   env -u LINSYNC_SANDBOX_SKIP cargo test -p linsync-sandbox --test sandbox_integration
+//!
+//! (There is no active separate sandbox-stress job in ci.yml at present.)
 
 #[cfg(target_os = "linux")]
 mod landlock_tests {
