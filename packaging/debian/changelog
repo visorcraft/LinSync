@@ -1,3 +1,30 @@
+linsync (1.9.2-1) unstable; urgency=medium
+
+  * CI and test reliability: set LINSYNC_SANDBOX_SKIP=1 in the Justfile `test:`
+    recipe (and documented in .github/workflows/ci.yml and the sandbox
+    integration test module doc) so that `just ci` and `just test` are reliable
+    and non-flaky across containers, GitHub runners, and dev shells; the
+    Landlock/seccomp enforcement tests that assert real EACCES are still
+    exercised by running the specific test without the variable on a kernel+env
+    where enforcement works.
+  * Packaging robustness: packaging/appimage/build-appdir.sh now forces Qt 6
+    qmake (QMAKE=qmake6 or qmake-qt6) before invoking linuxdeploy --plugin qt,
+    avoiding "Could not find Qt modules" when a stray qmake-qt5 is first on
+    PATH; the Justfile `package:` recipe now defaults the builder to
+    NO_STRIP=1 (the strip binary inside current linuxdeploy AppImages fails on
+    some .relr.dyn sections from staged host libraries on modern toolchains);
+    `just package` and the makepkg path now succeed and produce functional
+    AppDir / .AppImage / .pkg.tar.zst out of the box.
+  * Release preflight: docs/parity-acceptance.md now has explicit rows for
+    every area listed in docs/feature-parity.md (including the split
+    "Specialized compare — image", "— document", "— webpage", "— archive", and
+    the standalone "Plugin sandbox"), so `python3 scripts/check-parity-acceptance.py`
+    (called from scripts/release-smoke.sh) passes.
+  * Minor cleanups from the full build/audit cycle: spurious modified status on
+    binary test fixtures after smoke runs is now suppressed via index refresh.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 03 Jun 2026 17:50:00 -0500
+
 linsync (1.9.1-1) unstable; urgency=medium
 
   * Third-party attribution: the in-app Credits and Licenses pages and

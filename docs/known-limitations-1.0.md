@@ -1,7 +1,7 @@
 # Known Limitations
 
 This document is the user-facing summary of what LinSync does *not* do
-in the current release (1.9.1). For the shipped feature record, see
+in the current release (1.9.2). For the shipped feature record, see
 `docs/feature-matrix.md`. Items here fall into two
 categories:
 

@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.9.1
+Version:        1.9.2
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -122,6 +122,12 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Wed Jun 03 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.9.2-1
+- CI and test reliability: set LINSYNC_SANDBOX_SKIP=1 in the Justfile test recipe (and documented in ci.yml, sandbox_integration.rs) so `just ci` / `just test` pass consistently; real enforcement tests exercised by unsetting the var on a good kernel+env.
+- Packaging fixes: build-appdir.sh now exports QMAKE pointing at qmake6/qmake-qt6 before linuxdeploy --plugin qt (prevents Qt5 plugin misdetection in mixed environments); Justfile package: defaults to NO_STRIP=1 (workaround for linuxdeploy's internal strip choking on relr.dyn objects from host libs); `just package` and the makepkg path now produce artifacts cleanly.
+- Release gate: extend docs/parity-acceptance.md with explicit rows for Specialized compare — image/document/webpage/archive and Plugin sandbox so check-parity-acceptance.py (and thus release-smoke.sh) passes.
+- Minor: fix stale git index stat on tests/fixtures/document/simple.odt after regeneration in smokes.
+
 * Tue Jun 02 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.9.1-1
 - Third-party attribution: the in-app Credits and Licenses pages and the
   bundled third-party notices now list every crate distributed in the release

@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.9.2" date="2026-06-03">
+      <description>
+        <p>CI, packaging, and release tooling robustness release. Make <code>just ci</code> / <code>just test</code> reliable across containers, GitHub runners, and dev shells by setting <code>LINSYNC_SANDBOX_SKIP=1</code> (matching the CI job contract; real Landlock enforcement tests remain runnable explicitly on suitable kernels). Packaging: AppImage/AppDir build now forces Qt 6 qmake detection and defaults to <code>NO_STRIP=1</code> to avoid failures from linuxdeploy's bundled strip on modern glibc/toolchains with <code>.relr.dyn</code> sections; <code>just package</code> now produces usable artifacts out of the box. Release smoke now passes fully: complete the parity-acceptance rows for all specialized compare areas (image, document, webpage, archive) and the standalone plugin sandbox entry so <code>scripts/check-parity-acceptance.py</code> (invoked by <code>release-smoke.sh</code>) succeeds. Also includes minor cleanups for index stat caching on binary test fixtures.</p>
+      </description>
+    </release>
     <release version="1.9.1" date="2026-06-02">
       <description>
         <p>Completes and corrects third-party license attribution. The in-app Credits and Licenses pages and the bundled third-party notices now list every Rust crate distributed in the release build — previously only a subset was shown, omitting the cxx-qt bridge and image-decoder stacks — and the Licenses page bundles the full verbatim Apache-2.0 and Zlib license texts. A regeneration command and a release/CI drift-guard keep the attribution surfaces in sync with the dependency graph. Also includes documentation and internal tooling cleanup.</p>
