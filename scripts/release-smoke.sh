@@ -31,8 +31,11 @@ test -s "${prefix}/share/icons/hicolor/512x512/apps/com.visorcraft.LinSync.png"
 
 test -s docs/third-party-notices.md
 grep -q "## Source Offer" docs/third-party-notices.md
-# Fail the release if any of the three credit surfaces drift from the shipped
-# dependency graph (missing or extra third-party crates).
+# Fail the release if the committed third-party-crates.json (the canonical
+# list for the shipped feature set) is out of date with the current graph,
+# or if the generated blocks in the surfaces are stale. The check delegates
+# to the generator (scripts/generate-credits.py --verify); on failure it
+# tells you to run `just credits-update`.
 bash scripts/check-credits.sh
 python3 scripts/check-parity-acceptance.py
 bash scripts/gui-smoke.sh

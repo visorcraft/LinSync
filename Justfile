@@ -37,28 +37,25 @@ deny:
 audit:
     cargo audit
 
-# Regenerate the authoritative third-party crate/license table for the shipped
-# feature set (cxxqt-app + web-engine, Linux target: build deps included, dev
-# deps excluded). Prints a `| crate | version | license |` Markdown table and
-# the total count. Update all three credit surfaces from it:
-# docs/third-party-notices.md, apps/linsync-gui/qml/CreditsPage.qml (crates
-# array), and apps/linsync-gui/qml/LicensesPage.qml (Cargo Dependencies table).
+# Regenerate (or print) the authoritative third-party crate/license table for
+# the shipped feature set (cxxqt + cxxqt-app + web-engine on the Linux target,
+# build deps included, dev deps excluded). The single generator
+# (scripts/generate-credits.py) also maintains docs/third-party-crates.json
+# (the canonical machine-readable list) and refreshes the generated blocks
+# inside the three credit surfaces.
+#
+# `just credits` prints the table (for review or copy).
+# `just credits-update` writes the JSON and patches the surfaces so that
+# future dep changes only require running the update target (drift for the
+# data parts becomes impossible by construction).
 credits:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    rows=$( {
-        cargo tree -p linsync --no-default-features \
-            --features cxxqt,cxxqt-app,web-engine -e no-dev \
-            --target x86_64-unknown-linux-gnu --format '{p}|{l}'
-        cargo tree -p linsync-cli --features web-engine -e no-dev \
-            --target x86_64-unknown-linux-gnu --format '{p}|{l}'
-      } | sed -E 's/^[^a-zA-Z0-9]*//; s/ \(proc-macro\)//; s/ \(\*\)$//' \
-        | grep -E '^[a-zA-Z0-9_-]+ v[0-9]' \
-        | grep -vE '^(linsync|linsync-core|linsync-cli|linsync-sandbox|linsync-webengine) ' \
-        | awk -F'|' '{ split($1,a," v"); printf "| %s | %s | %s |\n", a[1], a[2], $2 }' \
-        | sort -u )
-    echo "$rows"
-    echo "third-party crates distributed in the release build: $(echo "$rows" | wc -l)"
+    python3 scripts/generate-credits.py table
+
+# Update the committed JSON and the generated sections of the three surfaces
+# (md table, CreditsPage crates array, LicensesPage counts+table). Run this
+# after any Cargo.lock change that affects the shipped graph, then commit.
+credits-update:
+    python3 scripts/generate-credits.py update
 
 # Build the release binaries and bundle a self-contained AppImage via
 # linuxdeploy + linuxdeploy-plugin-qt. Falls
