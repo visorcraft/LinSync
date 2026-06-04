@@ -92,21 +92,21 @@ fn run(paths: &AppPaths, args: Vec<OsString>) -> Result<ExitCode, String> {
             RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths));
         if let Ok(mut recent) = recent_store.load_or_default() {
             // Drop any entries that point at our internal test fixtures (leftover
-            // pollution from dev / smoke runs that used `cargo run -p linsync -- ...`).
-            // This keeps the auto-restore from ever pre-filling the Compare page
-            // with /.../tests/fixtures/... paths.
+            // pollution from dev / smoke runs...). This keeps the list shown on
+            // the Sessions page (and reopen) free of them. We *intentionally do
+            // not* set launch_context here: on a bare launch we never auto-populate
+            // the Compare page's Left/Right path fields (or its diff state) from
+            // any previous session. That was the source of "defaults to fake
+            // folder names" (/tmp/bigfolder etc.). Users start with clean blank
+            // inputs (the placeholders); prior work is resumed explicitly from
+            // the Sessions sidebar.
             recent.sessions.retain(|s| {
                 !path_looks_like_internal_test_fixture(&s.session.left)
                     && !path_looks_like_internal_test_fixture(&s.session.right)
             });
-            if let Some(session) = recent.sessions.first() {
-                // Prefer restoring the full multi-tab workspace; fall back to the
-                // single active tab when no multi-tab snapshot is present.
-                launch_context = Some(restore_multi_tab_context(session).unwrap_or_else(|| {
-                    let tab = build_tab_for_session_file(session, &GuiCompareOptions::default());
-                    GuiLaunchContext::single_tab(tab)
-                }));
-            }
+            // (We still load+filter so the on-disk recent is "considered" for
+            // cleanup when the setting is enabled, and the /sessions/recent
+            // responder will also filter.)
         }
     }
 
@@ -1571,6 +1571,13 @@ fn persist_multi_tab_snapshot(session: &mut SessionFile, context: &GuiLaunchCont
 /// Rebuild a multi-tab launch context from a recent session's snapshot, if it
 /// carries one. Returns `None` when there is no (valid) multi-tab snapshot, so
 /// the caller can fall back to single-tab restore.
+///
+/// Marked allow(dead_code) because the only non-test caller was the bare-launch
+/// auto-restore path (intentionally removed to stop auto-defaulting path fields
+/// into the Compare editor); the function remains for explicit multi-tab
+/// snapshot round-tripping in tests and for potential future "reopen last
+/// workspace" action.
+#[allow(dead_code)]
 fn restore_multi_tab_context(session: &SessionFile) -> Option<GuiLaunchContext> {
     let value = session.layout.extra.get(GUI_TABS_SNAPSHOT_KEY)?;
     let snapshot: GuiMultiTabSnapshot = serde_json::from_value(value.clone()).ok()?;
@@ -1584,18 +1591,23 @@ fn restore_multi_tab_context(session: &SessionFile) -> Option<GuiLaunchContext> 
 }
 
 /// Heuristic: never treat paths under the source tree's tests/fixtures/ as
-/// persistable "recent" entries. These fixtures are used by gui-smoke.sh,
-/// release-smoke, unit tests, and manual `cargo run -p linsync -- <fixture>`
-/// invocations during development. Recording them causes the auto-restore of
-/// the "last session" (when open_last_session is true) to pre-fill the Compare
-/// page's Left/Right fields with ugly internal paths on subsequent bare
-/// launches — terrible UX.
+/// persistable "recent" entries (for recording or for display in the Sessions
+/// page / reopen). These fixtures are used by gui-smoke.sh, release-smoke,
+/// unit tests, and manual `cargo run -p linsync -- <fixture>` invocations
+/// during development. We also never auto-restore *any* previous session's
+/// paths into the main Compare page's Left/Right input fields on a bare launch
+/// (no CLI args). Pre-filling those fields from "last session" (even real
+/// user data or /tmp/ dev folders like bigfolder) produced a horrible
+/// experience of "defaults" the user didn't choose. The Sessions page and
+/// explicit re-open / project open are the way to resume prior work.
 fn path_looks_like_internal_test_fixture(p: &Path) -> bool {
     let s = p.to_string_lossy().to_ascii_lowercase();
     // Covers /tests/fixtures/ (unix), \tests\fixtures\ (windows), and
     // trailing cases.
-    s.contains("/tests/fixtures/") || s.contains("\\tests\\fixtures\\")
-        || s.ends_with("/tests/fixtures") || s.ends_with("\\tests\\fixtures")
+    s.contains("/tests/fixtures/")
+        || s.contains("\\tests\\fixtures\\")
+        || s.ends_with("/tests/fixtures")
+        || s.ends_with("\\tests\\fixtures")
 }
 
 fn tab_has_persistable_paths(tab: &GuiCompareTab) -> bool {

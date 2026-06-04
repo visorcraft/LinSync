@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.9.4" date="2026-06-03">
+      <description>
+        <p>Remove *all* automatic defaults for the Compare page's Left and Right path fields on bare GUI launch. The editors now always start blank (showing the friendly placeholders), no matter what "last session", dev /tmp/ folder, test fixture, or prior compare exists in the recent-sessions store. The "Restore last session" feature and Sessions page continue to work for explicit re-opening of previous work (single or multi-tab), which is the only way paths get populated after a bare start. This directly addresses the complaint that defaulting the inputs to any "fake folder names" (tests/fixtures, /tmp/bigfolder, etc.) was a horrible user experience. Only an explicit two-path launch (e.g. from the shell), drag-and-drop, browse, typing, or a deliberate reopen action will ever put values into the path editors.</p>
+      </description>
+    </release>
     <release version="1.9.3" date="2026-06-03">
       <description>
         <p>Fix horrible first-launch UX on the Compare page: the Left and Right path fields no longer default to internal test fixture directories such as <code>.../tests/fixtures/folders/left</code> (and the text pair). These fixtures are used by the smoke scripts, unit tests, and manual dev runs; previously they were eligible for "recent sessions" recording (because they are valid comparable data) and would be auto-restored on every bare GUI launch when the "Restore last session" setting was on. Now paths under <code>tests/fixtures/</code> are excluded from recording (in tab_has_persistable_paths) and filtered out of the recent list on restore and on the Sessions page. Updated the tests that directly exercised recording of fixture launches to use clean temp files instead. The root cause was lack of a guard for repo-internal test data in the persist-recent path.</p>

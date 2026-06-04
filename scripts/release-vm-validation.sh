@@ -9,7 +9,7 @@
 # Exits 0 only when every distro that has an artifact present passes.
 #
 # Usage:
-#   VERSION=1.9.3 bash scripts/release-vm-validation.sh
+#   VERSION=1.9.4 bash scripts/release-vm-validation.sh
 #
 # The artifacts are expected under the repo root in:
 #   dist/linsync-${VERSION}-1-x86_64.pkg.tar.zst  (Arch)
@@ -19,7 +19,7 @@
 # See docs/known-limitations-1.0.md §"Packaging and release validation".
 set -euo pipefail
 
-VERSION="${VERSION:-1.9.3}"
+VERSION="${VERSION:-1.9.4}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${DIST_DIR:-${REPO_ROOT}/dist}"
 

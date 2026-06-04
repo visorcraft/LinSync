@@ -1,3 +1,24 @@
+linsync (1.9.4-1) unstable; urgency=medium
+
+  * Remove *all* automatic defaults for the Compare page's Left and Right path
+    fields. On a bare launch (the normal case: no two positional arguments on
+    the command line), the editors now always start empty, showing the
+    placeholders "Left file or folder" / "Right file or folder". Previous
+    "last session" (whether from fixtures, /tmp/bigfolder, real user compares,
+    or anything) is no longer auto-applied to populate the inputs or the
+    initial diff view. The "Restore last session" setting and the recent-
+    sessions store / Sessions sidebar remain fully functional for *explicit*
+    resume (click to re-open a previous compare or multi-tab workspace); that
+    action will then set the paths. This finally eliminates the "why are we
+    defaulting to fake folder names" problem.
+  * Implementation: on bare launch the open_last_session path still cleans
+    internal fixtures out of the recent list (for the Sessions page), but no
+    longer synthesizes a launch context that would drive the path properties
+    in QML. Only explicit CLI launches, UI browse/type, drag, or explicit
+    reopen set non-empty values in the path fields.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 03 Jun 2026 18:23:00 -0500
+
 linsync (1.9.3-1) unstable; urgency=medium
 
   * UX: prevent the Compare page's Left/Right path editors from defaulting to
