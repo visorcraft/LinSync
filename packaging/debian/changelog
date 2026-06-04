@@ -1,3 +1,14 @@
+linsync (1.9.5-1) unstable; urgency=medium
+
+  * Align the specialized compare pages with the main Compare page's top-bar
+    layout: Image, Webpage, and Document Compare now use flat full-width
+    toolbar rows for paths/URLs, modes, and actions instead of inset fieldset
+    cards.
+  * Make the Sessions page header match the Plugins page header, with the
+    title/status copy on the left and primary actions aligned on the right.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 03 Jun 2026 22:33:00 -0500
+
 linsync (1.9.4-1) unstable; urgency=medium
 
   * Remove *all* automatic defaults for the Compare page's Left and Right path

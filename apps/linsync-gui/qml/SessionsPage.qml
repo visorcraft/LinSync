@@ -92,60 +92,65 @@ Kirigami.ScrollablePage {
                 height: 1
                 color: page.separator
             }
-            ColumnLayout {
+            RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 24
                 anchors.rightMargin: 24
-                spacing: 1
-                Controls.Label {
-                    text: qsTr("Sessions")
-                    font.pixelSize: 22
-                    font.bold: true
-                    font.letterSpacing: 0
-                }
-                Controls.Label {
-                    text: qsTr("%1 open tab%2 · %3 recent path%4")
-                        .arg(page.tabs.length).arg(page.tabs.length === 1 ? "" : "s")
-                        .arg(page.recentPaths.length).arg(page.recentPaths.length === 1 ? "" : "s")
-                    opacity: 0.6
-                    font.pixelSize: 12
-                }
-                RowLayout {
+                spacing: 12
+
+                ColumnLayout {
                     Layout.fillWidth: true
-                    spacing: 8
-                    AppButton {
-                        visible: page.tabs.length > 0
-                        icon.name: "document-save"
-                        text: qsTr("Save session")
-                        onClicked: {
-                            var req = new XMLHttpRequest()
-                            var title = "Session " + new Date().toLocaleString()
-                            req.onreadystatechange = function () {
-                                if (req.readyState === XMLHttpRequest.DONE && req.status === 200)
-                                    page.refreshRecentRequested()
-                            }
-                            req.open("GET", page.bridgeUrl + "/sessions/save?title=" + encodeURIComponent(title))
-                            req.send()
-                        }
+                    spacing: 1
+
+                    Controls.Label {
+                        text: qsTr("Sessions")
+                        font.pixelSize: 22
+                        font.bold: true
+                        font.letterSpacing: 0
                     }
-                    AppButton {
-                        visible: page.tabs.length > 0
-                        icon.name: "project-development-new-template"
-                        text: qsTr("Save project…")
-                        onClicked: page.saveProjectRequested()
+                    Controls.Label {
+                        text: qsTr("%1 open tab%2 · %3 recent path%4")
+                            .arg(page.tabs.length).arg(page.tabs.length === 1 ? "" : "s")
+                            .arg(page.recentPaths.length).arg(page.recentPaths.length === 1 ? "" : "s")
+                        opacity: 0.6
+                        font.pixelSize: 12
                     }
-                    AppButton {
-                        icon.name: "document-open"
-                        text: qsTr("Open project…")
-                        onClicked: page.openProjectRequested()
-                    }
-                    Item { Layout.fillWidth: true }
                     Controls.Label {
                         visible: page.projectStatus.length > 0
                         text: page.projectStatus
                         opacity: 0.75
                         font.pixelSize: 12
                     }
+                }
+
+                Controls.Button {
+                    visible: page.tabs.length > 0
+                    icon.name: "document-save"
+                    text: qsTr("Save session")
+                    flat: true
+                    onClicked: {
+                        var req = new XMLHttpRequest()
+                        var title = "Session " + new Date().toLocaleString()
+                        req.onreadystatechange = function () {
+                            if (req.readyState === XMLHttpRequest.DONE && req.status === 200)
+                                page.refreshRecentRequested()
+                        }
+                        req.open("GET", page.bridgeUrl + "/sessions/save?title=" + encodeURIComponent(title))
+                        req.send()
+                    }
+                }
+                Controls.Button {
+                    visible: page.tabs.length > 0
+                    icon.name: "project-development-new-template"
+                    text: qsTr("Save project…")
+                    flat: true
+                    onClicked: page.saveProjectRequested()
+                }
+                Controls.Button {
+                    icon.name: "document-open"
+                    text: qsTr("Open project…")
+                    flat: true
+                    onClicked: page.openProjectRequested()
                 }
             }
         }

@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.9.4
+Version:        1.9.5
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -122,6 +122,10 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Wed Jun 03 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.9.5-1
+- Align Image, Webpage, and Document Compare top controls with the main Compare page toolbar style.
+- Match the Sessions page header layout to the Plugins page header.
+
 * Wed Jun 03 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.9.4-1
 - Stop auto-defaulting *any* previous paths (from recent sessions, last launch, /tmp/ dev fixtures like bigfolder, or anything else) into the Compare page's Left and Right input fields on bare GUI startup. The "Restore last session" setting and recent-sessions store are still present for explicit resume via the Sessions sidebar and re-open; they no longer mutate the primary path editors or pre-load a diff view on launch. This eliminates the ridiculous "defaults to fake folder names" experience entirely. Bare launches (the common case) now always start with blank editors showing the nice placeholders ("Left file or folder", "Right file or folder"), ready for the user to choose fresh paths. Only explicit CLI `linsync left right`, drag-and-drop, browse, or explicit reopen from Sessions/projects will populate the fields.
 - The root cause was the combination of open_last_session=true (default) + using the most-recent SessionFile to synthesize a launch context that drove the QML path properties.

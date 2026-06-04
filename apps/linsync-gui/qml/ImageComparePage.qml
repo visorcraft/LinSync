@@ -129,7 +129,7 @@ Controls.Pane {
         }
     }
 
-    component FilePickerBar: Rectangle {
+    component FilePickerBar: RowLayout {
         id: fp
 
         property string label: ""
@@ -137,36 +137,32 @@ Controls.Pane {
         signal browseClicked()
 
         Layout.fillWidth: true
-        Layout.preferredHeight: 40
-        color: root.activeBgAlt
-        border.color: root.separatorColor
-        border.width: 1
-        radius: 6
+        Layout.preferredHeight: 36
+        spacing: 6
 
-        RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 10
-            anchors.rightMargin: 10
-            spacing: 8
-
-            Controls.Label {
-                text: fp.label
-                color: root.activeDisabledText
-                font.pixelSize: 11
-                Layout.preferredWidth: 40
+        AppTextField {
+            Layout.fillWidth: true
+            implicitHeight: 36
+            readOnly: true
+            text: fp.path
+            placeholderText: fp.label + qsTr(" image path")
+            Accessible.name: fp.label + " image path"
+            color: root.activeText
+            placeholderTextColor: root.activeDisabledText
+            background: Rectangle {
+                color: root.activeBg
+                border.color: root.separatorColor
+                border.width: 1
+                radius: 4
             }
-            AppTextField {
-                Layout.fillWidth: true
-                readOnly: true
-                text: fp.path
-                placeholderText: qsTr("No file selected — click Browse…")
-                Accessible.name: fp.label + " image path"
-            }
-            AppButton {
-                text: qsTr("Browse…")
-                icon.name: "document-open"
-                onClicked: fp.browseClicked()
-            }
+        }
+        Controls.ToolButton {
+            icon.name: "document-open-folder"
+            icon.color: root.activeText
+            Controls.ToolTip.text: qsTr("Browse %1 image").arg(fp.label.toLowerCase())
+            Controls.ToolTip.visible: hovered
+            Accessible.name: qsTr("Browse %1 image").arg(fp.label)
+            onClicked: fp.browseClicked()
         }
     }
 
@@ -328,140 +324,31 @@ Controls.Pane {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 8
-        spacing: 8
+        spacing: 0
 
-        RowLayout {
+        Rectangle {
             Layout.fillWidth: true
-            spacing: 12
+            Layout.preferredHeight: 54
+            color: root.activeBg
+            border.color: root.separatorColor
+            border.width: 1
 
-            FilePickerBar {
-                label: qsTr("Left")
-                path: root.leftPath
-                onBrowseClicked: leftFileDialog.open()
-            }
-            FilePickerBar {
-                label: qsTr("Right")
-                path: root.rightPath
-                onBrowseClicked: rightFileDialog.open()
-            }
-        }
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 8
+                spacing: 8
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 12
-
-            Rectangle {
-                Layout.preferredHeight: 40
-                color: root.activeBgAlt
-                border.color: root.separatorColor
-                border.width: 1
-                radius: 6
-                Layout.preferredWidth: groupRow.implicitWidth + 20
-
-                RowLayout {
-                    id: groupRow
-                    anchors.fill: parent
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 10
-                    spacing: 10
-
-                    Controls.Label {
-                        text: qsTr("Mode")
-                        color: root.activeDisabledText
-                        font.pixelSize: 11
-                    }
-                    AppComboBox {
-                        id: modeCombo
-                        model: ["Exact", "Tolerance", "Perceptual"]
-                        currentIndex: 0
-                        Layout.preferredWidth: 140
-                        implicitHeight: 30
-                        Accessible.name: "Compare mode"
-                    }
-
-                    Rectangle {
-                        Layout.preferredWidth: 1
-                        Layout.fillHeight: true
-                        Layout.topMargin: 8
-                        Layout.bottomMargin: 8
-                        color: root.separatorColor
-                    }
-
-                    Controls.Label {
-                        text: qsTr("Tolerance")
-                        color: modeCombo.currentIndex === 1 ? root.activeText : root.activeDisabledText
-                        font.pixelSize: 11
-                    }
-                    AppSpinBox {
-                        id: toleranceSpin
-                        from: 0
-                        to: 255
-                        value: 0
-                        enabled: modeCombo.currentIndex === 1
-                        Layout.preferredWidth: 120
-                        frameColor: root.activeBg
-                        frameBorderColor: root.separatorColor
-                        contentColor: root.activeText
-                        stepHoverColor: root.activeBgAlt
-                        Accessible.name: "Tolerance value (0-255)"
-                    }
-
-                    Rectangle {
-                        Layout.preferredWidth: 1
-                        Layout.fillHeight: true
-                        Layout.topMargin: 8
-                        Layout.bottomMargin: 8
-                        color: root.separatorColor
-                    }
-
-                    Controls.Label {
-                        text: qsTr("ΔE")
-                        color: modeCombo.currentIndex === 2 ? root.activeText : root.activeDisabledText
-                        font.pixelSize: 11
-                    }
-                    AppSpinBox {
-                        id: deltaESpin
-                        from: 0
-                        to: 100
-                        value: 23
-                        enabled: modeCombo.currentIndex === 2
-                        Layout.preferredWidth: 120
-                        frameColor: root.activeBg
-                        frameBorderColor: root.separatorColor
-                        contentColor: root.activeText
-                        stepHoverColor: root.activeBgAlt
-                        Accessible.name: "DeltaE threshold (×10)"
-                    }
+                FilePickerBar {
+                    label: qsTr("Left")
+                    path: root.leftPath
+                    onBrowseClicked: leftFileDialog.open()
+                }
+                FilePickerBar {
+                    label: qsTr("Right")
+                    path: root.rightPath
+                    onBrowseClicked: rightFileDialog.open()
                 }
             }
-
-            AppButton {
-                Layout.preferredHeight: 40
-                Layout.preferredWidth: 150
-                text: root.running ? qsTr("Comparing…") : qsTr("Run Compare")
-                icon.name: "media-playback-start"
-                enabled: !root.running && root.leftPath !== "" && root.rightPath !== ""
-                onClicked: root.runCompare()
-            }
-
-            Controls.BusyIndicator {
-                running: root.running
-                visible: root.running
-                Layout.preferredWidth: 28
-                Layout.preferredHeight: 28
-            }
-
-            Controls.Label {
-                Layout.maximumWidth: 280
-                text: qsTr("Formats: %1").arg(root.supportedImageFormatsText)
-                color: root.activeDisabledText
-                font.pixelSize: 11
-                elide: Text.ElideRight
-                Accessible.name: qsTr("Supported image formats")
-            }
-
-            Item { Layout.fillWidth: true }
         }
 
         Rectangle {
@@ -470,18 +357,119 @@ Controls.Pane {
             color: root.activeBgAlt
             border.color: root.separatorColor
             border.width: 1
-            radius: 6
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 10
-                anchors.rightMargin: 10
-                spacing: 10
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                spacing: 8
 
                 Controls.Label {
-                    text: qsTr("Overlay opacity")
+                    text: qsTr("Mode:")
+                    color: root.activeText
+                    opacity: 0.7
+                    font.pixelSize: 12
+                }
+                AppComboBox {
+                    id: modeCombo
+                    model: ["Exact", "Tolerance", "Perceptual"]
+                    currentIndex: 0
+                    Layout.preferredWidth: 140
+                    implicitHeight: 30
+                    Accessible.name: "Compare mode"
+                }
+
+                Kirigami.Separator { Layout.fillHeight: true }
+
+                Controls.Label {
+                    text: qsTr("Tolerance:")
+                    color: modeCombo.currentIndex === 1 ? root.activeText : root.activeDisabledText
+                    opacity: modeCombo.currentIndex === 1 ? 0.7 : 1.0
+                    font.pixelSize: 12
+                }
+                AppSpinBox {
+                    id: toleranceSpin
+                    from: 0
+                    to: 255
+                    value: 0
+                    enabled: modeCombo.currentIndex === 1
+                    Layout.preferredWidth: 120
+                    frameColor: root.activeBg
+                    frameBorderColor: root.separatorColor
+                    contentColor: root.activeText
+                    stepHoverColor: root.activeBgAlt
+                    Accessible.name: "Tolerance value (0-255)"
+                }
+
+                Kirigami.Separator { Layout.fillHeight: true }
+
+                Controls.Label {
+                    text: qsTr("ΔE:")
+                    color: modeCombo.currentIndex === 2 ? root.activeText : root.activeDisabledText
+                    opacity: modeCombo.currentIndex === 2 ? 0.7 : 1.0
+                    font.pixelSize: 12
+                }
+                AppSpinBox {
+                    id: deltaESpin
+                    from: 0
+                    to: 100
+                    value: 23
+                    enabled: modeCombo.currentIndex === 2
+                    Layout.preferredWidth: 120
+                    frameColor: root.activeBg
+                    frameBorderColor: root.separatorColor
+                    contentColor: root.activeText
+                    stepHoverColor: root.activeBgAlt
+                    Accessible.name: "DeltaE threshold (×10)"
+                }
+
+                AppButton {
+                    Layout.preferredHeight: 30
+                    Layout.preferredWidth: 150
+                    text: root.running ? qsTr("Comparing…") : qsTr("Run Compare")
+                    icon.name: "media-playback-start"
+                    enabled: !root.running && root.leftPath !== "" && root.rightPath !== ""
+                    onClicked: root.runCompare()
+                }
+
+                Controls.BusyIndicator {
+                    running: root.running
+                    visible: root.running
+                    Layout.preferredWidth: 28
+                    Layout.preferredHeight: 28
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Controls.Label {
+                    Layout.maximumWidth: 280
+                    text: qsTr("Formats: %1").arg(root.supportedImageFormatsText)
                     color: root.activeDisabledText
                     font.pixelSize: 11
+                    elide: Text.ElideRight
+                    Accessible.name: qsTr("Supported image formats")
+                }
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 40
+            color: root.activeBgAlt
+            border.color: root.separatorColor
+            border.width: 1
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                spacing: 8
+
+                Controls.Label {
+                    text: qsTr("Overlay opacity:")
+                    color: root.activeText
+                    opacity: 0.7
+                    font.pixelSize: 12
                 }
                 Controls.Slider {
                     id: overlayOpacity
@@ -498,13 +486,7 @@ Controls.Pane {
                     Layout.preferredWidth: 38
                     horizontalAlignment: Text.AlignRight
                 }
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.fillHeight: true
-                    Layout.topMargin: 8
-                    Layout.bottomMargin: 8
-                    color: root.separatorColor
-                }
+                Kirigami.Separator { Layout.fillHeight: true }
                 AppButton {
                     Layout.preferredWidth: 140
                     text: qsTr("Save PNG…")
@@ -524,12 +506,11 @@ Controls.Pane {
             color: root.activeBgAlt
             border.color: root.separatorColor
             border.width: 1
-            radius: 6
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 10
-                anchors.rightMargin: 10
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
                 spacing: 6
 
                 Controls.ToolButton {
@@ -572,13 +553,7 @@ Controls.Pane {
                     horizontalAlignment: Text.AlignHCenter
                 }
 
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.fillHeight: true
-                    Layout.topMargin: 8
-                    Layout.bottomMargin: 8
-                    color: root.separatorColor
-                }
+                Kirigami.Separator { Layout.fillHeight: true }
 
                 Controls.ToolButton {
                     icon.name: "view-split-left-right"

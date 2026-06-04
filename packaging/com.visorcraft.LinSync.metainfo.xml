@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.9.5" date="2026-06-03">
+      <description>
+        <p>Align the Image Compare, Webpage Compare, and Document Compare pages with the main Compare page's flat top-toolbar layout, removing inset fieldset styling from their path/URL and mode controls. The Document Compare page now exposes the same clear Left/Right document picker row as the other compare modes. The Sessions page header also now matches the Plugins page, with status text grouped under the title and actions aligned on the right.</p>
+      </description>
+    </release>
     <release version="1.9.4" date="2026-06-03">
       <description>
         <p>Remove *all* automatic defaults for the Compare page's Left and Right path fields on bare GUI launch. The editors now always start blank (showing the friendly placeholders), no matter what "last session", dev /tmp/ folder, test fixture, or prior compare exists in the recent-sessions store. The "Restore last session" feature and Sessions page continue to work for explicit re-opening of previous work (single or multi-tab), which is the only way paths get populated after a bare start. This directly addresses the complaint that defaulting the inputs to any "fake folder names" (tests/fixtures, /tmp/bigfolder, etc.) was a horrible user experience. Only an explicit two-path launch (e.g. from the shell), drag-and-drop, browse, typing, or a deliberate reopen action will ever put values into the path editors.</p>

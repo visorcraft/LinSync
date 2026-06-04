@@ -225,138 +225,148 @@ Controls.Pane {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 12
-        spacing: 12
+        spacing: 0
 
         // Privacy notice — always visible on this page.
         Kirigami.InlineMessage {
             Layout.fillWidth: true
+            Layout.margins: 8
             type: Kirigami.MessageType.Warning
             text: qsTr("Webpage compare fetches content from the internet. Third-party resources on each page may also be requested.")
             visible: true
         }
 
-        // ── Card: pages to compare ─────────────────────────────────────────
+        // ── Toolbar: pages to compare ──────────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: setupCard.implicitHeight + 28
-            radius: 8
+            Layout.preferredHeight: 54
+            color: root.activeBg
+            border.color: root.separatorColor
+            border.width: 1
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 8
+                spacing: 8
+
+                AppTextField {
+                    id: leftUrlField
+                    Layout.fillWidth: true
+                    implicitHeight: 36
+                    placeholderText: qsTr("Left URL")
+                    text: root.leftUrl
+                    onTextChanged: root.leftUrl = text
+                    Accessible.name: qsTr("Left URL")
+                    color: root.activeText
+                    placeholderTextColor: root.activeDisabledText
+                    background: Rectangle {
+                        color: root.activeBg
+                        border.color: root.separatorColor
+                        border.width: 1
+                        radius: 4
+                    }
+                }
+
+                AppTextField {
+                    id: rightUrlField
+                    Layout.fillWidth: true
+                    implicitHeight: 36
+                    placeholderText: qsTr("Right URL")
+                    text: root.rightUrl
+                    onTextChanged: root.rightUrl = text
+                    Accessible.name: qsTr("Right URL")
+                    color: root.activeText
+                    placeholderTextColor: root.activeDisabledText
+                    background: Rectangle {
+                        color: root.activeBg
+                        border.color: root.separatorColor
+                        border.width: 1
+                        radius: 4
+                    }
+                }
+
+                AppButton {
+                    Layout.preferredHeight: 30
+                    text: root.busy ? qsTr("Comparing…") : qsTr("Compare…")
+                    enabled: root.leftUrl.length > 0 && root.rightUrl.length > 0 && !root.busy
+                    onClicked: confirmDialog.open()
+                    icon.name: "internet-web-browser-symbolic"
+                    Accessible.name: qsTr("Compare")
+                }
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 40
             color: root.activeBgAlt
             border.color: root.separatorColor
             border.width: 1
 
-            ColumnLayout {
-                id: setupCard
+            RowLayout {
                 anchors.fill: parent
-                anchors.margins: 14
-                spacing: 10
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                spacing: 8
 
                 Controls.Label {
-                    text: qsTr("Pages to compare")
+                    text: qsTr("Mode:")
                     color: root.activeText
-                    font.pixelSize: 14
-                    font.bold: true
+                    opacity: 0.7
+                    font.pixelSize: 12
                 }
 
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: 2
-                    rowSpacing: 8
-                    columnSpacing: 10
-
-                    FieldLabel { text: qsTr("Left URL") }
-                    AppTextField {
-                        id: leftUrlField
-                        Layout.fillWidth: true
-                        placeholderText: "https://example.com/"
-                        text: root.leftUrl
-                        onTextChanged: root.leftUrl = text
-                        Accessible.name: qsTr("Left URL")
+                AppComboBox {
+                    id: subModeCombo
+                    Layout.preferredWidth: 280
+                    implicitHeight: 30
+                    // Rendered/screenshot need the web-engine build; offered
+                    // only when /capabilities reports it (see Main.qml).
+                    model: root.webEngineAvailable
+                        ? [
+                            { text: qsTr("HTML source"), value: "html" },
+                            { text: qsTr("Extracted text"), value: "text" },
+                            { text: qsTr("Resource tree"), value: "tree" },
+                            { text: qsTr("Rendered (pixels)"), value: "rendered" },
+                            { text: qsTr("Screenshot"), value: "screenshot" }
+                        ]
+                        : [
+                            { text: qsTr("HTML source"), value: "html" },
+                            { text: qsTr("Extracted text"), value: "text" },
+                            { text: qsTr("Resource tree"), value: "tree" }
+                        ]
+                    textRole: "text"
+                    valueRole: "value"
+                    onActivated: {
+                        root.subMode = currentValue
                     }
-
-                    FieldLabel { text: qsTr("Right URL") }
-                    AppTextField {
-                        id: rightUrlField
-                        Layout.fillWidth: true
-                        placeholderText: "https://example.com/"
-                        text: root.rightUrl
-                        onTextChanged: root.rightUrl = text
-                        Accessible.name: qsTr("Right URL")
-                    }
-
-                    FieldLabel { text: qsTr("Compare mode") }
-                    AppComboBox {
-                        id: subModeCombo
-                        Layout.preferredWidth: 280
-                        implicitHeight: 30
-                        // Rendered/screenshot need the web-engine build; offered
-                        // only when /capabilities reports it (see Main.qml).
-                        model: root.webEngineAvailable
-                            ? [
-                                { text: qsTr("HTML source"), value: "html" },
-                                { text: qsTr("Extracted text"), value: "text" },
-                                { text: qsTr("Resource tree"), value: "tree" },
-                                { text: qsTr("Rendered (pixels)"), value: "rendered" },
-                                { text: qsTr("Screenshot"), value: "screenshot" }
-                            ]
-                            : [
-                                { text: qsTr("HTML source"), value: "html" },
-                                { text: qsTr("Extracted text"), value: "text" },
-                                { text: qsTr("Resource tree"), value: "tree" }
-                            ]
-                        textRole: "text"
-                        valueRole: "value"
-                        onActivated: {
-                            root.subMode = currentValue
-                        }
-                        Accessible.name: qsTr("Compare mode")
-                    }
+                    Accessible.name: qsTr("Compare mode")
                 }
 
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.topMargin: 2
-                    height: 1
-                    color: root.separatorColor
+                AppButton {
+                    Layout.preferredHeight: 30
+                    text: qsTr("Clear webcompare cache")
+                    onClicked: root.clearCache()
+                    icon.name: "edit-clear-symbolic"
+                    Accessible.name: qsTr("Clear webcompare cache")
                 }
 
-                // Action row.
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 10
+                Item { Layout.fillWidth: true }
 
-                    AppButton {
-                        text: qsTr("Compare…")
-                        enabled: root.leftUrl.length > 0 && root.rightUrl.length > 0 && !root.busy
-                        onClicked: confirmDialog.open()
-                        icon.name: "internet-web-browser-symbolic"
-                        Accessible.name: qsTr("Compare")
-                    }
+                Controls.BusyIndicator {
+                    running: root.busy
+                    visible: root.busy
+                    Layout.preferredWidth: 24
+                    Layout.preferredHeight: 24
+                }
 
-                    AppButton {
-                        text: qsTr("Clear webcompare cache")
-                        onClicked: root.clearCache()
-                        icon.name: "edit-clear-symbolic"
-                        Accessible.name: qsTr("Clear webcompare cache")
-                    }
-
-                    Item { Layout.fillWidth: true }
-
-                    Controls.BusyIndicator {
-                        running: root.busy
-                        visible: root.busy
-                        Layout.preferredWidth: 24
-                        Layout.preferredHeight: 24
-                    }
-
-                    Controls.ProgressBar {
-                        visible: root.busy && root.progressTotal > 0
-                        from: 0
-                        to: root.progressTotal
-                        value: root.progressCurrent
-                        Layout.preferredWidth: 120
-                        Layout.preferredHeight: 16
-                    }
+                Controls.ProgressBar {
+                    visible: root.busy && root.progressTotal > 0
+                    from: 0
+                    to: root.progressTotal
+                    value: root.progressCurrent
+                    Layout.preferredWidth: 120
+                    Layout.preferredHeight: 16
                 }
             }
         }

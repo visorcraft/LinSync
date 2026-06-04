@@ -4,6 +4,7 @@
 import QtQuick
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs as Dialogs
 import org.kde.kirigami as Kirigami
 
 // DocumentComparePage — two-pane text-diff view for OCR/document compare.
@@ -40,6 +41,67 @@ Controls.Pane {
     property int progressCurrent: 0
     property int progressTotal: 0
     property string progressMessage: ""
+
+    component FilePickerBar: RowLayout {
+        id: fp
+
+        property string label: ""
+        property string path: ""
+        signal browseClicked()
+
+        Layout.fillWidth: true
+        Layout.preferredHeight: 36
+        spacing: 6
+
+        AppTextField {
+            Layout.fillWidth: true
+            implicitHeight: 36
+            readOnly: true
+            text: fp.path
+            placeholderText: fp.label + qsTr(" document path")
+            Accessible.name: fp.label + " document path"
+            color: root.activeText
+            placeholderTextColor: root.activeDisabledText
+            background: Rectangle {
+                color: root.activeBg
+                border.color: root.separatorColor
+                border.width: 1
+                radius: 4
+            }
+        }
+        Controls.ToolButton {
+            icon.name: "document-open-folder"
+            icon.color: root.activeText
+            Controls.ToolTip.text: qsTr("Browse %1 document").arg(fp.label.toLowerCase())
+            Controls.ToolTip.visible: hovered
+            Accessible.name: qsTr("Browse %1 document").arg(fp.label)
+            onClicked: fp.browseClicked()
+        }
+    }
+
+    property var documentNameFilters: [
+        qsTr("Documents (*.pdf *.odt *.docx *.txt *.rtf)"),
+        qsTr("All files (*)")
+    ]
+
+    function urlToLocalPath(u) {
+        var path = u.toString().replace(/^file:\/\//, "");
+        return decodeURIComponent(path);
+    }
+
+    Dialogs.FileDialog {
+        id: leftDocumentDialog
+        title: qsTr("Select left document")
+        nameFilters: root.documentNameFilters
+        onAccepted: root.leftPath = root.urlToLocalPath(selectedFile)
+    }
+
+    Dialogs.FileDialog {
+        id: rightDocumentDialog
+        title: qsTr("Select right document")
+        nameFilters: root.documentNameFilters
+        onAccepted: root.rightPath = root.urlToLocalPath(selectedFile)
+    }
 
     // ── Bridge helper ─────────────────────────────────────────────────────────
     function bridgeGet(path, onLoad) {
@@ -196,103 +258,110 @@ Controls.Pane {
     // ── Layout ────────────────────────────────────────────────────────────────
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 8
-        spacing: 8
+        spacing: 0
 
-        // ── Toolbar ──────────────────────────────────────────────────────────
-        // Settings grouped in a bordered card (matching Image Compare), then
-        // the primary Run Compare action, a busy indicator, and a right-
-        // aligned result chip.
-        RowLayout {
+        Rectangle {
             Layout.fillWidth: true
-            spacing: 12
+            Layout.preferredHeight: 54
+            color: root.activeBg
+            border.color: root.separatorColor
+            border.width: 1
 
-            // Extraction-settings group
-            Rectangle {
-                Layout.preferredHeight: 40
-                Layout.preferredWidth: docGroupRow.implicitWidth + 20
-                color: root.activeBgAlt
-                border.color: root.separatorColor
-                border.width: 1
-                radius: 6
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 8
+                spacing: 8
 
-                RowLayout {
-                    id: docGroupRow
-                    anchors.fill: parent
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 10
-                    spacing: 10
-
-                    Controls.Label {
-                        text: qsTr("Mode")
-                        color: root.activeDisabledText
-                        font.pixelSize: 11
-                    }
-                    AppComboBox {
-                        id: modeCombo
-                        model: ["Text", "OCR Text"]
-                        currentIndex: 0
-                        Layout.preferredWidth: 130
-                        implicitHeight: 30
-                        Accessible.name: "Document extraction mode"
-                    }
-
-                    Rectangle {
-                        Layout.preferredWidth: 1
-                        Layout.fillHeight: true
-                        Layout.topMargin: 8
-                        Layout.bottomMargin: 8
-                        color: root.separatorColor
-                    }
-
-                    Controls.Label {
-                        text: qsTr("OCR Language")
-                        color: modeCombo.currentIndex === 1 ? root.activeText : root.activeDisabledText
-                        font.pixelSize: 11
-                    }
-                    AppTextField {
-                        id: ocrLangField
-                        text: "eng"
-                        Layout.preferredWidth: 80
-                        enabled: modeCombo.currentIndex === 1
-                        opacity: modeCombo.currentIndex === 1 ? 1.0 : 0.4
-                        Accessible.name: "OCR language code"
-                    }
+                FilePickerBar {
+                    label: qsTr("Left")
+                    path: root.leftPath
+                    onBrowseClicked: leftDocumentDialog.open()
+                }
+                FilePickerBar {
+                    label: qsTr("Right")
+                    path: root.rightPath
+                    onBrowseClicked: rightDocumentDialog.open()
                 }
             }
+        }
 
-            // Primary action: Run Compare
-            AppButton {
-                Layout.preferredHeight: 40
-                Layout.preferredWidth: 150
-                text: root.running ? qsTr("Comparing…") : qsTr("Run Compare")
-                icon.name: "media-playback-start"
-                enabled: !root.running
-                onClicked: root.runCompare()
-            }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 40
+            color: root.activeBgAlt
+            border.color: root.separatorColor
+            border.width: 1
 
-            Controls.BusyIndicator {
-                running: root.running
-                visible: root.running
-                Layout.preferredWidth: 28
-                Layout.preferredHeight: 28
-            }
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                spacing: 8
 
-            Controls.ProgressBar {
-                visible: root.running && root.progressTotal > 0
-                from: 0
-                to: root.progressTotal
-                value: root.progressCurrent
-                Layout.preferredWidth: 120
-                Layout.preferredHeight: 16
-            }
+                Controls.Label {
+                    text: qsTr("Mode:")
+                    color: root.activeText
+                    opacity: 0.7
+                    font.pixelSize: 12
+                }
+                AppComboBox {
+                    id: modeCombo
+                    model: ["Text", "OCR Text"]
+                    currentIndex: 0
+                    Layout.preferredWidth: 130
+                    implicitHeight: 30
+                    Accessible.name: "Document extraction mode"
+                }
 
-            Item { Layout.fillWidth: true }
+                Kirigami.Separator { Layout.fillHeight: true }
 
-            Controls.Label {
-                text: root.lastResult !== null ? (root.lastResult.equal ? qsTr("Equal") : root.lastResult.differing_lines + qsTr(" diffs")) : ""
-                color: root.lastResult !== null && !root.lastResult.equal ? "#e53935" : root.activeText
-                font.bold: true
+                Controls.Label {
+                    text: qsTr("OCR Language:")
+                    color: modeCombo.currentIndex === 1 ? root.activeText : root.activeDisabledText
+                    opacity: modeCombo.currentIndex === 1 ? 0.7 : 1.0
+                    font.pixelSize: 12
+                }
+                AppTextField {
+                    id: ocrLangField
+                    text: "eng"
+                    Layout.preferredWidth: 80
+                    enabled: modeCombo.currentIndex === 1
+                    opacity: modeCombo.currentIndex === 1 ? 1.0 : 0.4
+                    Accessible.name: "OCR language code"
+                }
+
+                AppButton {
+                    Layout.preferredHeight: 30
+                    Layout.preferredWidth: 150
+                    text: root.running ? qsTr("Comparing…") : qsTr("Run Compare")
+                    icon.name: "media-playback-start"
+                    enabled: !root.running && root.leftPath !== "" && root.rightPath !== ""
+                    onClicked: root.runCompare()
+                }
+
+                Controls.BusyIndicator {
+                    running: root.running
+                    visible: root.running
+                    Layout.preferredWidth: 28
+                    Layout.preferredHeight: 28
+                }
+
+                Controls.ProgressBar {
+                    visible: root.running && root.progressTotal > 0
+                    from: 0
+                    to: root.progressTotal
+                    value: root.progressCurrent
+                    Layout.preferredWidth: 120
+                    Layout.preferredHeight: 16
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Controls.Label {
+                    text: root.lastResult !== null ? (root.lastResult.equal ? qsTr("Equal") : root.lastResult.differing_lines + qsTr(" diffs")) : ""
+                    color: root.lastResult !== null && !root.lastResult.equal ? "#e53935" : root.activeText
+                    font.bold: true
+                }
             }
         }
 
