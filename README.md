@@ -205,7 +205,7 @@ Quick rules of thumb:
 - [Engine decisions](docs/engine-decisions.md)
 - [Plugin protocol](docs/plugin-protocol.md)
 - [Settings storage decision](docs/settings-storage-decision.md)
-- [Security](docs/security.md)
+- [Security](docs/SECURITY.md)
 - [Licensing](docs/licensing.md)
 - [Third-party notices](docs/third-party-notices.md)
 - [Migrating from desktop diff tools](docs/migration-from-desktop-diff-tools.md)

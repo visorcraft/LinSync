@@ -195,12 +195,12 @@ Steps to cut a release:
 ## Security
 
 If you find a vulnerability, **do not** open a public GitHub issue.
-Email `security@visorcraft.com` with details and a proof of concept if
-you have one. We will acknowledge within 72 hours and follow up with a
-fix timeline.
+Report it privately through GitHub's private vulnerability reporting —
+the repository's **Security** tab → **Report a vulnerability**. The
+full policy and what to expect are in `docs/SECURITY.md`.
 
 The bridge between the Rust host and the QML UI is loopback-only and
-token-gated; please review `docs/security.md` and
+token-gated; please review `docs/SECURITY.md` and
 `docs/qt-bridge-spike.md` before touching that boundary.
 
 ## Licensing
