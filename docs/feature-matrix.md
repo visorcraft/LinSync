@@ -73,7 +73,7 @@ not manual QA. "Docs" refers to `docs/user-guide.md`,
 | About | `AboutPage.qml` | static, deep-links to Credits / Licenses | complete |
 | Credits | `CreditsPage.qml` | static (`docs/third-party-notices.md` mirror) | complete |
 | Licenses | `LicensesPage.qml` | static (full-text reader) | complete |
-| Merge (toolbar entry) | `MergePage.qml` | `/merge/conflicts`, `/merge3/*`; conflict scroll-to-line uses string-as-line-number | partial |
+| Merge (toolbar entry) | `MergePage.qml` | `/merge/conflicts`, `/merge3/*`; conflict scroll uses per-side line ranges from `*_lines` arrays | complete |
 
 ## How to update this matrix
 

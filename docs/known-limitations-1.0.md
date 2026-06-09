@@ -8,7 +8,7 @@ categories:
 1. **Currently unavailable** features that may ship in a future release.
 2. **Permanent non-goals** that LinSync will not pursue.
 
-This file is updated each release. As of 1.9.5 all roadmap phases (0–30)
+This file is updated each release. As of 1.9.5 all roadmap phases (0–44)
 are shipped. The image (frame selector), document, and webpage compare
 surfaces, the three-pane merge, the filter-grammar migrator, the plugin
 host with sandboxed helpers, sessions/projects, accessibility, localization,
@@ -16,7 +16,7 @@ windowing, bridge option propagation, table compare enhancements, archive
 sandboxing, session delete/rename UI, navigable hex view, image animation
 UI, document OCR word boxes, webpage rich results GUI, folder sort/filter
 UI, plugin option schema validation, GUI export, folder group-by, and
-multi-type folder filter are all complete.
+multi-type folder filter, fixed bridge-info $TMPDIR desync, removed dead code, feature-parity docs cleanup, and merge conflict scroll line ranges are all complete.
 
 ## Specialized compare — remaining gaps
 

@@ -1244,11 +1244,16 @@ fn write_launch_context(paths: &AppPaths, context: &GuiLaunchContext) -> Result<
 ///
 /// Returns `None` (after logging) if the location cannot be secured, so the
 /// token is never dropped into an attacker-controlled location.
+///
+/// Uses a hardcoded `/tmp/linsync` path (not `std::env::temp_dir()`) to agree
+/// with the QML sidecar reader in `Main.qml` which reads from a hardcoded
+/// `file:///tmp/linsync/bridge-info.json`. If `std::env::temp_dir()` were used,
+/// the paths would desync when `$TMPDIR` is set (CI, containers).
 #[cfg(unix)]
 fn write_bridge_info_file(payload: &[u8]) -> Option<PathBuf> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-    let dir = std::env::temp_dir().join("linsync");
+    let dir = Path::new("/tmp").join("linsync");
     if let Err(err) = fs::create_dir_all(&dir) {
         tracing::warn!(dir = %dir.display(), error = %err, "cannot create bridge info dir");
         return None;

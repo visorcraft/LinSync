@@ -808,9 +808,6 @@ mod tests {
         }
     }
 
-    #[cfg(any())]
-    fn simple_server(_body: &'static str) -> () {}
-
     #[test]
     fn html_source_requires_confirmation() {
         let opts = WebpageCompareOptions::default();
