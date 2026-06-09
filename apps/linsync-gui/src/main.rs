@@ -1578,15 +1578,9 @@ fn persist_multi_tab_snapshot(session: &mut SessionFile, context: &GuiLaunchCont
 }
 
 /// Rebuild a multi-tab launch context from a recent session's snapshot, if it
-/// carries one. Returns `None` when there is no (valid) multi-tab snapshot, so
-/// the caller can fall back to single-tab restore.
-///
-/// Marked allow(dead_code) because the only non-test caller was the bare-launch
-/// auto-restore path (intentionally removed to stop auto-defaulting path fields
-/// into the Compare editor); the function remains for explicit multi-tab
-/// snapshot round-tripping in tests and for potential future "reopen last
-/// workspace" action.
-#[allow(dead_code)]
+/// carries one. Only used in tests (the bare-launch auto-restore caller was
+/// intentionally removed).
+#[cfg(test)]
 fn restore_multi_tab_context(session: &SessionFile) -> Option<GuiLaunchContext> {
     let value = session.layout.extra.get(GUI_TABS_SNAPSHOT_KEY)?;
     let snapshot: GuiMultiTabSnapshot = serde_json::from_value(value.clone()).ok()?;
@@ -4944,6 +4938,15 @@ fn folder_query_from_params(params: &[(String, String)]) -> linsync_core::Folder
     if let Some(descending) = query_value(params, "descending").and_then(parse_bool_query_param) {
         query.descending = descending;
     }
+    if let Some(group_by) = query_value(params, "group_by") {
+        use linsync_core::FolderGrouping;
+        query.group_by = match group_by {
+            "state" => FolderGrouping::State,
+            "type" => FolderGrouping::Type,
+            "dir" | "directory" => FolderGrouping::Directory,
+            _ => FolderGrouping::None,
+        };
+    }
     if let Some(offset) = query_value(params, "offset").and_then(|v| v.parse::<usize>().ok()) {
         query.offset = offset;
     }
@@ -4953,7 +4956,7 @@ fn folder_query_from_params(params: &[(String, String)]) -> linsync_core::Folder
     query
 }
 
-/// `/folder/query?left=&right=&search=&types=&offset=&limit=&state=&sort=&descending=` — compare two
+/// `/folder/query?left=&right=&search=&types=&offset=&limit=&state=&sort=&descending=&group_by=` — compare two
 /// folders and return the entries filtered/paged through the core `FolderQuery`,
 /// so the GUI folder table can search + type-filter + paginate via the core API.
 fn folder_query_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
@@ -10917,10 +10920,8 @@ mod tests {
     // ────────────────────────────────────────────────────────────────────────
     // Phase 0 drift regressions.
     //
-    // These tests describe the contracts the GUI bridge *should* uphold.
-    // Several of them are #[ignore]'d because the drift is not yet fixed —
-    // they will turn green when the corresponding feature ships and
-    // serve as the regression guard from then on.
+    // These tests describe the contracts the GUI bridge must uphold. All are
+    // active and passing — they serve as the ongoing regression guard.
     // ────────────────────────────────────────────────────────────────────────
 
     #[test]

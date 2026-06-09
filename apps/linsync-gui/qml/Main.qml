@@ -113,12 +113,14 @@ Kirigami.ApplicationWindow {
     property var visibleFolderEntries: []
     property string folderSortColumn: ""
     property bool folderSortAscending: true
+    property string folderGroupBy: ""
     onFolderFilterChanged: root.applyFolderFilter()
     // Route search/type changes through applyFolderFilter so a windowed folder
     // re-queries /folder/query server-side instead of filtering only the loaded
     // page (non-windowed folders still filter client-side via rebuildFolderView).
     onFolderSearchChanged: root.applyFolderFilter()
     onFolderTypeFilterChanged: root.applyFolderFilter()
+    onFolderGroupByChanged: root.applyFolderFilter()
     onFolderSortColumnChanged: root.applyFolderSort()
     onFolderSortAscendingChanged: root.applyFolderSort()
     property int pendingCloseTabId: 0
@@ -1985,14 +1987,26 @@ Kirigami.ApplicationWindow {
                 return false
         }
         // Entry-type filter (file / directory / symlink / special).
+        // folderTypeFilter is a comma-separated list; match if entry type is in it.
         if (root.folderTypeFilter !== "") {
             const ty = entry && entry.entryType
                 ? String(entry.entryType)
                 : (entry && entry.isDir ? "directory" : "file")
-            if (ty !== root.folderTypeFilter)
+            const types = root.folderTypeFilter.split(",")
+            if (types.indexOf(ty) === -1)
                 return false
         }
         return true
+    }
+
+    function toggleFolderType(ty) {
+        var types = root.folderTypeFilter === "" ? [] : root.folderTypeFilter.split(",")
+        var idx = types.indexOf(ty)
+        if (idx >= 0)
+            types.splice(idx, 1)
+        else
+            types.push(ty)
+        root.folderTypeFilter = types.join(",")
     }
 
     function rebuildFolderView() {
@@ -2109,6 +2123,8 @@ Kirigami.ApplicationWindow {
         if (root.folderSortColumn !== "")
             url += "&sort=" + encodeURIComponent(root.folderSortColumn)
         url += "&descending=" + (root.folderSortAscending ? "0" : "1")
+        if (root.folderGroupBy !== "")
+            url += "&group_by=" + encodeURIComponent(root.folderGroupBy)
         const request = new XMLHttpRequest()
         request.onreadystatechange = function () {
             if (request.readyState !== XMLHttpRequest.DONE)
@@ -4325,22 +4341,22 @@ Kirigami.ApplicationWindow {
                     AppButton {
                         text: qsTr("Files")
                         flat: true
-                        highlighted: root.folderTypeFilter === "file"
-                        onClicked: root.folderTypeFilter = root.folderTypeFilter === "file" ? "" : "file"
+                        highlighted: root.folderTypeFilter.split(",").indexOf("file") >= 0
+                        onClicked: root.toggleFolderType("file")
                     }
 
                     AppButton {
                         text: qsTr("Folders")
                         flat: true
-                        highlighted: root.folderTypeFilter === "directory"
-                        onClicked: root.folderTypeFilter = root.folderTypeFilter === "directory" ? "" : "directory"
+                        highlighted: root.folderTypeFilter.split(",").indexOf("directory") >= 0
+                        onClicked: root.toggleFolderType("directory")
                     }
 
                     AppButton {
                         text: qsTr("Symlinks")
                         flat: true
-                        highlighted: root.folderTypeFilter === "symlink"
-                        onClicked: root.folderTypeFilter = root.folderTypeFilter === "symlink" ? "" : "symlink"
+                        highlighted: root.folderTypeFilter.split(",").indexOf("symlink") >= 0
+                        onClicked: root.toggleFolderType("symlink")
                     }
 
                     Kirigami.Separator { Layout.fillHeight: true }
@@ -4377,6 +4393,42 @@ Kirigami.ApplicationWindow {
                         flat: true
                         highlighted: root.folderSortColumn === "method"
                         onClicked: root.toggleFolderSort("method")
+                    }
+
+                    Kirigami.Separator { Layout.fillHeight: true }
+
+                    Controls.Label {
+                        text: qsTr("Group:")
+                        color: root.activeText
+                        opacity: 0.7
+                    }
+
+                    AppButton {
+                        text: qsTr("None")
+                        flat: true
+                        highlighted: root.folderGroupBy === ""
+                        onClicked: root.folderGroupBy = ""
+                    }
+
+                    AppButton {
+                        text: qsTr("State")
+                        flat: true
+                        highlighted: root.folderGroupBy === "state"
+                        onClicked: root.folderGroupBy = root.folderGroupBy === "state" ? "" : "state"
+                    }
+
+                    AppButton {
+                        text: qsTr("Type")
+                        flat: true
+                        highlighted: root.folderGroupBy === "type"
+                        onClicked: root.folderGroupBy = root.folderGroupBy === "type" ? "" : "type"
+                    }
+
+                    AppButton {
+                        text: qsTr("Dir")
+                        flat: true
+                        highlighted: root.folderGroupBy === "dir"
+                        onClicked: root.folderGroupBy = root.folderGroupBy === "dir" ? "" : "dir"
                     }
 
                     Item { Layout.fillWidth: true }
