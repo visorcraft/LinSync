@@ -12,8 +12,10 @@
 #
 # Newer librsvg releases drop the gdk-pixbuf SVG loader, which makes
 # linuxdeploy's bundled `strip` choke on relr.dyn-only ELF objects.
-# Set `NO_STRIP=1` to skip the strip step on those hosts; the result
-# is functionally identical and only slightly larger.
+# The script strips by default and automatically retries with NO_STRIP=1
+# when linuxdeploy fails; set `NO_STRIP=1` up front on hosts known to be
+# affected to skip the doomed first attempt. The unstripped result is
+# functionally identical and only slightly larger.
 
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -91,10 +93,26 @@ export QMAKE
 # EXTRA_QT_MODULES forces linuxdeploy-plugin-qt to bundle QtWebEngine (and its
 # QtWebEngineProcess + resources): the app uses the in-process cxx-qt host, so
 # the plugin would not otherwise detect WebEngine usage from the app's QML.
-EXTRA_QT_MODULES="${EXTRA_QT_MODULES:-webenginequick}" \
-linuxdeploy --appdir "$appdir" --plugin qt --output appimage \
-    --custom-apprun "$apprun_src" \
-    --desktop-file "${appdir}/usr/share/applications/com.visorcraft.LinSync.desktop"
+run_linuxdeploy() {
+    EXTRA_QT_MODULES="${EXTRA_QT_MODULES:-webenginequick}" \
+    linuxdeploy --appdir "$appdir" --plugin qt --output appimage \
+        --custom-apprun "$apprun_src" \
+        --desktop-file "${appdir}/usr/share/applications/com.visorcraft.LinSync.desktop"
+}
+
+# First attempt strips (smaller artifact). On hosts with a very new
+# glibc/toolchain, linuxdeploy's bundled `strip` chokes on relr.dyn-only ELF
+# objects — retry unstripped rather than bake NO_STRIP=1 into every build
+# (release containers have a working strip and should keep using it).
+if ! run_linuxdeploy; then
+    if [ "${NO_STRIP:-}" = "1" ]; then
+        echo "linuxdeploy failed with NO_STRIP=1 already set; giving up." >&2
+        exit 1
+    fi
+    echo "linuxdeploy failed (likely the bundled strip vs relr.dyn); retrying with NO_STRIP=1 ..." >&2
+    export NO_STRIP=1
+    run_linuxdeploy
+fi
 
 # linuxdeploy emits `LinSync-x86_64.AppImage` in the cwd; rename to
 # the version-stamped path the user requested (or the default).

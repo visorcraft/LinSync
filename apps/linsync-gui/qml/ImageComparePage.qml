@@ -129,43 +129,6 @@ Controls.Pane {
         }
     }
 
-    component FilePickerBar: RowLayout {
-        id: fp
-
-        property string label: ""
-        property string path: ""
-        signal browseClicked()
-
-        Layout.fillWidth: true
-        Layout.preferredHeight: 36
-        spacing: 6
-
-        AppTextField {
-            Layout.fillWidth: true
-            implicitHeight: 36
-            readOnly: true
-            text: fp.path
-            placeholderText: fp.label + qsTr(" image path")
-            Accessible.name: fp.label + " image path"
-            color: root.activeText
-            placeholderTextColor: root.activeDisabledText
-            background: Rectangle {
-                color: root.activeBg
-                border.color: root.separatorColor
-                border.width: 1
-                radius: 4
-            }
-        }
-        Controls.ToolButton {
-            icon.name: "document-open-folder"
-            icon.color: root.activeText
-            Controls.ToolTip.text: qsTr("Browse %1 image").arg(fp.label.toLowerCase())
-            Controls.ToolTip.visible: hovered
-            Accessible.name: qsTr("Browse %1 image").arg(fp.label)
-            onClicked: fp.browseClicked()
-        }
-    }
-
     function urlToLocalPath(u) {
         var path = u.toString().replace(/^file:\/\//, "");
         return decodeURIComponent(path);
@@ -173,20 +136,6 @@ Controls.Pane {
 
     property var imageNameFilters: [qsTr("Images (*.png *.jpg *.jpeg *.webp *.tif *.tiff)"), qsTr("All files (*)")]
     property string supportedImageFormatsText: qsTr("PNG, JPEG, WebP, TIFF")
-
-    FileDialog {
-        id: leftFileDialog
-        title: qsTr("Select left image")
-        nameFilters: root.imageNameFilters
-        onAccepted: root.leftPath = root.urlToLocalPath(selectedFile)
-    }
-
-    FileDialog {
-        id: rightFileDialog
-        title: qsTr("Select right image")
-        nameFilters: root.imageNameFilters
-        onAccepted: root.rightPath = root.urlToLocalPath(selectedFile)
-    }
 
     FileDialog {
         id: saveOverlayDialog
@@ -341,13 +290,25 @@ Controls.Pane {
 
                 FilePickerBar {
                     label: qsTr("Left")
+                    kind: qsTr("image")
                     path: root.leftPath
-                    onBrowseClicked: leftFileDialog.open()
+                    nameFilters: root.imageNameFilters
+                    textColor: root.activeText
+                    disabledTextColor: root.activeDisabledText
+                    fieldColor: root.activeBg
+                    borderColor: root.separatorColor
+                    onPathPicked: function (pickedPath) { root.leftPath = pickedPath }
                 }
                 FilePickerBar {
                     label: qsTr("Right")
+                    kind: qsTr("image")
                     path: root.rightPath
-                    onBrowseClicked: rightFileDialog.open()
+                    nameFilters: root.imageNameFilters
+                    textColor: root.activeText
+                    disabledTextColor: root.activeDisabledText
+                    fieldColor: root.activeBg
+                    borderColor: root.separatorColor
+                    onPathPicked: function (pickedPath) { root.rightPath = pickedPath }
                 }
             }
         }

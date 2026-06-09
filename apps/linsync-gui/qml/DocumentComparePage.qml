@@ -4,7 +4,6 @@
 import QtQuick
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
-import QtQuick.Dialogs as Dialogs
 import org.kde.kirigami as Kirigami
 
 // DocumentComparePage — two-pane text-diff view for OCR/document compare.
@@ -42,66 +41,10 @@ Controls.Pane {
     property int progressTotal: 0
     property string progressMessage: ""
 
-    component FilePickerBar: RowLayout {
-        id: fp
-
-        property string label: ""
-        property string path: ""
-        signal browseClicked()
-
-        Layout.fillWidth: true
-        Layout.preferredHeight: 36
-        spacing: 6
-
-        AppTextField {
-            Layout.fillWidth: true
-            implicitHeight: 36
-            readOnly: true
-            text: fp.path
-            placeholderText: fp.label + qsTr(" document path")
-            Accessible.name: fp.label + " document path"
-            color: root.activeText
-            placeholderTextColor: root.activeDisabledText
-            background: Rectangle {
-                color: root.activeBg
-                border.color: root.separatorColor
-                border.width: 1
-                radius: 4
-            }
-        }
-        Controls.ToolButton {
-            icon.name: "document-open-folder"
-            icon.color: root.activeText
-            Controls.ToolTip.text: qsTr("Browse %1 document").arg(fp.label.toLowerCase())
-            Controls.ToolTip.visible: hovered
-            Accessible.name: qsTr("Browse %1 document").arg(fp.label)
-            onClicked: fp.browseClicked()
-        }
-    }
-
     property var documentNameFilters: [
         qsTr("Documents (*.pdf *.odt *.docx *.txt *.rtf)"),
         qsTr("All files (*)")
     ]
-
-    function urlToLocalPath(u) {
-        var path = u.toString().replace(/^file:\/\//, "");
-        return decodeURIComponent(path);
-    }
-
-    Dialogs.FileDialog {
-        id: leftDocumentDialog
-        title: qsTr("Select left document")
-        nameFilters: root.documentNameFilters
-        onAccepted: root.leftPath = root.urlToLocalPath(selectedFile)
-    }
-
-    Dialogs.FileDialog {
-        id: rightDocumentDialog
-        title: qsTr("Select right document")
-        nameFilters: root.documentNameFilters
-        onAccepted: root.rightPath = root.urlToLocalPath(selectedFile)
-    }
 
     // ── Bridge helper ─────────────────────────────────────────────────────────
     function bridgeGet(path, onLoad) {
@@ -274,13 +217,25 @@ Controls.Pane {
 
                 FilePickerBar {
                     label: qsTr("Left")
+                    kind: qsTr("document")
                     path: root.leftPath
-                    onBrowseClicked: leftDocumentDialog.open()
+                    nameFilters: root.documentNameFilters
+                    textColor: root.activeText
+                    disabledTextColor: root.activeDisabledText
+                    fieldColor: root.activeBg
+                    borderColor: root.separatorColor
+                    onPathPicked: function (pickedPath) { root.leftPath = pickedPath }
                 }
                 FilePickerBar {
                     label: qsTr("Right")
+                    kind: qsTr("document")
                     path: root.rightPath
-                    onBrowseClicked: rightDocumentDialog.open()
+                    nameFilters: root.documentNameFilters
+                    textColor: root.activeText
+                    disabledTextColor: root.activeDisabledText
+                    fieldColor: root.activeBg
+                    borderColor: root.separatorColor
+                    onPathPicked: function (pickedPath) { root.rightPath = pickedPath }
                 }
             }
         }

@@ -371,7 +371,7 @@ Kirigami.ScrollablePage {
                                 display: Controls.AbstractButton.IconOnly
                                 Controls.ToolTip.text: qsTr("Rename this session")
                                 Controls.ToolTip.visible: hovered
-                                onClicked: page.renamePromptIndex = modelData.index !== undefined ? modelData.index : index
+                                onClicked: renameDialog.openFor(modelData.index !== undefined ? modelData.index : index)
                             }
                             AppButton {
                                 flat: true
@@ -521,28 +521,26 @@ Kirigami.ScrollablePage {
         }
     }
 
-    // Rename dialog — triggered by the rename button on a recent session.
-    property int renamePromptIndex: -1
-    onRenamePromptIndexChanged: {
-        if (renamePromptIndex >= 0) renameDialog.open()
-    }
+    // Rename dialog — opened directly by the rename button on a recent session.
     Kirigami.PromptDialog {
         id: renameDialog
+        property int sessionIndex: -1
+        function openFor(idx) {
+            sessionIndex = idx
+            renameField.text = ""
+            open()
+        }
         title: qsTr("Rename session")
         subtitle: qsTr("Enter a new title for this session.")
         standardButtons: Kirigami.Dialog.Ok | Kirigami.Dialog.Cancel
         onAccepted: {
             var newTitle = renameField.text.trim()
-            if (newTitle.length > 0) {
-                page.renameRecentSessionRequested(page.renamePromptIndex, newTitle)
+            if (newTitle.length > 0 && sessionIndex >= 0) {
+                page.renameRecentSessionRequested(sessionIndex, newTitle)
             }
-            page.renamePromptIndex = -1
             renameField.text = ""
         }
-        onRejected: {
-            page.renamePromptIndex = -1
-            renameField.text = ""
-        }
+        onRejected: renameField.text = ""
         Controls.TextField {
             id: renameField
             Layout.fillWidth: true

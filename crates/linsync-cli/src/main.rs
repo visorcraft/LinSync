@@ -1728,7 +1728,9 @@ fn extract_archive(
             .arg(&extracted)
             .arg(archive);
         match SandboxedCommand::new(cmd, policy).spawn() {
-            Ok(mut child) => child.wait().map_err(|err| format!("unzip wait failed: {err}"))?,
+            Ok(mut child) => child
+                .wait()
+                .map_err(|err| format!("unzip wait failed: {err}"))?,
             Err(err) => {
                 return Err(format!(
                     "sandboxed unzip failed (set LINSYNC_SANDBOX_ALLOW_UNSANDBOXED=1 to bypass): {err}"
@@ -1748,7 +1750,9 @@ fn extract_archive(
         let mut cmd = Command::new("tar");
         cmd.arg("-xf").arg(archive).arg("-C").arg(&extracted);
         match SandboxedCommand::new(cmd, policy).spawn() {
-            Ok(mut child) => child.wait().map_err(|err| format!("tar wait failed: {err}"))?,
+            Ok(mut child) => child
+                .wait()
+                .map_err(|err| format!("tar wait failed: {err}"))?,
             Err(err) => {
                 return Err(format!(
                     "sandboxed tar failed (set LINSYNC_SANDBOX_ALLOW_UNSANDBOXED=1 to bypass): {err}"
@@ -6024,15 +6028,9 @@ fn parse_folder_sort_key(value: &str) -> Result<FolderSortKey, String> {
 }
 
 fn parse_folder_grouping(value: &str) -> Result<FolderGrouping, String> {
-    match value {
-        "none" => Ok(FolderGrouping::None),
-        "state" => Ok(FolderGrouping::State),
-        "type" => Ok(FolderGrouping::Type),
-        "directory" | "dir" => Ok(FolderGrouping::Directory),
-        other => Err(format!(
-            "unknown --group-by value '{other}': expected none | state | type | directory"
-        )),
-    }
+    value
+        .parse()
+        .map_err(|err| format!("invalid --group-by value: {err}"))
 }
 
 fn parse_folder_type_filter(value: &str) -> Result<FolderTypeFilter, String> {

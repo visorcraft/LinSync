@@ -457,6 +457,25 @@ pub enum FolderGrouping {
     Directory,
 }
 
+impl std::str::FromStr for FolderGrouping {
+    type Err = String;
+
+    /// Parse the user-facing grouping name shared by the CLI (`--group-by`)
+    /// and the GUI bridge (`group_by=`): `none | state | type | directory`
+    /// (with `dir` accepted as a shorthand).
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "none" => Ok(FolderGrouping::None),
+            "state" => Ok(FolderGrouping::State),
+            "type" => Ok(FolderGrouping::Type),
+            "directory" | "dir" => Ok(FolderGrouping::Directory),
+            other => Err(format!(
+                "unknown grouping '{other}': expected none | state | type | directory"
+            )),
+        }
+    }
+}
+
 /// A reusable, client-agnostic description of how to view a folder result:
 /// filter by state and type, full-text search the relative path, sort, group,
 /// and paginate. Clients (CLI, GUI) build one of these and call

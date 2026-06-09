@@ -14,10 +14,19 @@ STARTUP_SLEEP="${STARTUP_SLEEP:-5}"
 
 mkdir -p "$OUT"
 
+# Isolate XDG state so screenshot runs never pollute the user's real
+# settings / recent-session stores (mirrors gui-smoke.sh).
+tmpdata="$(mktemp -d "${TMPDIR:-/tmp}/linsync-screenshot.XXXXXX")"
+export XDG_CONFIG_HOME="${tmpdata}/config"
+export XDG_DATA_HOME="${tmpdata}/data"
+export XDG_CACHE_HOME="${tmpdata}/cache"
+export XDG_STATE_HOME="${tmpdata}/state"
+
 cleanup() {
     [[ -n "${APP_PID:-}" ]] && kill "$APP_PID" 2>/dev/null || true
     [[ -n "${XVFB_PID:-}" ]] && kill "$XVFB_PID" 2>/dev/null || true
     wait 2>/dev/null || true
+    rm -rf "$tmpdata"
 }
 trap cleanup EXIT INT TERM
 

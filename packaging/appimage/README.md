@@ -30,6 +30,8 @@ two tools.
   with `Could not find dependency: libjxrglue.so.0`.
 - On hosts whose `librsvg` (≥ 2.62 on Arch) dropped the gdk-pixbuf
   SVG loader, `linuxdeploy`'s bundled `strip` can't read modern
-  `relr.dyn`-only ELF objects. Set `NO_STRIP=1` to skip the strip
-  step; the resulting AppImage is functionally identical and only
-  slightly larger.
+  `relr.dyn`-only ELF objects. `build-appdir.sh` automatically retries
+  with `NO_STRIP=1` when linuxdeploy fails; set `NO_STRIP=1` up front
+  on known-affected hosts to skip the doomed first attempt. The
+  resulting AppImage is functionally identical and only slightly
+  larger.

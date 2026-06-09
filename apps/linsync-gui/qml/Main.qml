@@ -85,6 +85,8 @@ Kirigami.ApplicationWindow {
     // ("" = all, else "file"/"directory"/"symlink"/"special").
     property string folderSearch: ""
     property string folderTypeFilter: ""
+    // folderTypeFilter split once per change, not once per entry / per binding.
+    readonly property var folderTypeList: folderTypeFilter === "" ? [] : folderTypeFilter.split(",")
     property var unfilteredLeftRows: []
     property var unfilteredRightRows: []
     // Lazy text windowing. When a text diff is larger than the server's window
@@ -118,7 +120,20 @@ Kirigami.ApplicationWindow {
     // Route search/type changes through applyFolderFilter so a windowed folder
     // re-queries /folder/query server-side instead of filtering only the loaded
     // page (non-windowed folders still filter client-side via rebuildFolderView).
-    onFolderSearchChanged: root.applyFolderFilter()
+    // Windowed search is debounced: each /folder/query re-walks both trees
+    // server-side, so firing one per keystroke stalls the bridge. Client-side
+    // filtering stays immediate.
+    Timer {
+        id: folderSearchDebounce
+        interval: 250
+        onTriggered: root.applyFolderFilter()
+    }
+    onFolderSearchChanged: {
+        if (root.folderTotalEntries > 0)
+            folderSearchDebounce.restart()
+        else
+            root.applyFolderFilter()
+    }
     onFolderTypeFilterChanged: root.applyFolderFilter()
     onFolderGroupByChanged: root.applyFolderFilter()
     onFolderSortColumnChanged: root.applyFolderSort()
@@ -1988,15 +2003,31 @@ Kirigami.ApplicationWindow {
         }
         // Entry-type filter (file / directory / symlink / special).
         // folderTypeFilter is a comma-separated list; match if entry type is in it.
-        if (root.folderTypeFilter !== "") {
+        if (root.folderTypeList.length > 0) {
             const ty = entry && entry.entryType
                 ? String(entry.entryType)
                 : (entry && entry.isDir ? "directory" : "file")
-            const types = root.folderTypeFilter.split(",")
-            if (types.indexOf(ty) === -1)
+            if (root.folderTypeList.indexOf(ty) === -1)
                 return false
         }
         return true
+    }
+
+    // Mirror of core's folder_group_label (folder.rs): the bucket label an
+    // entry falls under for the current folderGroupBy mode.
+    function folderGroupLabel(entry) {
+        if (root.folderGroupBy === "state")
+            return entry && entry.state ? String(entry.state) : ""
+        if (root.folderGroupBy === "type")
+            return entry && entry.entryType
+                ? String(entry.entryType)
+                : (entry && entry.isDir ? "directory" : "file")
+        if (root.folderGroupBy === "dir") {
+            const path = entry && entry.path ? String(entry.path) : ""
+            const slash = path.lastIndexOf("/")
+            return slash > 0 ? path.substring(0, slash) : "."
+        }
+        return ""
     }
 
     function toggleFolderType(ty) {
@@ -2067,6 +2098,25 @@ Kirigami.ApplicationWindow {
                 if (va > vb) return asc ? 1 : -1
                 return 0
             })
+        }
+        // Grouping, mirroring core's FolderQuery: bucket the (sorted) entries
+        // by label, group order following first appearance. The server-side
+        // /folder/query path does the same for windowed folders.
+        if (root.folderGroupBy !== "") {
+            var labels = []
+            var buckets = {}
+            for (var gi = 0; gi < entries.length; gi++) {
+                var key = "g:" + folderGroupLabel(entries[gi])
+                if (buckets[key] === undefined) {
+                    buckets[key] = []
+                    labels.push(key)
+                }
+                buckets[key].push(entries[gi])
+            }
+            var grouped = []
+            for (var li = 0; li < labels.length; li++)
+                grouped = grouped.concat(buckets[labels[li]])
+            entries = grouped
         }
         root.visibleFolderEntries = entries
         root.leftRows = []
@@ -4341,21 +4391,21 @@ Kirigami.ApplicationWindow {
                     AppButton {
                         text: qsTr("Files")
                         flat: true
-                        highlighted: root.folderTypeFilter.split(",").indexOf("file") >= 0
+                        highlighted: root.folderTypeList.indexOf("file") >= 0
                         onClicked: root.toggleFolderType("file")
                     }
 
                     AppButton {
                         text: qsTr("Folders")
                         flat: true
-                        highlighted: root.folderTypeFilter.split(",").indexOf("directory") >= 0
+                        highlighted: root.folderTypeList.indexOf("directory") >= 0
                         onClicked: root.toggleFolderType("directory")
                     }
 
                     AppButton {
                         text: qsTr("Symlinks")
                         flat: true
-                        highlighted: root.folderTypeFilter.split(",").indexOf("symlink") >= 0
+                        highlighted: root.folderTypeList.indexOf("symlink") >= 0
                         onClicked: root.toggleFolderType("symlink")
                     }
 
@@ -5217,7 +5267,6 @@ Kirigami.ApplicationWindow {
                 ignoreEol:          root.ignoreEol
                 eolNormalization:   root.eolNormalization
                 defaultCompareMode: root.defaultCompareMode
-                openLastSession:    root.openLastSession
                 confirmOnClose:     root.confirmOnClose
                 persistRecentPaths: root.persistRecentPaths
                 reduceMotion:       root.reduceMotion

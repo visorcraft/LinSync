@@ -32,7 +32,6 @@ Kirigami.ScrollablePage {
     property bool detectMoves: false
     property string eolNormalization: "auto"
     property string defaultCompareMode: "Text"
-    property bool openLastSession: true
     property bool confirmOnClose: true
     property bool persistRecentPaths: true
     property bool reduceMotion: false
@@ -789,40 +788,10 @@ up.indicator: Rectangle {
                 Kirigami.FormLayout {
                     Layout.fillWidth: true
 
-                    AppCheckBox {
-                        indicator: Rectangle {
-                            implicitWidth: 18
-                            implicitHeight: 18
-                            x: parent.leftPadding
-                            y: (parent.height - height) / 2
-                            radius: 3
-                            color: parent.checked ? page.themeHighlight : page.themeBg
-                            border.color: parent.checked ? page.themeHighlight : page.separator
-                            border.width: 1
-                            Controls.Label {
-                                anchors.centerIn: parent
-                                visible: parent.parent.checked
-                                text: "\u2713"
-                                font.pixelSize: 14
-                                font.bold: true
-                                color: page.themeHighlightedText
-                            }
-                        }
-                        contentItem: Controls.Label {
-                            text: parent.text
-                            leftPadding: parent.indicator.width + 8
-                            verticalAlignment: Text.AlignVCenter
-                            color: page.themeText
-                        }
-                        palette.windowText: page.themeText
-                        Kirigami.FormData.label: qsTr("On launch")
-                        text: qsTr("Restore last session")
-                        checked: page.openLastSession
-                        onToggled: {
-                            page.openLastSession = checked
-                            page.emit("openLastSession", checked)
-                        }
-                    }
+                    // Note: there is intentionally no "Restore last session"
+                    // launch toggle. A bare launch never auto-populates the
+                    // Compare page from previous work; resuming is always
+                    // explicit via this Sessions sidebar / projects.
 
                     AppCheckBox {
                         indicator: Rectangle {

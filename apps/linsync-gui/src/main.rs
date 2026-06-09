@@ -84,31 +84,11 @@ fn run(paths: &AppPaths, args: Vec<OsString>) -> Result<ExitCode, String> {
     }
     let mut launch_context = build_launch_context(&args);
 
-    if launch_context.is_none()
-        && let Ok(settings) = SettingsStore::new(paths.settings_file()).load_or_default()
-        && settings.open_last_session
-    {
-        let recent_store =
-            RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths));
-        if let Ok(mut recent) = recent_store.load_or_default() {
-            // Drop any entries that point at our internal test fixtures (leftover
-            // pollution from dev / smoke runs...). This keeps the list shown on
-            // the Sessions page (and reopen) free of them. We *intentionally do
-            // not* set launch_context here: on a bare launch we never auto-populate
-            // the Compare page's Left/Right path fields (or its diff state) from
-            // any previous session. That was the source of "defaults to fake
-            // folder names" (/tmp/bigfolder etc.). Users start with clean blank
-            // inputs (the placeholders); prior work is resumed explicitly from
-            // the Sessions sidebar.
-            recent.sessions.retain(|s| {
-                !path_looks_like_internal_test_fixture(&s.session.left)
-                    && !path_looks_like_internal_test_fixture(&s.session.right)
-            });
-            // (We still load+filter so the on-disk recent is "considered" for
-            // cleanup when the setting is enabled, and the /sessions/recent
-            // responder will also filter.)
-        }
-    }
+    // On a bare launch we never auto-populate the Compare page's Left/Right
+    // path fields (or its diff state) from any previous session — that was the
+    // source of "defaults to fake folder names" (/tmp/bigfolder etc.). Prior
+    // work is resumed explicitly from the Sessions sidebar; the /sessions/*
+    // responders filter leftover test-fixture entries themselves.
 
     // A Git-mergetool launch (LINSYNC_MERGE_* env) takes priority: open the
     // Merge workspace with the three inputs and the predetermined output path.
@@ -1036,9 +1016,9 @@ fn copy_tab_all(tab: &mut GuiCompareTab, direction: &str) -> Result<(), String> 
             "right_to_left" => MergeAction::CopyRightToLeft { block_index },
             _ => return Err(format!("unsupported copy direction: {direction}")),
         };
-    state
-        .apply(action)
-        .map_err(|err| format!("failed to apply text merge: {err}"))?;
+        state
+            .apply(action)
+            .map_err(|err| format!("failed to apply text merge: {err}"))?;
     }
     state.recompute(&tab_text_options(tab));
 
@@ -1066,15 +1046,14 @@ fn compare_tab_text_rows(tab: &GuiCompareTab) -> TextCompareResult {
     let right = rows_plain_text(&tab.right_rows);
     let left_document = TextDocument::from_text(&tab.left_path, &left);
     let right_document = TextDocument::from_text(&tab.right_path, &right);
-    compare_documents(
-        left_document,
-        right_document,
-        &tab_text_options(tab),
-    )
+    compare_documents(left_document, right_document, &tab_text_options(tab))
 }
 
 fn tab_text_options(tab: &GuiCompareTab) -> TextCompareOptions {
-    tab.options.as_ref().map(|o| o.text.clone()).unwrap_or_default()
+    tab.options
+        .as_ref()
+        .map(|o| o.text.clone())
+        .unwrap_or_default()
 }
 
 fn rows_plain_text(rows: &[GuiLineRow]) -> String {
@@ -1583,9 +1562,9 @@ fn persist_multi_tab_snapshot(session: &mut SessionFile, context: &GuiLaunchCont
 }
 
 /// Rebuild a multi-tab launch context from a recent session's snapshot, if it
-/// carries one. Only used in tests (the bare-launch auto-restore caller was
-/// intentionally removed).
-#[cfg(test)]
+/// carries one. Used by explicit `/sessions/reopen` so a saved multi-tab
+/// workspace comes back whole. (Bare-launch auto-restore was intentionally
+/// removed — prior work is only ever resumed explicitly.)
 fn restore_multi_tab_context(session: &SessionFile) -> Option<GuiLaunchContext> {
     let value = session.layout.extra.get(GUI_TABS_SNAPSHOT_KEY)?;
     let snapshot: GuiMultiTabSnapshot = serde_json::from_value(value.clone()).ok()?;
@@ -1610,12 +1589,31 @@ fn restore_multi_tab_context(session: &SessionFile) -> Option<GuiLaunchContext> 
 /// explicit re-open / project open are the way to resume prior work.
 fn path_looks_like_internal_test_fixture(p: &Path) -> bool {
     let s = p.to_string_lossy().to_ascii_lowercase();
-    // Covers /tests/fixtures/ (unix), \tests\fixtures\ (windows), and
-    // trailing cases.
+    // Only match *this project's* fixtures (a path component containing
+    // "linsync" somewhere above tests/fixtures), not any project's
+    // tests/fixtures tree — developers legitimately diff their own golden
+    // files (e.g. /home/dev/myapp/tests/fixtures/{expected,actual}) and those
+    // must record/persist like any other compare. Covers /tests/fixtures/
+    // (unix), \tests\fixtures\ (windows), and trailing cases.
+    if !s.contains("linsync") {
+        return false;
+    }
     s.contains("/tests/fixtures/")
         || s.contains("\\tests\\fixtures\\")
         || s.ends_with("/tests/fixtures")
         || s.ends_with("\\tests\\fixtures")
+}
+
+/// Drop recent-session entries that point at internal test fixtures (leftover
+/// pollution from dev / smoke runs). Every endpoint that loads the recent store
+/// MUST apply this before indexing into `sessions`: the Sessions page receives
+/// indices into the pruned list, so an unpruned endpoint would address the
+/// wrong entry whenever a hidden fixture entry exists on disk.
+fn prune_internal_fixture_sessions(recent: &mut RecentSessions) {
+    recent.sessions.retain(|s| {
+        !path_looks_like_internal_test_fixture(&s.session.left)
+            && !path_looks_like_internal_test_fixture(&s.session.right)
+    });
 }
 
 fn tab_has_persistable_paths(tab: &GuiCompareTab) -> bool {
@@ -1664,12 +1662,21 @@ fn restore_tab_snapshot(session: &SessionFile) -> Option<GuiCompareTab> {
     tab_has_persistable_paths(&tab).then_some(tab)
 }
 
-fn build_tab_for_session_file(session: &SessionFile) -> GuiCompareTab {
-    let mut options = GuiCompareOptions::default();
+/// Rebuild a compare tab for a saved session. Non-text options come from
+/// `base` (callers resolve the active profile); the session file's own saved
+/// text options overlay it so a reopened session reproduces the text compare
+/// it was saved with.
+fn build_tab_for_session_file(session: &SessionFile, base: &GuiCompareOptions) -> GuiCompareTab {
+    let mut options = base.clone();
     options.text = session.session.options.text.clone();
     restore_tab_snapshot(session).unwrap_or_else(|| {
         let mode = Some(compare_view_mode_label(session.selected_view));
-        build_tab_for_paths_with_mode(&session.session.left, &session.session.right, mode, &options)
+        build_tab_for_paths_with_mode(
+            &session.session.left,
+            &session.session.right,
+            mode,
+            &options,
+        )
     })
 }
 
@@ -1866,33 +1873,15 @@ fn explicit_tab_for_paths_cancellable(
                 should_cancel,
                 progress,
             ),
-            GuiCompareMode::Table => Some(table_tab(
-                left,
-                right,
-                left_path,
-                right_path,
-                options,
-            )),
-            GuiCompareMode::Hex => Some(binary_tab(
-                left,
-                right,
-                left_path,
-                right_path,
-                options,
-            )),
+            GuiCompareMode::Table => Some(table_tab(left, right, left_path, right_path, options)),
+            GuiCompareMode::Hex => Some(binary_tab(left, right, left_path, right_path, options)),
             GuiCompareMode::Folder => Some(invalid_compare_tab(
                 mode.label(),
                 left_path,
                 right_path,
                 "Selected folder compare requires two folders".to_owned(),
             )),
-            GuiCompareMode::Image => Some(image_tab(
-                left,
-                right,
-                left_path,
-                right_path,
-                options,
-            )),
+            GuiCompareMode::Image => Some(image_tab(left, right, left_path, right_path, options)),
             GuiCompareMode::Document => document_tab(
                 left,
                 right,
@@ -2070,7 +2059,7 @@ fn folder_tab_cancellable(
                 None,
                 None,
                 Vec::new(),
-                None,
+                Some(options.clone()),
             )
         }
         Err(err) => compare_tab(
@@ -2143,7 +2132,7 @@ fn archive_tab(
     left_path: String,
     right_path: String,
     plugin: &linsync_core::DiscoveredPlugin,
-    _options: &GuiCompareOptions,
+    options: &GuiCompareOptions,
 ) -> GuiCompareTab {
     let exec = PluginExecutionOptions {
         timeout: std::time::Duration::from_secs(60),
@@ -2184,7 +2173,7 @@ fn archive_tab(
                 None,
                 None,
                 Vec::new(),
-                None,
+                Some(options.clone()),
             )
         }
         Err(err) => invalid_compare_tab(
@@ -2253,13 +2242,7 @@ fn file_tab_cancellable(
     let left_bytes = fs::read(left).unwrap_or_default();
     let right_bytes = fs::read(right).unwrap_or_default();
     if is_likely_binary(&left_bytes) || is_likely_binary(&right_bytes) {
-        return Some(binary_tab(
-            left,
-            right,
-            left_path,
-            right_path,
-            options,
-        ));
+        return Some(binary_tab(left, right, left_path, right_path, options));
     }
 
     text_tab_cancellable(
@@ -2737,7 +2720,11 @@ fn table_tab(
     let table_options = &options.table;
     match compare_table_files(left, right, table_options) {
         Ok(result) => {
-            let cells = result.rows.clone();
+            let rows = table_rows_for_gui(&result);
+            let summary = vec![
+                summary_item("Rows", result.rows.len()),
+                summary_item("Changed cells", result.changed_cells),
+            ];
             compare_tab(
                 "Table",
                 (left_path, right_path),
@@ -2748,14 +2735,11 @@ fn table_tab(
                     path_kind: "Files".to_owned(),
                     message: "Validated two table files".to_owned(),
                 },
-                vec![
-                    summary_item("Rows", result.rows.len()),
-                    summary_item("Changed cells", result.changed_cells),
-                ],
-                table_rows_for_gui(&result),
+                summary,
+                rows,
                 vec![],
                 None,
-                Some(cells),
+                Some(result.rows),
                 Vec::new(),
                 Some(options.clone()),
             )
@@ -4944,13 +4928,9 @@ fn folder_query_from_params(params: &[(String, String)]) -> linsync_core::Folder
         query.descending = descending;
     }
     if let Some(group_by) = query_value(params, "group_by") {
-        use linsync_core::FolderGrouping;
-        query.group_by = match group_by {
-            "state" => FolderGrouping::State,
-            "type" => FolderGrouping::Type,
-            "dir" | "directory" => FolderGrouping::Directory,
-            _ => FolderGrouping::None,
-        };
+        // Shared parser with the CLI (core's FromStr); the bridge stays
+        // lenient and treats unknown values as "no grouping".
+        query.group_by = group_by.parse().unwrap_or_default();
     }
     if let Some(offset) = query_value(params, "offset").and_then(|v| v.parse::<usize>().ok()) {
         query.offset = offset;
@@ -4974,11 +4954,7 @@ fn folder_query_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
         Ok(opts) => opts,
         Err(err) => return bridge_error(400, "Bad Request", &err),
     };
-    let result = match compare_folders(
-        Path::new(left),
-        Path::new(right),
-        &folder_options,
-    ) {
+    let result = match compare_folders(Path::new(left), Path::new(right), &folder_options) {
         Ok(result) => result,
         Err(err) => return bridge_error(500, "Internal Server Error", &err.to_string()),
     };
@@ -5255,10 +5231,7 @@ fn sessions_recent_bridge_response(paths: &AppPaths) -> Vec<u8> {
     };
     // Hide any leftover internal test-fixture sessions from the Sessions page list
     // (and from being re-opened). Prevents dev/smoke pollution from showing up.
-    recent.sessions.retain(|s| {
-        !path_looks_like_internal_test_fixture(&s.session.left)
-            && !path_looks_like_internal_test_fixture(&s.session.right)
-    });
+    prune_internal_fixture_sessions(&mut recent);
     let entries: Vec<serde_json::Value> = recent
         .sessions
         .iter()
@@ -5298,20 +5271,47 @@ fn sessions_reopen_bridge_response(
             return bridge_error(500, "Internal Server Error", &err.to_string());
         }
     };
-    recent.sessions.retain(|s| {
-        !path_looks_like_internal_test_fixture(&s.session.left)
-            && !path_looks_like_internal_test_fixture(&s.session.right)
-    });
+    prune_internal_fixture_sessions(&mut recent);
     let Some(session_file) = recent.sessions.get(index) else {
         return bridge_error(404, "Not Found", "recent session index out of range");
     };
 
     // The recent-sessions reopen flow has no per-request profile
     // selection. Resolve from the active profile and tolerate a
-    // missing/invalid pointer by falling back to defaults.
-    let tab = build_tab_for_session_file(session_file);
+    // missing/invalid pointer by falling back to defaults; the session's own
+    // saved text options still win (build_tab_for_session_file overlays them).
+    let base = resolve_compare_options_for_request(paths, &[])
+        .unwrap_or_else(|_| GuiCompareOptions::default());
+    let multi_tab = restore_multi_tab_context(session_file);
+    let single_tab = if multi_tab.is_none() {
+        Some(build_tab_for_session_file(session_file, &base))
+    } else {
+        None
+    };
     let context = match state.lock() {
-        Ok(mut state) => state.apply_compare(tab, true),
+        Ok(mut state) => match multi_tab {
+            // A multi-tab workspace snapshot: re-add every saved tab to the
+            // live session, then activate the tab that was active when the
+            // workspace was recorded (ids are reassigned on insert).
+            Some(snapshot) => {
+                let snapshot_active_id = snapshot.session.active_tab_id;
+                let mut mapped_active_id = None;
+                for tab in snapshot.session.tabs {
+                    let old_id = tab.id;
+                    let inserted = state.apply_compare(tab, true);
+                    if old_id == snapshot_active_id {
+                        mapped_active_id = Some(inserted.session.active_tab_id);
+                    }
+                }
+                match mapped_active_id {
+                    Some(id) => state.activate_tab(id).unwrap_or_else(|_| state.context()),
+                    None => state.context(),
+                }
+            }
+            None => {
+                state.apply_compare(single_tab.expect("single tab built when no snapshot"), true)
+            }
+        },
         Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
     };
     record_recent_context(paths, &context);
@@ -5335,6 +5335,9 @@ fn sessions_delete_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
             return bridge_error(500, "Internal Server Error", &err.to_string());
         }
     };
+    // Prune fixture entries first: the index the Sessions page sends counts
+    // within the pruned list (/sessions/recent), not the raw on-disk one.
+    prune_internal_fixture_sessions(&mut recent);
     if index >= recent.sessions.len() {
         return bridge_error(404, "Not Found", "session index out of range");
     }
@@ -5363,6 +5366,9 @@ fn sessions_rename_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
             return bridge_error(500, "Internal Server Error", &err.to_string());
         }
     };
+    // Prune fixture entries first: the index the Sessions page sends counts
+    // within the pruned list (/sessions/recent), not the raw on-disk one.
+    prune_internal_fixture_sessions(&mut recent);
     let Some(session) = recent.sessions.get_mut(index) else {
         return bridge_error(404, "Not Found", "session index out of range");
     };
@@ -5482,9 +5488,11 @@ fn project_open_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
     }
     record_recent_project(paths, path);
 
+    let base = resolve_compare_options_for_request(paths, &[])
+        .unwrap_or_else(|_| GuiCompareOptions::default());
     let mut tabs: Vec<GuiCompareTab> = Vec::with_capacity(project.sessions.len());
     for (index, session) in project.sessions.iter().enumerate() {
-        let mut tab = build_tab_for_session_file(session);
+        let mut tab = build_tab_for_session_file(session, &base);
         tab.id = (index as u64) + 1;
         tabs.push(tab);
     }
@@ -5794,13 +5802,23 @@ fn sessions_save_bridge_response(
     let Some(tab) = tab else {
         return bridge_error(404, "Not Found", "no active tab");
     };
+    // Refuse rather than save an entry the /sessions/recent responder would
+    // filter straight back out (internal test fixtures) or that has no usable
+    // paths — a 200 followed by nothing appearing reads as data loss.
+    if !tab_has_persistable_paths(&tab) {
+        return bridge_error(
+            400,
+            "Bad Request",
+            "active tab's paths cannot be saved as a session",
+        );
+    }
     let mut session_file = SessionFile::new(CompareSession {
         title: title.to_owned(),
         left: PathBuf::from(&tab.left_path),
         base: None,
         right: PathBuf::from(&tab.right_path),
         options: CompareOptions {
-            text: tab.options.as_ref().map(|o| o.text.clone()).unwrap_or_default(),
+            text: tab_text_options(&tab),
         },
     });
     session_file.selected_view = compare_view_mode(&tab.mode);
@@ -6806,33 +6824,33 @@ fn binary_window_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>
         .filter(|n| *n > 0)
         .unwrap_or(usize::MAX);
 
-    let tab = match state.lock() {
-        Ok(s) => s
-            .session
-            .tabs
-            .iter()
-            .find(|t| t.id == s.session.active_tab_id)
-            .cloned(),
+    // Extract only the requested window while holding the lock — cloning the
+    // whole tab (every hex row of both sides) per page request would defeat
+    // the point of windowing.
+    let (total_rows, left_window, right_window) = match state.lock() {
+        Ok(s) => {
+            let Some(tab) = s
+                .session
+                .tabs
+                .iter()
+                .find(|t| t.id == s.session.active_tab_id)
+            else {
+                return bridge_error(404, "Not Found", "no active tab");
+            };
+            if tab.mode != "Hex" {
+                return bridge_error(400, "Bad Request", "active tab is not a binary compare");
+            }
+            let total_rows = tab.left_rows.len().max(tab.right_rows.len());
+            let end = offset.saturating_add(limit).min(total_rows);
+            let window = |rows: &[GuiLineRow]| -> Vec<GuiLineRow> {
+                rows.get(offset..end.min(rows.len()))
+                    .map(<[GuiLineRow]>::to_vec)
+                    .unwrap_or_default()
+            };
+            (total_rows, window(&tab.left_rows), window(&tab.right_rows))
+        }
         Err(_) => return bridge_error(500, "Internal Server Error", "state unavailable"),
     };
-    let Some(tab) = tab else {
-        return bridge_error(404, "Not Found", "no active tab");
-    };
-    if tab.mode != "Hex" {
-        return bridge_error(400, "Bad Request", "active tab is not a binary compare");
-    }
-
-    let total_rows = tab.left_rows.len().max(tab.right_rows.len());
-    let end = offset.saturating_add(limit).min(total_rows);
-    let window = |rows: Vec<GuiLineRow>| -> Vec<GuiLineRow> {
-        if offset >= rows.len() {
-            Vec::new()
-        } else {
-            rows[offset..end.min(rows.len())].to_vec()
-        }
-    };
-    let left_window = window(tab.left_rows.clone());
-    let right_window = window(tab.right_rows.clone());
     let returned = left_window.len().max(right_window.len());
     let body = serde_json::json!({
         "totalRows": total_rows,
@@ -9050,6 +9068,64 @@ mod tests {
             .collect();
         assert!(restored_paths.contains(&l1.to_str().unwrap()));
         assert!(restored_paths.contains(&l2.to_str().unwrap()));
+    }
+
+    #[test]
+    fn sessions_reopen_restores_multi_tab_workspace() {
+        let paths = test_app_paths("multitab-reopen");
+        let files = test_file_root("multitab-reopen-files");
+        let (l1, r1) = (files.join("a1.txt"), files.join("b1.txt"));
+        let (l2, r2) = (files.join("a2.txt"), files.join("b2.txt"));
+        fs::write(&l1, "one\n").unwrap();
+        fs::write(&r1, "ONE\n").unwrap();
+        fs::write(&l2, "two\n").unwrap();
+        fs::write(&r2, "TWO\n").unwrap();
+        let mut tab1 = build_tab_for_paths(&l1, &r1);
+        let mut tab2 = build_tab_for_paths(&l2, &r2);
+        tab1.id = 1;
+        tab2.id = 2;
+        record_recent_session(&paths, &GuiLaunchContext::from_tabs(vec![tab1, tab2], 2));
+
+        // Reopen into a fresh bridge session: both tabs come back, and the
+        // tab that was active when the workspace was recorded is active.
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            "GET /sessions/reopen?index=0 HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .unwrap();
+        let body = json_response_body(&resp);
+        let tabs = body["session"]["tabs"].as_array().expect("tabs array");
+        assert_eq!(tabs.len(), 2, "both workspace tabs should reopen: {body}");
+        let active_id = body["session"]["active_tab_id"].as_u64().unwrap();
+        let active = tabs
+            .iter()
+            .find(|t| t["id"].as_u64() == Some(active_id))
+            .expect("active tab present");
+        assert_eq!(
+            active["left_path"],
+            serde_json::json!(l2.to_str().unwrap()),
+            "the recorded active tab should be active again: {body}"
+        );
+    }
+
+    #[test]
+    fn fixture_heuristic_only_matches_linsync_fixture_paths() {
+        assert!(path_looks_like_internal_test_fixture(Path::new(
+            "/work/repos/visorcraft/linsync/tests/fixtures/text/left.txt"
+        )));
+        assert!(path_looks_like_internal_test_fixture(Path::new(
+            "/home/dev/linsync/tests/fixtures"
+        )));
+        // Another project's golden files must stay persistable.
+        assert!(!path_looks_like_internal_test_fixture(Path::new(
+            "/home/dev/myapp/tests/fixtures/expected.txt"
+        )));
+        // "linsync" alone (no fixtures dir) is not a fixture either.
+        assert!(!path_looks_like_internal_test_fixture(Path::new(
+            "/home/dev/linsync-notes/readme.md"
+        )));
     }
 
     #[test]

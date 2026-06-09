@@ -24,16 +24,21 @@ build-release:
 # containers, GitHub runners, and dev setups (including this one) where
 # Landlock ABI >=1 may be reported by the probe but actual filesystem
 # read restriction does not take effect (e.g. due to user namespaces,
-# container LSM policy, or tmpfs/overlay specifics). The sandbox_integration
-# tests that assert real EACCES denial are still exercised on kernels+envs
-# where they work by running the specific test without the var:
-#
-#   env -u LINSYNC_SANDBOX_SKIP cargo test -p linsync-sandbox --test sandbox_integration
+# container LSM policy, or tmpfs/overlay specifics). Real enforcement is
+# covered by `just test-sandbox` — run it on kernels/envs where Landlock
+# bites before touching linsync-sandbox or the plugin/archive spawn paths.
 #
 # See crates/linsync-sandbox/tests/sandbox_integration.rs and the comment
 # in .github/workflows/ci.yml for the full contract.
 test:
     LINSYNC_SANDBOX_SKIP=1 cargo test --workspace
+
+# Run the sandbox enforcement tests WITHOUT the skip — asserts real EACCES
+# denial from Landlock/seccomp. Only meaningful on hosts where enforcement
+# actually takes effect (see the `test` recipe comment); flaky-by-design
+# elsewhere, which is why it is not part of `just ci`.
+test-sandbox:
+    env -u LINSYNC_SANDBOX_SKIP cargo test -p linsync-sandbox --test sandbox_integration
 
 # Type-check without producing binaries.
 check:
@@ -75,14 +80,14 @@ credits-update:
 # linuxdeploy + linuxdeploy-plugin-qt. Falls back to staging the AppDir when
 # linuxdeploy isn't on PATH.
 #
-# On hosts with very new glibc/toolchain (relr.dyn sections) the strip
-# binary bundled inside linuxdeploy's AppImage can fail to recognise some
-# staged libs; set NO_STRIP=1 to skip (AppDir is still produced and
-# functional; the final AppImage can be manually compressed if needed).
-# We default to NO_STRIP=1 here for broad host compatibility (the
-# resulting artifacts are still valid for smoke/testing).
+# Strips by default (smaller artifact). On hosts with very new
+# glibc/toolchain (relr.dyn sections) where linuxdeploy's bundled strip
+# fails, build-appdir.sh automatically retries with NO_STRIP=1, so release
+# containers keep producing stripped artifacts while dev hosts still get a
+# working (slightly larger) AppImage. Set NO_STRIP=1 to skip the first
+# attempt entirely.
 package:
-    NO_STRIP=1 bash packaging/appimage/build-appdir.sh
+    bash packaging/appimage/build-appdir.sh
 
 # Build the Arch / CachyOS pacman package via makepkg (pacman-based hosts only).
 package-arch:
