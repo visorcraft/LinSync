@@ -25,6 +25,7 @@ use linsync_core::{
     resolve_enabled_prediffers, resolve_enabled_virtualizer_for_extension, set_plugin_enabled,
     set_plugin_option, set_plugin_trusted,
 };
+use linsync_sandbox::{SandboxPolicy, SandboxedCommand};
 
 fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
@@ -1709,20 +1710,31 @@ fn extract_archive(
     })?;
 
     let lower = stem.to_ascii_lowercase();
+    let policy = SandboxPolicy::builder()
+        .read(archive)
+        .read(&extracted)
+        .write(&extracted)
+        .build();
     let status = if lower.ends_with(".zip")
         || lower.ends_with(".jar")
         || lower.ends_with(".war")
         || lower.ends_with(".apk")
         || lower.ends_with(".ipa")
     {
-        Command::new("unzip")
-            .arg("-q")
+        let mut cmd = Command::new("unzip");
+        cmd.arg("-q")
             .arg("-o")
             .arg("-d")
             .arg(&extracted)
-            .arg(archive)
-            .status()
-            .map_err(|err| format!("failed to invoke unzip: {err}"))?
+            .arg(archive);
+        match SandboxedCommand::new(cmd, policy).spawn() {
+            Ok(mut child) => child.wait().map_err(|err| format!("unzip wait failed: {err}"))?,
+            Err(err) => {
+                return Err(format!(
+                    "sandboxed unzip failed (set LINSYNC_SANDBOX_ALLOW_UNSANDBOXED=1 to bypass): {err}"
+                ));
+            }
+        }
     } else if lower.ends_with(".tar")
         || lower.ends_with(".tgz")
         || lower.ends_with(".tar.gz")
@@ -1733,13 +1745,16 @@ fn extract_archive(
         || lower.ends_with(".tzst")
         || lower.ends_with(".tar.zst")
     {
-        Command::new("tar")
-            .arg("-xf")
-            .arg(archive)
-            .arg("-C")
-            .arg(&extracted)
-            .status()
-            .map_err(|err| format!("failed to invoke tar: {err}"))?
+        let mut cmd = Command::new("tar");
+        cmd.arg("-xf").arg(archive).arg("-C").arg(&extracted);
+        match SandboxedCommand::new(cmd, policy).spawn() {
+            Ok(mut child) => child.wait().map_err(|err| format!("tar wait failed: {err}"))?,
+            Err(err) => {
+                return Err(format!(
+                    "sandboxed tar failed (set LINSYNC_SANDBOX_ALLOW_UNSANDBOXED=1 to bypass): {err}"
+                ));
+            }
+        }
     } else {
         let _ = fs::remove_dir_all(&temp_root);
         return Err(format!(

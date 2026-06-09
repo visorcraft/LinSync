@@ -1219,6 +1219,7 @@ version = "1.9.5"
 dependencies = [
  "image",
  "linsync-core",
+ "linsync-sandbox",
  "serde_json",
  "tempfile",
 ]

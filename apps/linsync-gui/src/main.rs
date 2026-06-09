@@ -290,6 +290,11 @@ struct GuiCompareTab {
     table_cells: Option<Vec<linsync_core::TableRowDiff>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     artifacts: Vec<linsync_core::CompareArtifact>,
+    /// Options used to build this tab, so merge-copy, recompare, and window
+    /// fetches can honor the same profile / per-request overrides instead of
+    /// falling back to defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    options: Option<GuiCompareOptions>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -490,7 +495,7 @@ fn remove_progress_request(request_id: Option<&str>, state: &Arc<Mutex<GuiBridge
 
 const GUI_HISTORY_LIMIT: usize = 32;
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct GuiCompareOptions {
     text: TextCompareOptions,
     folder: FolderCompareOptions,
@@ -993,7 +998,7 @@ fn copy_text_diff_block(
     state
         .apply(action)
         .map_err(|err| format!("failed to apply text merge: {err}"))?;
-    state.recompute(&TextCompareOptions::default());
+    state.recompute(&tab_text_options(tab));
 
     apply_text_merge_state(tab, &state);
     tab.status = match direction {
@@ -1031,11 +1036,11 @@ fn copy_tab_all(tab: &mut GuiCompareTab, direction: &str) -> Result<(), String> 
             "right_to_left" => MergeAction::CopyRightToLeft { block_index },
             _ => return Err(format!("unsupported copy direction: {direction}")),
         };
-        state
-            .apply(action)
-            .map_err(|err| format!("failed to apply text merge: {err}"))?;
+    state
+        .apply(action)
+        .map_err(|err| format!("failed to apply text merge: {err}"))?;
     }
-    state.recompute(&TextCompareOptions::default());
+    state.recompute(&tab_text_options(tab));
 
     apply_text_merge_state(tab, &state);
     tab.status = match direction {
@@ -1064,8 +1069,12 @@ fn compare_tab_text_rows(tab: &GuiCompareTab) -> TextCompareResult {
     compare_documents(
         left_document,
         right_document,
-        &TextCompareOptions::default(),
+        &tab_text_options(tab),
     )
+}
+
+fn tab_text_options(tab: &GuiCompareTab) -> TextCompareOptions {
+    tab.options.as_ref().map(|o| o.text.clone()).unwrap_or_default()
 }
 
 fn rows_plain_text(rows: &[GuiLineRow]) -> String {
@@ -1656,10 +1665,12 @@ fn restore_tab_snapshot(session: &SessionFile) -> Option<GuiCompareTab> {
     tab_has_persistable_paths(&tab).then_some(tab)
 }
 
-fn build_tab_for_session_file(session: &SessionFile, options: &GuiCompareOptions) -> GuiCompareTab {
+fn build_tab_for_session_file(session: &SessionFile) -> GuiCompareTab {
+    let mut options = GuiCompareOptions::default();
+    options.text = session.session.options.text.clone();
     restore_tab_snapshot(session).unwrap_or_else(|| {
         let mode = Some(compare_view_mode_label(session.selected_view));
-        build_tab_for_paths_with_mode(&session.session.left, &session.session.right, mode, options)
+        build_tab_for_paths_with_mode(&session.session.left, &session.session.right, mode, &options)
     })
 }
 
@@ -1770,7 +1781,7 @@ fn build_tab_for_paths_with_mode_cancellable(
             right,
             left_path,
             right_path,
-            &options.folder,
+            options,
             should_cancel,
             progress,
         ),
@@ -1842,7 +1853,7 @@ fn explicit_tab_for_paths_cancellable(
             right,
             left_path,
             right_path,
-            &options.folder,
+            options,
             should_cancel,
             progress,
         ),
@@ -1852,7 +1863,7 @@ fn explicit_tab_for_paths_cancellable(
                 right,
                 left_path,
                 right_path,
-                &options.text,
+                options,
                 should_cancel,
                 progress,
             ),
@@ -1861,14 +1872,14 @@ fn explicit_tab_for_paths_cancellable(
                 right,
                 left_path,
                 right_path,
-                &options.table,
+                options,
             )),
             GuiCompareMode::Hex => Some(binary_tab(
                 left,
                 right,
                 left_path,
                 right_path,
-                &options.binary,
+                options,
             )),
             GuiCompareMode::Folder => Some(invalid_compare_tab(
                 mode.label(),
@@ -1881,14 +1892,14 @@ fn explicit_tab_for_paths_cancellable(
                 right,
                 left_path,
                 right_path,
-                &options.image,
+                options,
             )),
             GuiCompareMode::Document => document_tab(
                 left,
                 right,
                 left_path,
                 right_path,
-                &options.document,
+                options,
                 should_cancel,
                 progress,
             ),
@@ -1936,6 +1947,7 @@ fn invalid_compare_tab(
         None,
         None,
         Vec::new(),
+        None,
     )
 }
 
@@ -1976,10 +1988,11 @@ fn folder_tab_cancellable(
     right: &Path,
     left_path: String,
     right_path: String,
-    folder_options: &FolderCompareOptions,
+    options: &GuiCompareOptions,
     should_cancel: &dyn Fn() -> bool,
     progress: Option<Arc<Mutex<CompareProgress>>>,
 ) -> Option<GuiCompareTab> {
+    let folder_options = &options.folder;
     let mut discovered_total: usize = 0;
     let mut compared_count: usize = 0;
     let result = compare_folders_with_progress(left, right, folder_options, |event| {
@@ -2058,6 +2071,7 @@ fn folder_tab_cancellable(
                 None,
                 None,
                 Vec::new(),
+                None,
             )
         }
         Err(err) => compare_tab(
@@ -2076,6 +2090,7 @@ fn folder_tab_cancellable(
             None,
             None,
             Vec::new(),
+            Some(options.clone()),
         ),
     })
 }
@@ -2129,6 +2144,7 @@ fn archive_tab(
     left_path: String,
     right_path: String,
     plugin: &linsync_core::DiscoveredPlugin,
+    _options: &GuiCompareOptions,
 ) -> GuiCompareTab {
     let exec = PluginExecutionOptions {
         timeout: std::time::Duration::from_secs(60),
@@ -2169,6 +2185,7 @@ fn archive_tab(
                 None,
                 None,
                 Vec::new(),
+                None,
             )
         }
         Err(err) => invalid_compare_tab(
@@ -2229,7 +2246,9 @@ fn file_tab_cancellable(
         if table_opts.delimiter == ',' && is_tsv_path(left) && is_tsv_path(right) {
             table_opts.delimiter = '\t';
         }
-        return Some(table_tab(left, right, left_path, right_path, &table_opts));
+        let mut opts = options.clone();
+        opts.table = table_opts;
+        return Some(table_tab(left, right, left_path, right_path, &opts));
     }
 
     let left_bytes = fs::read(left).unwrap_or_default();
@@ -2240,7 +2259,7 @@ fn file_tab_cancellable(
             right,
             left_path,
             right_path,
-            &options.binary,
+            options,
         ));
     }
 
@@ -2249,7 +2268,7 @@ fn file_tab_cancellable(
         right,
         left_path,
         right_path,
-        &options.text,
+        options,
         should_cancel,
         progress,
     )
@@ -2260,10 +2279,11 @@ fn text_tab_cancellable(
     right: &Path,
     left_path: String,
     right_path: String,
-    text_options: &TextCompareOptions,
+    options: &GuiCompareOptions,
     should_cancel: &dyn Fn() -> bool,
     progress: Option<Arc<Mutex<CompareProgress>>>,
 ) -> Option<GuiCompareTab> {
+    let text_options = &options.text;
     set_progress(&progress, "reading", 0, 0, "Reading text files".to_owned());
     let result = try_prediffer_compare(left, right, text_options).or_else(|| {
         let left_document = match TextDocument::from_path_with_encoding(left, text_options.encoding)
@@ -2346,6 +2366,7 @@ fn text_tab_cancellable(
                 encoding,
                 None,
                 Vec::new(),
+                Some(options.clone()),
             ))
         }
         None => None,
@@ -2712,8 +2733,9 @@ fn table_tab(
     right: &Path,
     left_path: String,
     right_path: String,
-    table_options: &TableCompareOptions,
+    options: &GuiCompareOptions,
 ) -> GuiCompareTab {
+    let table_options = &options.table;
     match compare_table_files(left, right, table_options) {
         Ok(result) => {
             let cells = result.rows.clone();
@@ -2736,6 +2758,7 @@ fn table_tab(
                 None,
                 Some(cells),
                 Vec::new(),
+                Some(options.clone()),
             )
         }
         Err(err) => compare_tab(
@@ -2754,6 +2777,7 @@ fn table_tab(
             None,
             None,
             Vec::new(),
+            Some(options.clone()),
         ),
     }
 }
@@ -2763,8 +2787,9 @@ fn binary_tab(
     right: &Path,
     left_path: String,
     right_path: String,
-    binary_options: &BinaryCompareOptions,
+    options: &GuiCompareOptions,
 ) -> GuiCompareTab {
+    let binary_options = &options.binary;
     match compare_binary_files(left, right, binary_options) {
         Ok(result) => compare_tab(
             "Hex",
@@ -2786,6 +2811,7 @@ fn binary_tab(
             None,
             None,
             Vec::new(),
+            Some(options.clone()),
         ),
         Err(err) => compare_tab(
             "Hex",
@@ -2803,6 +2829,7 @@ fn binary_tab(
             None,
             None,
             Vec::new(),
+            Some(options.clone()),
         ),
     }
 }
@@ -2812,8 +2839,9 @@ fn image_tab(
     right: &Path,
     left_path: String,
     right_path: String,
-    image_options: &ImageCompareOptions,
+    options: &GuiCompareOptions,
 ) -> GuiCompareTab {
+    let image_options = &options.image;
     match compare_images(left, right, image_options) {
         Ok(result) => {
             let diff_count = if result.equal { 0 } else { 1 };
@@ -2854,6 +2882,7 @@ fn image_tab(
                 None,
                 None,
                 Vec::new(),
+                Some(options.clone()),
             )
         }
         Err(err) => compare_tab(
@@ -2872,6 +2901,7 @@ fn image_tab(
             None,
             None,
             Vec::new(),
+            Some(options.clone()),
         ),
     }
 }
@@ -2889,10 +2919,11 @@ fn document_tab(
     right: &Path,
     left_path: String,
     right_path: String,
-    document_options: &DocumentCompareOptions,
+    options: &GuiCompareOptions,
     should_cancel: &dyn Fn() -> bool,
     progress: Option<Arc<Mutex<CompareProgress>>>,
 ) -> Option<GuiCompareTab> {
+    let document_options = &options.document;
     if should_cancel() {
         return None;
     }
@@ -2957,6 +2988,7 @@ fn document_tab(
         None,
         None,
         Vec::new(),
+        Some(options.clone()),
     ))
 }
 
@@ -3014,6 +3046,7 @@ fn image_tab_from_result(
         None,
         None,
         artifacts,
+        None,
     )
 }
 
@@ -3074,6 +3107,7 @@ fn document_tab_from_response(
         Some(text_result.encoding_summary()),
         None,
         Vec::new(),
+        None,
     ))
 }
 
@@ -3185,6 +3219,7 @@ fn webpage_tab_from_response(
         None,
         None,
         Vec::new(),
+        None,
     ))
 }
 
@@ -3201,6 +3236,7 @@ fn compare_tab(
     encoding_metadata: Option<EncodingSummary>,
     table_cells: Option<Vec<linsync_core::TableRowDiff>>,
     artifacts: Vec<linsync_core::CompareArtifact>,
+    options: Option<GuiCompareOptions>,
 ) -> GuiCompareTab {
     let (left_path, right_path) = paths;
     let (left_rows, right_rows) = rows;
@@ -3228,6 +3264,7 @@ fn compare_tab(
         encoding_metadata,
         table_cells,
         artifacts,
+        options,
     }
 }
 
@@ -3530,6 +3567,8 @@ fn bridge_response_with_token(
         "/folder/open" => folder_open_bridge_response(query, paths),
         "/sessions/recent" => sessions_recent_bridge_response(paths),
         "/sessions/reopen" => sessions_reopen_bridge_response(query, paths, state),
+        "/sessions/delete" => sessions_delete_bridge_response(query, paths),
+        "/sessions/rename" => sessions_rename_bridge_response(query, paths),
         "/filters/list" => filters_list_bridge_response(paths),
         "/filters/save" => filters_save_bridge_response(query, paths),
         "/filters/delete" => filters_delete_bridge_response(query, paths),
@@ -3562,8 +3601,9 @@ fn bridge_response_with_token(
         "/plugins/remove" => plugins_remove_bridge_response(query, paths),
         "/plugins/trust" => plugins_trust_bridge_response(query, paths),
         "/capabilities" => capabilities_bridge_response(),
-        "/folder/query" => folder_query_bridge_response(query),
+        "/folder/query" => folder_query_bridge_response(query, paths),
         "/compare/text/window" => text_window_bridge_response(query, paths),
+        "/binary/window" => binary_window_bridge_response(query, state),
         "/folder/op/plan" => folder_op_plan_bridge_response(query, paths, state),
         "/folder/op/execute" => folder_op_execute_bridge_response(query, paths, state),
         "/merge/conflicts" => merge_conflicts_bridge_response(state),
@@ -4374,6 +4414,28 @@ fn resolve_compare_options_for_request(
     {
         table.has_header = parsed;
     }
+    if let Some(v) = query_value(params, "key_columns") {
+        table.key_columns = v
+            .split(',')
+            .filter_map(|s| s.trim().parse::<usize>().ok())
+            .collect();
+    }
+    if let Some(v) = query_value(params, "ignore_columns") {
+        table.ignore_columns = v
+            .split(',')
+            .filter_map(|s| s.trim().parse::<usize>().ok())
+            .collect();
+    }
+    if let Some(v) = query_value(params, "numeric_tolerance") {
+        if let Ok(n) = v.parse::<f64>() {
+            table.numeric_tolerance = Some(n);
+        }
+    }
+    if let Some(v) = query_value(params, "ignore_row_order")
+        && let Some(parsed) = parse_bool_query_param(v)
+    {
+        table.ignore_row_order = parsed;
+    }
 
     let mut binary = profile.binary;
     if let Some(v) = query_value(params, "bytes_per_row")
@@ -4456,7 +4518,7 @@ fn compare_bridge_response(
     if matches!(requested_mode, None | Some("Archive"))
         && let Some(plugin) = archive_pair_unpacker(Path::new(left), Path::new(right), paths)
     {
-        let tab = archive_tab(left.to_owned(), right.to_owned(), &plugin);
+        let tab = archive_tab(left.to_owned(), right.to_owned(), &plugin, &options);
         let context = match state.lock() {
             Ok(mut state) => state.apply_compare(tab, new_tab),
             Err(_) => {
@@ -4659,6 +4721,10 @@ fn raw_compare_bridge_response(
         encoding_metadata: Some(result.encoding_summary()),
         table_cells: None,
         artifacts: Vec::new(),
+        options: Some(GuiCompareOptions {
+            text: text_options.clone(),
+            ..GuiCompareOptions::default()
+        }),
     };
 
     let context = match state.lock() {
@@ -4890,16 +4956,20 @@ fn folder_query_from_params(params: &[(String, String)]) -> linsync_core::Folder
 /// `/folder/query?left=&right=&search=&types=&offset=&limit=&state=&sort=&descending=` — compare two
 /// folders and return the entries filtered/paged through the core `FolderQuery`,
 /// so the GUI folder table can search + type-filter + paginate via the core API.
-fn folder_query_bridge_response(query: &str) -> Vec<u8> {
+fn folder_query_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
     let params = query_params(query);
     let (Some(left), Some(right)) = (query_value(&params, "left"), query_value(&params, "right"))
     else {
         return bridge_error(400, "Bad Request", "missing left or right path");
     };
+    let folder_options = match resolve_folder_options_for_request(paths, &params) {
+        Ok(opts) => opts,
+        Err(err) => return bridge_error(400, "Bad Request", &err),
+    };
     let result = match compare_folders(
         Path::new(left),
         Path::new(right),
-        &FolderCompareOptions::default(),
+        &folder_options,
     ) {
         Ok(result) => result,
         Err(err) => return bridge_error(500, "Internal Server Error", &err.to_string()),
@@ -5231,9 +5301,7 @@ fn sessions_reopen_bridge_response(
     // The recent-sessions reopen flow has no per-request profile
     // selection. Resolve from the active profile and tolerate a
     // missing/invalid pointer by falling back to defaults.
-    let options = resolve_compare_options_for_request(paths, &[])
-        .unwrap_or_else(|_| GuiCompareOptions::default());
-    let tab = build_tab_for_session_file(session_file, &options);
+    let tab = build_tab_for_session_file(session_file);
     let context = match state.lock() {
         Ok(mut state) => state.apply_compare(tab, true),
         Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
@@ -5243,6 +5311,59 @@ fn sessions_reopen_bridge_response(
         Ok(body) => http_response(200, "OK", "application/json", body.into_bytes()),
         Err(err) => bridge_error(500, "Internal Server Error", &err),
     }
+}
+
+/// `/sessions/delete?index=X` — remove a recent session by its index.
+fn sessions_delete_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(index) = query_value(&params, "index").and_then(|value| value.parse::<usize>().ok())
+    else {
+        return bridge_error(400, "Bad Request", "missing index");
+    };
+    let store = RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths));
+    let mut recent = match store.load_or_default() {
+        Ok(value) => value,
+        Err(err) => {
+            return bridge_error(500, "Internal Server Error", &err.to_string());
+        }
+    };
+    if index >= recent.sessions.len() {
+        return bridge_error(404, "Not Found", "session index out of range");
+    }
+    recent.sessions.remove(index);
+    if let Err(err) = store.save(&recent) {
+        return bridge_error(500, "Internal Server Error", &err.to_string());
+    }
+    let body = serde_json::json!({"ok": true, "removed": index}).to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
+}
+
+/// `/sessions/rename?index=X&title=Y` — rename a recent session.
+fn sessions_rename_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(index) = query_value(&params, "index").and_then(|value| value.parse::<usize>().ok())
+    else {
+        return bridge_error(400, "Bad Request", "missing index");
+    };
+    let Some(title) = query_value(&params, "title") else {
+        return bridge_error(400, "Bad Request", "missing title");
+    };
+    let store = RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths));
+    let mut recent = match store.load_or_default() {
+        Ok(value) => value,
+        Err(err) => {
+            return bridge_error(500, "Internal Server Error", &err.to_string());
+        }
+    };
+    let Some(session) = recent.sessions.get_mut(index) else {
+        return bridge_error(404, "Not Found", "session index out of range");
+    };
+    session.session.title = title.to_owned();
+    if let Err(err) = store.save(&recent) {
+        return bridge_error(500, "Internal Server Error", &err.to_string());
+    }
+    let body = serde_json::json!({"ok": true, "index": index, "title": title}).to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
 }
 
 /// Save the currently open tabs as a named project file at `?path=` (with an
@@ -5355,7 +5476,7 @@ fn project_open_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
 
     let mut tabs: Vec<GuiCompareTab> = Vec::with_capacity(project.sessions.len());
     for (index, session) in project.sessions.iter().enumerate() {
-        let mut tab = build_tab_for_session_file(session, &GuiCompareOptions::default());
+        let mut tab = build_tab_for_session_file(session);
         tab.id = (index as u64) + 1;
         tabs.push(tab);
     }
@@ -5670,7 +5791,9 @@ fn sessions_save_bridge_response(
         left: PathBuf::from(&tab.left_path),
         base: None,
         right: PathBuf::from(&tab.right_path),
-        options: CompareOptions::default(),
+        options: CompareOptions {
+            text: tab.options.as_ref().map(|o| o.text.clone()).unwrap_or_default(),
+        },
     });
     session_file.selected_view = compare_view_mode(&tab.mode);
     persist_tab_snapshot(&mut session_file, &tab);
@@ -6659,6 +6782,59 @@ fn binary_interpret_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeStat
 
     let body = serde_json::to_string(&interpretation)
         .unwrap_or_else(|_| r#"{"error":"serialization error"}"#.to_owned());
+    http_response(200, "OK", "application/json", body.into_bytes())
+}
+
+/// `/binary/window?offset=&limit=` — return a slice of hex rows for a binary
+/// compare tab, so the GUI can page through large files without loading all
+/// rows at once.
+fn binary_window_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
+    let params = query_params(query);
+    let offset = query_value(&params, "offset")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let limit = query_value(&params, "limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(usize::MAX);
+
+    let tab = match state.lock() {
+        Ok(s) => s
+            .session
+            .tabs
+            .iter()
+            .find(|t| t.id == s.session.active_tab_id)
+            .cloned(),
+        Err(_) => return bridge_error(500, "Internal Server Error", "state unavailable"),
+    };
+    let Some(tab) = tab else {
+        return bridge_error(404, "Not Found", "no active tab");
+    };
+    if tab.mode != "Hex" {
+        return bridge_error(400, "Bad Request", "active tab is not a binary compare");
+    }
+
+    let total_rows = tab.left_rows.len().max(tab.right_rows.len());
+    let end = offset.saturating_add(limit).min(total_rows);
+    let window = |rows: Vec<GuiLineRow>| -> Vec<GuiLineRow> {
+        if offset >= rows.len() {
+            Vec::new()
+        } else {
+            rows[offset..end.min(rows.len())].to_vec()
+        }
+    };
+    let left_window = window(tab.left_rows.clone());
+    let right_window = window(tab.right_rows.clone());
+    let returned = left_window.len().max(right_window.len());
+    let body = serde_json::json!({
+        "totalRows": total_rows,
+        "offset": offset,
+        "returned": returned,
+        "hasMore": offset + returned < total_rows,
+        "left_rows": left_window,
+        "right_rows": right_window,
+    })
+    .to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
 }
 
@@ -8309,6 +8485,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
         )
     }
 
@@ -12004,7 +12181,7 @@ mod tests {
             &right,
             left.display().to_string(),
             right.display().to_string(),
-            &TextCompareOptions::default(),
+            &GuiCompareOptions::default(),
             &|| false,
             Some(Arc::clone(&progress)),
         )

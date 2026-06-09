@@ -8,14 +8,15 @@ categories:
 1. **Currently unavailable** features that may ship in a future release.
 2. **Permanent non-goals** that LinSync will not pursue.
 
-This file is updated each release. As of 1.9.0 all roadmap phases (0–10)
+This file is updated each release. As of 1.9.5 all roadmap phases (0–20)
 are shipped: the image, document, and webpage compare surfaces, the
 three-pane merge, the filter-grammar migrator, the plugin host with
 sandboxed helpers, sessions/projects, accessibility (screen-reader
-announcements, high-contrast change bars), localization, and lazy-render
-windowing are all complete and no longer listed here. `linsync-cli
-archive` now routes through the core plugin / virtual-folder pipeline
-(see "Archive compare" below).
+announcements, high-contrast change bars), localization, lazy-render
+windowing, bridge option propagation, table compare enhancements,
+archive sandboxing, session delete/rename, navigable hex view, image
+animation timeline, document OCR word boxes, webpage rich results, and
+screenshot GUI tests are all complete and no longer listed here.
 
 ## Specialized compare — remaining gaps
 
@@ -88,8 +89,9 @@ The only remaining gaps are noted below.
   pipeline: with `--unpacker PLUGIN_ID` (or when a matching `unpacker`
   plugin is discovered) it extracts via the sandboxed helper and runs a
   folder compare on the resulting virtual folder, including nested-archive
-  recursion. For archive types the built-in extractor recognizes it still
-  falls back to the direct `unzip`/`tar` path. The same archive→virtual-
+  recursion. For archive types the built-in extractor recognizes, the
+  `unzip`/`tar` subprocess now runs under `linsync-sandbox` with a policy
+  scoped to the archive and extraction directory. The same archive→virtual-
   folder source is available from the GUI.
 
 ## Packaging caveats
@@ -117,9 +119,10 @@ The only remaining gaps are noted below.
   presence) passes, and the shipped a11y work includes screen-reader
   announcements (`Accessible.announce`), high-contrast diff change bars,
   verified keyboard focus order, a Swap-sides action, and broad
-  `Accessible.name`/`description` coverage. A formal **Orca screen reader
-  walkthrough** of every sidebar section is not yet logged as a release
-  artifact.
+  `Accessible.name`/`description` coverage. `scripts/gui-screenshot.sh`
+  captures offscreen screenshots of every sidebar section for regression
+  visibility. A formal **Orca screen reader walkthrough** of every sidebar
+  section is not yet logged as a release artifact.
 
 ## Filters
 
