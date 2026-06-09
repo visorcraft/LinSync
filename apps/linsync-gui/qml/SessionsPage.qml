@@ -18,6 +18,8 @@ Kirigami.ScrollablePage {
     signal tabClosed(int tabId)
     signal navigateRequested(int section)
     signal reopenRecentRequested(int index)
+    signal deleteRecentSessionRequested(int index)
+    signal renameRecentSessionRequested(int index, string title)
     signal refreshRecentRequested()
     signal saveCurrentSessionRequested()
     // Ask Main.qml to pick a path and save the open tabs as a project file, or
@@ -357,7 +359,28 @@ Kirigami.ScrollablePage {
                                 flat: true
                                 icon.name: "document-open-recent"
                                 text: qsTr("Reopen")
+                                display: Controls.AbstractButton.IconOnly
+                                Controls.ToolTip.text: qsTr("Reopen this comparison")
+                                Controls.ToolTip.visible: hovered
                                 onClicked: page.reopenRecentRequested(modelData.index !== undefined ? modelData.index : index)
+                            }
+                            AppButton {
+                                flat: true
+                                icon.name: "edit-rename"
+                                text: qsTr("Rename")
+                                display: Controls.AbstractButton.IconOnly
+                                Controls.ToolTip.text: qsTr("Rename this session")
+                                Controls.ToolTip.visible: hovered
+                                onClicked: page.renamePromptIndex = modelData.index !== undefined ? modelData.index : index
+                            }
+                            AppButton {
+                                flat: true
+                                icon.name: "edit-delete"
+                                text: qsTr("Delete")
+                                display: Controls.AbstractButton.IconOnly
+                                Controls.ToolTip.text: qsTr("Delete this session")
+                                Controls.ToolTip.visible: hovered
+                                onClicked: page.deleteRecentSessionRequested(modelData.index !== undefined ? modelData.index : index)
                             }
                         }
                     }
@@ -495,6 +518,35 @@ Kirigami.ScrollablePage {
             selectAll()
             copy()
             text = ""
+        }
+    }
+
+    // Rename dialog — triggered by the rename button on a recent session.
+    property int renamePromptIndex: -1
+    onRenamePromptIndexChanged: {
+        if (renamePromptIndex >= 0) renameDialog.open()
+    }
+    Kirigami.PromptDialog {
+        id: renameDialog
+        title: qsTr("Rename session")
+        subtitle: qsTr("Enter a new title for this session.")
+        standardButtons: Kirigami.Dialog.Ok | Kirigami.Dialog.Cancel
+        onAccepted: {
+            var newTitle = renameField.text.trim()
+            if (newTitle.length > 0) {
+                page.renameRecentSessionRequested(page.renamePromptIndex, newTitle)
+            }
+            page.renamePromptIndex = -1
+            renameField.text = ""
+        }
+        onRejected: {
+            page.renamePromptIndex = -1
+            renameField.text = ""
+        }
+        Controls.TextField {
+            id: renameField
+            Layout.fillWidth: true
+            placeholderText: qsTr("Session title")
         }
     }
 }

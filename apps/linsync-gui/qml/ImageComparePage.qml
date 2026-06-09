@@ -271,7 +271,8 @@ Controls.Pane {
         // "×10"), so the default 23 means ΔE 2.3. Scale to the real value the
         // bridge expects; sending it unscaled made the threshold 10× too lenient.
         const deltaE = deltaESpin.value / 10;
-        const url = "/compare/image" + "?left=" + encodeURIComponent(root.leftPath) + "&right=" + encodeURIComponent(root.rightPath) + "&mode=" + modeStr + "&tolerance=" + tol + "&delta_e=" + deltaE + "&overlay=true";
+        const frameMode = frameCombo.currentIndex === 1 ? "all" : "first";
+        const url = "/compare/image" + "?left=" + encodeURIComponent(root.leftPath) + "&right=" + encodeURIComponent(root.rightPath) + "&mode=" + modeStr + "&tolerance=" + tol + "&delta_e=" + deltaE + "&frames=" + frameMode + "&overlay=true";
 
         root.bridgeGet(url, function (ok, data) {
             root.running = false;
@@ -421,6 +422,24 @@ Controls.Pane {
                     contentColor: root.activeText
                     stepHoverColor: root.activeBgAlt
                     Accessible.name: "DeltaE threshold (×10)"
+                }
+
+                Kirigami.Separator { Layout.fillHeight: true }
+
+                Controls.Label {
+                    text: qsTr("Frames:")
+                    color: root.activeText
+                    opacity: 0.7
+                    font.pixelSize: 12
+                }
+                AppComboBox {
+                    id: frameCombo
+                    model: [qsTr("First frame"), qsTr("All frames")]
+                    Layout.preferredWidth: 130
+                    implicitHeight: 30
+                    Accessible.name: qsTr("Frame compare mode")
+                    Controls.ToolTip.text: qsTr("Compare only the first frame, or every frame in animated images (GIF, APNG, WebP)")
+                    Controls.ToolTip.visible: hovered
                 }
 
                 AppButton {

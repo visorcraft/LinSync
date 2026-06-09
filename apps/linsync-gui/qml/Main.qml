@@ -4914,6 +4914,20 @@ Kirigami.ApplicationWindow {
                 onTabClosed: tabId => root.performCloseTab(tabId)
                 onNavigateRequested: section => root.activeSection = section
                 onReopenRecentRequested: index => root.reopenRecentSession(index)
+                onDeleteRecentSessionRequested: index => {
+                    bridgeGet("/sessions/delete?index=" + encodeURIComponent(index), function (ok) {
+                        if (ok) root.loadRecentSessions(function (items) {
+                            sessionsPage.recentSessions = items
+                        })
+                    })
+                }
+                onRenameRecentSessionRequested: (index, title) => {
+                    bridgeGet("/sessions/rename?index=" + encodeURIComponent(index) + "&title=" + encodeURIComponent(title), function (ok) {
+                        if (ok) root.loadRecentSessions(function (items) {
+                            sessionsPage.recentSessions = items
+                        })
+                    })
+                }
                 onRefreshRecentRequested: {
                     root.loadRecentSessions(function (items) {
                         sessionsPage.recentSessions = items

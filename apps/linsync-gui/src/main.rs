@@ -4426,10 +4426,10 @@ fn resolve_compare_options_for_request(
             .filter_map(|s| s.trim().parse::<usize>().ok())
             .collect();
     }
-    if let Some(v) = query_value(params, "numeric_tolerance") {
-        if let Ok(n) = v.parse::<f64>() {
-            table.numeric_tolerance = Some(n);
-        }
+    if let Some(v) = query_value(params, "numeric_tolerance")
+        && let Ok(n) = v.parse::<f64>()
+    {
+        table.numeric_tolerance = Some(n);
     }
     if let Some(v) = query_value(params, "ignore_row_order")
         && let Some(parsed) = parse_bool_query_param(v)
