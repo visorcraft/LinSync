@@ -35,6 +35,16 @@ pub enum TextSyntaxMode {
     Shell,
     Toml,
     Yaml,
+    C,
+    Cpp,
+    Python,
+    #[serde(rename = "javascript")]
+    JavaScript,
+    #[serde(rename = "typescript")]
+    TypeScript,
+    Go,
+    Java,
+    Css,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +68,10 @@ pub(crate) fn syntax_mode_from_path(path: &Path) -> Option<TextSyntaxMode> {
 }
 
 pub(crate) fn syntax_spans(text: &str, mode: TextSyntaxMode) -> Vec<SyntaxSpan> {
+    #[cfg(feature = "syntax-rich")]
+    if let Some(spans) = rich::spans(text, mode) {
+        return spans;
+    }
     match mode {
         TextSyntaxMode::Plain | TextSyntaxMode::Auto => Vec::new(),
         TextSyntaxMode::Json => json_syntax_spans(text),
@@ -66,7 +80,15 @@ pub(crate) fn syntax_spans(text: &str, mode: TextSyntaxMode) -> Vec<SyntaxSpan> 
         | TextSyntaxMode::Markdown
         | TextSyntaxMode::Shell
         | TextSyntaxMode::Toml
-        | TextSyntaxMode::Yaml => generic_syntax_spans(text, mode),
+        | TextSyntaxMode::Yaml
+        | TextSyntaxMode::C
+        | TextSyntaxMode::Cpp
+        | TextSyntaxMode::Python
+        | TextSyntaxMode::JavaScript
+        | TextSyntaxMode::TypeScript
+        | TextSyntaxMode::Go
+        | TextSyntaxMode::Java
+        | TextSyntaxMode::Css => generic_syntax_spans(text, mode),
     }
 }
 
@@ -287,5 +309,243 @@ fn span(start: usize, end: usize, class: &str) -> SyntaxSpan {
         start,
         end,
         class: class.to_owned(),
+    }
+}
+
+/// syntect-backed span computation. Stateless per line by design: callers
+/// highlight one row at a time, so multi-line constructs (block comments, raw
+/// strings) degrade gracefully per line. Returns `None` when syntect cannot
+/// handle the mode so the hand-rolled lexers above take over.
+#[cfg(feature = "syntax-rich")]
+mod rich {
+    use std::sync::OnceLock;
+
+    use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
+
+    use super::{SyntaxSpan, TextSyntaxMode};
+
+    const MAX_LINE_BYTES: usize = 20_000;
+
+    pub(super) fn syntax_set() -> &'static SyntaxSet {
+        static SET: OnceLock<SyntaxSet> = OnceLock::new();
+        SET.get_or_init(SyntaxSet::load_defaults_newlines)
+    }
+
+    pub(super) fn token_for(mode: TextSyntaxMode) -> Option<&'static str> {
+        match mode {
+            TextSyntaxMode::Plain | TextSyntaxMode::Auto => None,
+            TextSyntaxMode::Rust => Some("rs"),
+            TextSyntaxMode::Json => Some("json"),
+            TextSyntaxMode::Html => Some("html"),
+            TextSyntaxMode::Markdown => Some("md"),
+            TextSyntaxMode::Shell => Some("sh"),
+            // TOML is absent from syntect's default set; the hand-rolled
+            // lexer keeps covering it via the `None` fallback.
+            TextSyntaxMode::Toml => None,
+            TextSyntaxMode::Yaml => Some("yaml"),
+            TextSyntaxMode::C => Some("c"),
+            TextSyntaxMode::Cpp => Some("cpp"),
+            TextSyntaxMode::Python => Some("py"),
+            TextSyntaxMode::JavaScript => Some("js"),
+            // TypeScript is absent from syntect's default set; JavaScript is
+            // the closest available grammar.
+            TextSyntaxMode::TypeScript => Some("js"),
+            TextSyntaxMode::Go => Some("go"),
+            TextSyntaxMode::Java => Some("java"),
+            TextSyntaxMode::Css => Some("css"),
+        }
+    }
+
+    /// Priority-ordered scope prefixes mapped onto the closed six-class GUI
+    /// vocabulary. Key prefixes outrank `string` because mapping keys (JSON,
+    /// YAML) are also scoped as strings and must keep the `key` class.
+    fn class_rules() -> &'static [(&'static str, Vec<Scope>)] {
+        static RULES: OnceLock<Vec<(&'static str, Vec<Scope>)>> = OnceLock::new();
+        RULES.get_or_init(|| {
+            let scopes = |names: &[&str]| {
+                names
+                    .iter()
+                    .map(|name| Scope::new(name).expect("valid scope literal"))
+                    .collect::<Vec<_>>()
+            };
+            vec![
+                ("comment", scopes(&["comment"])),
+                (
+                    "key",
+                    scopes(&[
+                        "meta.mapping.key",
+                        // The bundled (legacy Sublime packages) JSON grammar
+                        // scopes keys as meta.structure.dictionary.key.
+                        "meta.structure.dictionary.key",
+                        "support.type.property-name",
+                        "meta.object-literal.key",
+                    ]),
+                ),
+                ("string", scopes(&["string"])),
+                ("number", scopes(&["constant.numeric"])),
+                ("tag", scopes(&["entity.name.tag", "meta.tag"])),
+                ("keyword", scopes(&["keyword", "storage"])),
+            ]
+        })
+    }
+
+    fn class_for(stack: &ScopeStack) -> Option<&'static str> {
+        let scopes = stack.as_slice();
+        for (class, prefixes) in class_rules() {
+            if scopes
+                .iter()
+                .any(|scope| prefixes.iter().any(|prefix| prefix.is_prefix_of(*scope)))
+            {
+                return Some(class);
+            }
+        }
+        None
+    }
+
+    pub(super) fn spans(text: &str, mode: TextSyntaxMode) -> Option<Vec<SyntaxSpan>> {
+        if text.len() > MAX_LINE_BYTES {
+            return Some(Vec::new());
+        }
+        let token = token_for(mode)?;
+        let set = syntax_set();
+        let syntax = set.find_syntax_by_token(token)?;
+        let mut state = ParseState::new(syntax);
+        let line = if text.ends_with('\n') {
+            text.to_owned()
+        } else {
+            format!("{text}\n")
+        };
+        let ops = state.parse_line(&line, set).ok()?;
+
+        // syntect reports byte offsets; spans are char-indexed by contract.
+        let mut byte_to_char = vec![0usize; text.len() + 1];
+        let mut char_idx = 0usize;
+        for (byte_idx, _) in text.char_indices() {
+            byte_to_char[byte_idx] = char_idx;
+            char_idx += 1;
+        }
+        byte_to_char[text.len()] = char_idx;
+
+        let mut stack = ScopeStack::new();
+        let mut spans: Vec<SyntaxSpan> = Vec::new();
+        let mut emit = |start_byte: usize, end_byte: usize, stack: &ScopeStack| {
+            let Some(class) = class_for(stack) else {
+                return;
+            };
+            let start = byte_to_char[start_byte];
+            let end = byte_to_char[end_byte];
+            if start >= end {
+                return;
+            }
+            if let Some(last) = spans.last_mut()
+                && last.end == start
+                && last.class == class
+            {
+                last.end = end;
+            } else {
+                spans.push(super::span(start, end, class));
+            }
+        };
+        let mut cursor = 0usize;
+        for (offset, op) in &ops {
+            let end = (*offset).min(text.len());
+            if end > cursor {
+                emit(cursor, end, &stack);
+                cursor = end;
+            }
+            stack.apply(op).ok()?;
+        }
+        if text.len() > cursor {
+            emit(cursor, text.len(), &stack);
+        }
+        Some(spans)
+    }
+}
+
+#[cfg(all(test, feature = "syntax-rich"))]
+mod syntect_tests {
+    use super::*;
+
+    const GUI_CLASSES: [&str; 6] = ["keyword", "string", "number", "comment", "key", "tag"];
+
+    #[test]
+    fn syntect_rust_keywords_and_strings() {
+        let spans = syntax_spans(
+            "pub fn main() { let s = \"hi\"; } // note",
+            TextSyntaxMode::Rust,
+        );
+        assert!(spans.iter().any(|s| s.class == "keyword"));
+        assert!(spans.iter().any(|s| s.class == "string"));
+        assert!(spans.iter().any(|s| s.class == "comment"));
+        for s in &spans {
+            assert!(GUI_CLASSES.contains(&s.class.as_str()), "class {}", s.class);
+        }
+    }
+
+    #[test]
+    fn syntect_spans_are_char_indexed_not_byte_indexed() {
+        // 'é' is 2 bytes, 1 char; the string literal must start at the char index.
+        let line = "let é = \"x\";";
+        let spans = syntax_spans(line, TextSyntaxMode::Rust);
+        let string_span = spans.iter().find(|s| s.class == "string").unwrap();
+        let chars: Vec<char> = line.chars().collect();
+        assert_eq!(chars[string_span.start], '"');
+    }
+
+    #[test]
+    fn syntect_python_via_new_mode() {
+        // Callers highlight one line at a time, so feed single lines.
+        let spans = syntax_spans("def f():", TextSyntaxMode::Python);
+        assert!(spans.iter().any(|s| s.class == "keyword"));
+
+        let spans = syntax_spans("    return 1  # c", TextSyntaxMode::Python);
+        assert!(spans.iter().any(|s| s.class == "keyword"));
+        assert!(spans.iter().any(|s| s.class == "comment"));
+        for s in &spans {
+            assert!(GUI_CLASSES.contains(&s.class.as_str()), "class {}", s.class);
+        }
+    }
+
+    #[test]
+    fn syntect_json_keys_keep_key_class() {
+        let spans = syntax_spans("{\"name\": \"x\", \"n\": 3}", TextSyntaxMode::Json);
+        assert!(spans.iter().any(|s| s.class == "key"));
+        assert!(spans.iter().any(|s| s.class == "string"));
+        assert!(spans.iter().any(|s| s.class == "number"));
+    }
+
+    #[test]
+    fn syntect_tokens_resolve_for_every_mapped_mode() {
+        for mode in [
+            TextSyntaxMode::Rust,
+            TextSyntaxMode::Json,
+            TextSyntaxMode::Html,
+            TextSyntaxMode::Markdown,
+            TextSyntaxMode::Shell,
+            TextSyntaxMode::Toml,
+            TextSyntaxMode::Yaml,
+            TextSyntaxMode::C,
+            TextSyntaxMode::Cpp,
+            TextSyntaxMode::Python,
+            TextSyntaxMode::JavaScript,
+            TextSyntaxMode::TypeScript,
+            TextSyntaxMode::Go,
+            TextSyntaxMode::Java,
+            TextSyntaxMode::Css,
+        ] {
+            if let Some(token) = rich::token_for(mode) {
+                assert!(
+                    rich::syntax_set().find_syntax_by_token(token).is_some(),
+                    "token {token:?} for {mode:?} does not resolve"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn syntect_perf_guard_skips_oversized_lines() {
+        let big = "let x = 1; ".repeat(2_000);
+        assert!(big.len() > 20_000);
+        assert!(syntax_spans(&big, TextSyntaxMode::Rust).is_empty());
     }
 }
