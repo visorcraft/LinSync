@@ -33,6 +33,13 @@ Controls.Pane {
 
     // ── Internal state ────────────────────────────────────────────────────────
     property string statusText: "Select left and right document paths, then run compare."
+    // Announce status/error changes to assistive technology as they happen.
+    // Accessible.announce() exists on Qt 6.8+; guarded so older Qt is a no-op.
+    onStatusTextChanged: {
+        if (typeof statusBarLabel !== "undefined" && statusBarLabel.Accessible
+                && typeof statusBarLabel.Accessible.announce === "function")
+            statusBarLabel.Accessible.announce(root.statusText)
+    }
     property bool running: false
     property var lastResult: null
     property int requestCounter: 0
@@ -423,6 +430,7 @@ Controls.Pane {
             color: root.activeBg
 
             Controls.Label {
+                id: statusBarLabel
                 anchors {
                     verticalCenter: parent.verticalCenter
                     left: parent.left
@@ -431,6 +439,10 @@ Controls.Pane {
                 text: root.statusText
                 color: root.activeText
                 elide: Text.ElideRight
+                // Expose the status line as a live region so screen
+                // readers announce status/error changes as they happen.
+                Accessible.role: Accessible.StaticText
+                Accessible.name: qsTr("Status: %1").arg(root.statusText)
             }
         }
     }

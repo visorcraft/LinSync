@@ -42,6 +42,13 @@ Item {
     property int    currentConflict: -1
     property string outputText:      ""
     property string statusText:      "Ready"
+    // Announce status/error changes to assistive technology as they happen.
+    // Accessible.announce() exists on Qt 6.8+; guarded so older Qt is a no-op.
+    onStatusTextChanged: {
+        if (typeof statusBarLabel !== "undefined" && statusBarLabel.Accessible
+                && typeof statusBarLabel.Accessible.announce === "function")
+            statusBarLabel.Accessible.announce(root.statusText)
+    }
     property bool   syncing:         false
     property string customText:      ""
 
@@ -483,10 +490,15 @@ Item {
             }
 
             Controls.Label {
+                id: statusBarLabel
                 anchors.verticalCenter: parent.verticalCenter
                 leftPadding: 10
                 text: root.statusText
                 color: root.activeText
+                // Expose the status line as a live region so screen
+                // readers announce status/error changes as they happen.
+                Accessible.role: Accessible.StaticText
+                Accessible.name: qsTr("Status: %1").arg(root.statusText)
             }
         }
     }

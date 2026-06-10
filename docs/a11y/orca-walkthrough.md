@@ -68,24 +68,24 @@ failed row maps straight to code. Line numbers drift; the cited names do not.
 
 ### Known limitations (verify as behavior, do not log as failures)
 
-- **Only the Compare status bar is announced live.** The single
-  `Accessible.announce` site in the codebase is `Main.qml` (~line 19–24): it
-  announces every change of `root.statusText` through the status-bar label.
-  `Accessible.announce()` exists on Qt 6.8+ only; on older Qt the guard makes
-  it a silent no-op — confirm your Qt version before failing announce rows.
-- **Image, Document, and Merge pages keep page-local status text**
-  (`ImageComparePage.qml`, `DocumentComparePage.qml`, `MergePage.qml` each
-  declare their own `statusText` label) **with no announce handler.** Results
-  on those pages must be read by navigating to the status label. The script
-  below tests flat-review readability there, not live announcement.
+- **Status bars announce live on Compare, Image, Document, and Merge.** The
+  `Accessible.announce` sites are `Main.qml` (~line 19–24) plus the matching
+  page-local handlers in `ImageComparePage.qml` (~161–167),
+  `DocumentComparePage.qml` (~36–42), and `MergePage.qml` (~45–51); each
+  announces every change of its `statusText` through that page's status-bar
+  label. `Accessible.announce()` exists on Qt 6.8+ only; on older Qt the
+  guard makes it a silent no-op — confirm your Qt version before failing
+  announce rows.
 - The static name-coverage gate is `bash scripts/gui-smoke.sh --check-a11y`;
   it passes at the time of writing (SessionsPage rename field gained its
   `Accessible.name` alongside this script).
 
 ### Announce-trigger inventory (what drives the live announcements)
 
-All live announcements are values assigned to `root.statusText` in
-`Main.qml`. The ones this script exercises:
+Compare-section live announcements are values assigned to `root.statusText`
+in `Main.qml` (the Image, Document, and Merge pages announce their own
+page-local `statusText` the same way — see their sections below). The
+Main.qml ones this script exercises:
 
 | Trigger | Announced text | Main.qml site |
 | --- | --- | --- |
@@ -225,7 +225,7 @@ Path pickers come from the shared `FilePickerBar.qml`: field name is
 | 5. Tab: frame mode + formats | "Frame compare mode" (~401), "Supported image formats" (~430) | | |
 | 6. Tab: overlay controls | "Overlay opacity" (~460), "Save Overlay PNG" (~478) | | |
 | 7. Tab: zoom cluster | "Zoom in" (~502), "Zoom out" (~510), "Fit to pane" (~518), "1:1" (~526), "Toggle split view" (~546) | | |
-| 8. Pick two differing images, run compare | **No live announce expected** (known limitation). Flat-review the status label: "N of M pixels differ (…%)" or "Images are equal (…)" (~237–240) | | |
+| 8. Pick two differing images, run compare | Live announce: "N of M pixels differ (…%)" or "Images are equal (…)" (status values ~244–247; announce handler ~163–166). Flat-review of the status label reads the same text ("Status: …", ~759–771) | | |
 
 ---
 
@@ -252,7 +252,7 @@ Path pickers come from the shared `FilePickerBar.qml`: field name is
 | 3. Tab: mode | "Document extraction mode" combo (~268) | | |
 | 4. Tab: OCR language | "OCR language code" field (~285) | | |
 | 5. Tab: run button | "Run Compare" (text-named AppButton, ~291) | | |
-| 6. Run a compare on two text/PDF fixtures | **No live announce expected** (known limitation). Flat-review status: "Documents are equal (…)" or "N differing lines (…)" (~107–109) | | |
+| 6. Run a compare on two text/PDF fixtures | Live announce: "Documents are equal (…)" or "N differing lines (…)" (status values ~114–116; announce handler ~38–41). Flat-review of the status label reads the same text ("Status: …", ~433–445) | | |
 | 7. Review extracted-text panes | "Left" / "Right" headings and contents readable (~393/~410) | | |
 
 ---
@@ -340,7 +340,7 @@ not from the sidebar.
 | 2. Tab: path pickers and Start (text-named controls) | base/left/right fields and start button reachable and named | | |
 | 3. Tab: conflict navigation | "Previous conflict" (~219), "Next conflict" (~237) | | |
 | 4. Tab into the output editor | "Merged output" text area (~466) | | |
-| 5. Start a merge on conflicting fixtures | **No live announce expected** (page-local status, known limitation). Flat-review the status label: "N conflicts remaining" / saved-path message (~92–172) | | |
+| 5. Start a merge on conflicting fixtures | Live announce: "N conflicts remaining" / saved-path message (status values ~100–179; announce handler ~47–50). Flat-review of the status label reads the same text ("Status: …", ~493–502) | | |
 
 ---
 
