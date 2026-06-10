@@ -5265,9 +5265,19 @@ fn archive_member_edit_bridge_response(
         );
     }
 
+    let canonical = match archive.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return bridge_error(500, "Internal Server Error", &e.to_string());
+        }
+    };
+
     // Reject a second concurrent edit for the same archive.
-    if let Ok(state_guard) = state.lock() {
-        let canonical = archive.canonicalize().unwrap_or_else(|_| archive.clone());
+    {
+        let state_guard = match state.lock() {
+            Ok(g) => g,
+            Err(_) => return bridge_error(500, "Internal Server Error", "state lock poisoned"),
+        };
         if state_guard
             .archive_edit_tokens
             .values()
@@ -5290,20 +5300,8 @@ fn archive_member_edit_bridge_response(
     };
     let staging_root = paths.cache_dir.join("archive-edits").join(&token);
 
-    match linsync_core::extract_member_for_edit(&archive, &member, &staging_root) {
-        Ok(ctx) => {
-            let staged_path = ctx.staged_path().to_path_buf();
-            if let Ok(mut state) = state.lock() {
-                state.archive_edit_tokens.insert(token.clone(), ctx);
-            }
-            let body = serde_json::json!({
-                "ok": true,
-                "token": token,
-                "staged_path": staged_path,
-            })
-            .to_string();
-            http_response(200, "OK", "application/json", body.into_bytes())
-        }
+    let ctx = match linsync_core::extract_member_for_edit(&archive, &member, &staging_root) {
+        Ok(ctx) => ctx,
         Err(e) => {
             let _ = fs::remove_dir_all(&staging_root);
             let status = match e {
@@ -5318,8 +5316,40 @@ fn archive_member_edit_bridge_response(
                 | linsync_core::ArchiveWriteError::LockContention { .. } => 409,
                 _ => 500,
             };
-            bridge_error(status, "Error", &e.to_string())
+            return bridge_error(status, "Error", &e.to_string());
         }
+    };
+
+    // Re-check under the lock after extraction to close the race window.
+    {
+        let mut state_guard = match state.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                let _ = fs::remove_dir_all(&staging_root);
+                return bridge_error(500, "Internal Server Error", "state lock poisoned");
+            }
+        };
+        if state_guard
+            .archive_edit_tokens
+            .values()
+            .any(|ctx| ctx.archive() == canonical)
+        {
+            let _ = fs::remove_dir_all(&staging_root);
+            return bridge_error(
+                409,
+                "Conflict",
+                "an edit is already in progress for this archive",
+            );
+        }
+        let staged_path = ctx.staged_path().to_path_buf();
+        state_guard.archive_edit_tokens.insert(token.clone(), ctx);
+        let body = serde_json::json!({
+            "ok": true,
+            "token": token,
+            "staged_path": staged_path,
+        })
+        .to_string();
+        http_response(200, "OK", "application/json", body.into_bytes())
     }
 }
 
@@ -5367,11 +5397,16 @@ fn archive_member_commit_bridge_response(
             // retry the atomic publish without re-extracting.
             let is_retryable = matches!(e, linsync_core::ArchiveWriteError::RenameFailed { .. });
             if is_retryable {
-                if let Ok(mut state) = state.lock() {
-                    state
-                        .archive_edit_tokens
-                        .insert(token.to_owned(), ctx.clone());
-                }
+                let mut state_guard = match state.lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        let _ = fs::remove_dir_all(ctx.staging_root());
+                        return bridge_error(500, "Internal Server Error", "state lock poisoned");
+                    }
+                };
+                state_guard
+                    .archive_edit_tokens
+                    .insert(token.to_owned(), ctx.clone());
             } else {
                 let _ = fs::remove_dir_all(ctx.staging_root());
             }
@@ -5388,7 +5423,14 @@ fn archive_member_commit_bridge_response(
                 | linsync_core::ArchiveWriteError::LockContention { .. } => 409,
                 _ => 500,
             };
-            bridge_error(status, "Error", &e.to_string())
+            bridge_error_json(
+                status,
+                "Error",
+                serde_json::json!({
+                    "error": e.to_string(),
+                    "retryable": is_retryable,
+                }),
+            )
         }
     }
 }
@@ -7464,6 +7506,15 @@ fn bridge_error(status: u16, reason: &str, message: &str) -> Vec<u8> {
         .to_string()
         .into_bytes();
     http_response(status, reason, "application/json", body)
+}
+
+fn bridge_error_json(status: u16, reason: &str, body: serde_json::Value) -> Vec<u8> {
+    http_response(
+        status,
+        reason,
+        "application/json",
+        body.to_string().into_bytes(),
+    )
 }
 
 fn http_response(status: u16, reason: &str, content_type: &str, body: Vec<u8>) -> Vec<u8> {

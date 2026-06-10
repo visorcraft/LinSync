@@ -1312,7 +1312,7 @@ Kirigami.ApplicationWindow {
                 // The bridge has already removed/invalidated the token on a
                 // non-retryable failure. Clear local state so the user cannot
                 // retry with a stale token.
-                if (payload && payload.error && !String(payload.error).includes("retry")) {
+                if (payload && payload.retryable !== true) {
                     root.archiveEditInProgress = false
                     root.archiveEditToken = ""
                     root.archiveEditStagedPath = ""
