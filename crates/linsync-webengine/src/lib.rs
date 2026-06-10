@@ -72,6 +72,25 @@ impl Default for WebEngineOptions {
     }
 }
 
+/// The renderer backend used to rasterize a page.
+enum RenderBackend {
+    /// Qt WebEngine via a `qml6`/`qml` runner subprocess — the current path.
+    QtQml(PathBuf),
+    /// Headless Chromium binary — implemented in a later task.
+    #[allow(dead_code)]
+    ChromiumHeadless(PathBuf),
+}
+
+/// Probe whether `candidate` is an executable on `PATH` by running it with a
+/// cheap informational flag and checking it produced any response.
+fn binary_responds(candidate: &str, probe_arg: &str) -> bool {
+    Command::new(candidate)
+        .arg(probe_arg)
+        .output()
+        .map(|o| o.status.success() || !o.stdout.is_empty() || !o.stderr.is_empty())
+        .unwrap_or(false)
+}
+
 /// Locate a Qt 6 QML runner (`qml6`, then `qml`), honoring `LINSYNC_QML_RUNNER`.
 fn resolve_qml_runner() -> Option<PathBuf> {
     if let Some(explicit) = std::env::var_os("LINSYNC_QML_RUNNER") {
@@ -81,16 +100,46 @@ fn resolve_qml_runner() -> Option<PathBuf> {
         }
     }
     for candidate in ["qml6", "qml"] {
-        if Command::new(candidate)
-            .arg("--help")
-            .output()
-            .map(|o| o.status.success() || !o.stdout.is_empty() || !o.stderr.is_empty())
-            .unwrap_or(false)
-        {
+        if binary_responds(candidate, "--help") {
             return Some(PathBuf::from(candidate));
         }
     }
     None
+}
+
+/// Locate a headless-capable Chromium binary on `PATH`.
+fn resolve_chromium_binary() -> Option<PathBuf> {
+    for candidate in ["chromium", "chromium-browser", "google-chrome-stable"] {
+        if binary_responds(candidate, "--version") {
+            return Some(PathBuf::from(candidate));
+        }
+    }
+    None
+}
+
+/// Pick a renderer backend.
+///
+/// 1. `LINSYNC_WEB_RENDERER=qml|chromium` forces a backend (`None` if the
+///    forced backend's binary is absent; any other non-empty value warns and
+///    falls through to auto-detection).
+/// 2. A QML runner (`qml6`/`qml`, honoring `LINSYNC_QML_RUNNER`).
+/// 3. A Chromium binary on `PATH`.
+fn resolve_backend() -> Option<RenderBackend> {
+    match std::env::var("LINSYNC_WEB_RENDERER").as_deref() {
+        Ok("qml") => return resolve_qml_runner().map(RenderBackend::QtQml),
+        Ok("chromium") => return resolve_chromium_binary().map(RenderBackend::ChromiumHeadless),
+        Ok("") | Err(_) => {}
+        Ok(other) => {
+            eprintln!(
+                "linsync-webengine: warning: unknown LINSYNC_WEB_RENDERER value {other:?} \
+                 (expected \"qml\" or \"chromium\"); auto-detecting a backend"
+            );
+        }
+    }
+    if let Some(runner) = resolve_qml_runner() {
+        return Some(RenderBackend::QtQml(runner));
+    }
+    resolve_chromium_binary().map(RenderBackend::ChromiumHeadless)
 }
 
 /// Escape a string for embedding inside a QML double-quoted string literal.
@@ -109,19 +158,35 @@ fn url_hash(url: &str) -> String {
 /// Render `url` in an isolated Qt WebEngine session and return the path to a PNG
 /// screenshot written to `output_dir/<url_hash>.png`.
 ///
-/// Spawns a `qml6` subprocess running a generated `WebEngineView` that loads the
+/// Dispatches to a renderer backend (see [`resolve_backend`]). The Qt backend
+/// spawns a `qml6` subprocess running a generated `WebEngineView` that loads the
 /// URL, grabs the rendered view, and saves a PNG. Returns
-/// [`WebEngineError::NotImplemented`] when no QML runner is available (so callers
-/// can fall back to HTML-source compare), and a specific error on load/capture
-/// failure or timeout.
+/// [`WebEngineError::NotImplemented`] when no usable backend is available (so
+/// callers can fall back to HTML-source compare), and a specific error on
+/// load/capture failure or timeout.
 pub fn render_url(
     url: &str,
     output_dir: &Path,
     options: &WebEngineOptions,
 ) -> Result<PathBuf, WebEngineError> {
-    let Some(runner) = resolve_qml_runner() else {
+    let Some(backend) = resolve_backend() else {
         return Err(WebEngineError::NotImplemented);
     };
+    match backend {
+        RenderBackend::QtQml(runner) => render_url_qtqml(url, output_dir, options, &runner),
+        // Implemented in a later task; callers treat this exactly like "no
+        // renderer available" and fall back to HTML-source compare.
+        RenderBackend::ChromiumHeadless(_) => Err(WebEngineError::NotImplemented),
+    }
+}
+
+/// Render `url` with the Qt WebEngine backend via the given QML `runner`.
+fn render_url_qtqml(
+    url: &str,
+    output_dir: &Path,
+    options: &WebEngineOptions,
+    runner: &Path,
+) -> Result<PathBuf, WebEngineError> {
     std::fs::create_dir_all(output_dir).map_err(|e| WebEngineError::InitFailed(e.to_string()))?;
     std::fs::create_dir_all(&options.profile_storage_dir)
         .map_err(|e| WebEngineError::InitFailed(e.to_string()))?;
@@ -182,7 +247,7 @@ Item {{
             .map_err(|e| WebEngineError::InitFailed(e.to_string()))?;
     }
 
-    let mut command = Command::new(&runner);
+    let mut command = Command::new(runner);
     command
         .arg(&renderer_path)
         // Headless rendering: offscreen platform + GPU-less Chromium.
