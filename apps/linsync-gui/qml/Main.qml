@@ -1284,6 +1284,9 @@ Kirigami.ApplicationWindow {
             root.archiveEditMember = entry
             root.archiveEditSide = side
             root.archiveEditInProgress = true
+            if (payload.atomic === false) {
+                root.statusText = "Portal archive: commit is non-atomic and keeps a backup in app state."
+            }
             // Open in external editor
             root.bridgeGet("/open-external?path=" + encodeURIComponent(payload.staged_path), function (ok2) {
                 root.statusText = ok2 ? "Editing " + entry + " in external editor" : "Could not open external editor"

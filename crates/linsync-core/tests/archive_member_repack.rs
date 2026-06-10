@@ -152,7 +152,7 @@ fn archive_edit_commit_replaces_member_atomically() {
 
     // First commit: default options (backup deleted on success).
     let staging1 = dir.path().join("staging-1");
-    let ctx = extract_member_for_edit(&archive, "dir/b.txt", &staging1)
+    let ctx = extract_member_for_edit(&archive, "dir/b.txt", &staging1, None)
         .expect("extract_member_for_edit failed");
     assert_eq!(
         fs::read(ctx.staged_path()).unwrap(),
@@ -205,7 +205,7 @@ fn archive_edit_commit_replaces_member_atomically() {
     let before_second = fs::read(&archive).unwrap();
     assert_ne!(before_second, original_bytes);
     let staging2 = dir.path().join("staging-2");
-    let ctx2 = extract_member_for_edit(&archive, "a.txt", &staging2).expect("second extract");
+    let ctx2 = extract_member_for_edit(&archive, "a.txt", &staging2, None).expect("second extract");
     fs::write(ctx2.staged_path(), b"ALPHA v2\n").unwrap();
     let outcome2 = commit_member_edit(&ctx2, &CommitOptions { keep_backup: true })
         .expect("second commit failed");
@@ -243,7 +243,7 @@ fn archive_edit_rejects_zip_slip_member_paths() {
     ];
     for member in bad {
         let staging = dir.path().join("staging");
-        let err = extract_member_for_edit(&archive, member, &staging)
+        let err = extract_member_for_edit(&archive, member, &staging, None)
             .expect_err(&format!("member {member:?} must be rejected"));
         assert!(
             matches!(err, ArchiveWriteError::InvalidMemberName { .. }),
@@ -269,7 +269,7 @@ fn archive_edit_commit_rejects_stale_fingerprint() {
         dir.path(),
         &[("a.txt", b"alpha\n", 0o644), ("b.txt", b"bravo\n", 0o644)],
     );
-    let ctx = extract_member_for_edit(&archive, "a.txt", &dir.path().join("staging"))
+    let ctx = extract_member_for_edit(&archive, "a.txt", &dir.path().join("staging"), None)
         .expect("extract failed");
     fs::write(ctx.staged_path(), b"edited\n").unwrap();
 
@@ -337,7 +337,7 @@ fn archive_edit_staging_enforces_size_and_ratio_caps() {
         ..ArchiveEditCaps::default()
     };
     let staging = dir.path().join("staging-size");
-    let err = extract_member_for_edit_with_caps(&archive, "big.bin", &staging, &caps)
+    let err = extract_member_for_edit_with_caps(&archive, "big.bin", &staging, &caps, None)
         .expect_err("oversized member must be rejected");
     assert!(
         matches!(err, ArchiveWriteError::CapsExceeded { .. }),
@@ -351,7 +351,7 @@ fn archive_edit_staging_enforces_size_and_ratio_caps() {
         ..ArchiveEditCaps::default()
     };
     let staging = dir.path().join("staging-ratio");
-    let err = extract_member_for_edit_with_caps(&archive, "big.bin", &staging, &caps)
+    let err = extract_member_for_edit_with_caps(&archive, "big.bin", &staging, &caps, None)
         .expect_err("over-ratio member must be rejected");
     assert!(
         matches!(err, ArchiveWriteError::CapsExceeded { .. }),
@@ -361,7 +361,7 @@ fn archive_edit_staging_enforces_size_and_ratio_caps() {
 
     // Default caps accept an ordinary (incompressible) 64 KiB member.
     let staging = dir.path().join("staging-ok");
-    extract_member_for_edit(&archive, "noise.bin", &staging)
+    extract_member_for_edit(&archive, "noise.bin", &staging, None)
         .expect("default caps must accept a 64 KiB member");
 }
 
@@ -417,7 +417,7 @@ fn archive_edit_failure_leaves_original_untouched() {
     fs::rename(&archive, &locked_archive).unwrap();
     let original_bytes = fs::read(&locked_archive).unwrap();
 
-    let ctx = extract_member_for_edit(&locked_archive, "a.txt", &dir.path().join("staging"))
+    let ctx = extract_member_for_edit(&locked_archive, "a.txt", &dir.path().join("staging"), None)
         .expect("extract failed");
     fs::write(ctx.staged_path(), b"edited\n").unwrap();
 
@@ -454,7 +454,7 @@ fn archive_edit_rejects_non_utf8_member_name() {
     let raw = dir.path().join("raw-name.zip");
     make_raw_name_zip(&raw, b"caf\xe9.txt", false);
     let staging = dir.path().join("staging-raw");
-    let err = extract_member_for_edit(&raw, "caf\u{FFFD}.txt", &staging)
+    let err = extract_member_for_edit(&raw, "caf\u{FFFD}.txt", &staging, None)
         .expect_err("non-UTF-8 member name must be rejected at edit time");
     assert!(
         matches!(err, ArchiveWriteError::MemberNameEncoding { .. }),
@@ -468,7 +468,7 @@ fn archive_edit_rejects_non_utf8_member_name() {
     let unflagged = dir.path().join("unflagged-name.zip");
     make_raw_name_zip(&unflagged, "café.txt".as_bytes(), false);
     let staging = dir.path().join("staging-unflagged");
-    let err = extract_member_for_edit(&unflagged, "café.txt", &staging)
+    let err = extract_member_for_edit(&unflagged, "café.txt", &staging, None)
         .expect_err("non-ASCII name without the UTF-8 flag must be rejected");
     assert!(
         matches!(err, ArchiveWriteError::MemberNameEncoding { .. }),
@@ -481,7 +481,7 @@ fn archive_edit_rejects_non_utf8_member_name() {
     let flagged = dir.path().join("flagged-name.zip");
     make_raw_name_zip(&flagged, "café.txt".as_bytes(), true);
     let staging = dir.path().join("staging-flagged");
-    let ctx = extract_member_for_edit(&flagged, "café.txt", &staging)
+    let ctx = extract_member_for_edit(&flagged, "café.txt", &staging, None)
         .expect("UTF-8-flagged non-ASCII name must be accepted");
     assert_eq!(fs::read(ctx.staged_path()).unwrap(), b"");
 }
@@ -510,7 +510,7 @@ fn archive_edit_rejects_symlink_member() {
     assert!(status.success());
 
     let staging = dir.path().join("staging");
-    let err = extract_member_for_edit(&archive, "link.txt", &staging)
+    let err = extract_member_for_edit(&archive, "link.txt", &staging, None)
         .expect_err("symlink member must be rejected");
     assert!(
         matches!(err, ArchiveWriteError::NonRegularMember { .. }),
@@ -528,7 +528,7 @@ fn archive_edit_rejects_symlinked_replacement_at_commit() {
     let dir = TempDir::new().unwrap();
     let archive = make_zip(dir.path(), &[("a.txt", b"alpha\n", 0o644)]);
     let original_bytes = fs::read(&archive).unwrap();
-    let ctx = extract_member_for_edit(&archive, "a.txt", &dir.path().join("staging"))
+    let ctx = extract_member_for_edit(&archive, "a.txt", &dir.path().join("staging"), None)
         .expect("extract failed");
 
     // Swap the staged file for a symlink before commit (design §2: symlink as
@@ -561,7 +561,7 @@ fn archive_edit_member_not_found() {
     }
     let dir = TempDir::new().unwrap();
     let archive = make_zip(dir.path(), &[("a.txt", b"alpha\n", 0o644)]);
-    let err = extract_member_for_edit(&archive, "missing.txt", &dir.path().join("staging"))
+    let err = extract_member_for_edit(&archive, "missing.txt", &dir.path().join("staging"), None)
         .expect_err("unknown member must be rejected");
     assert!(
         matches!(err, ArchiveWriteError::MemberNotFound { .. }),

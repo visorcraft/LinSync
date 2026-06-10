@@ -146,6 +146,9 @@ pub enum ArchiveWriteError {
         bak: PathBuf,
         detail: String,
     },
+    /// Portal-granted archive is read-only; the original is untouched and the
+    /// edited copy is retained at the backup path.
+    PortalReadOnly { archive: PathBuf, backup: PathBuf },
     /// An I/O step failed; the original archive is untouched.
     Io { context: String, source: io::Error },
 }
@@ -209,6 +212,12 @@ impl std::fmt::Display for ArchiveWriteError {
                 tmp.display(),
                 bak.display()
             ),
+            Self::PortalReadOnly { archive, backup } => write!(
+                f,
+                "portal-granted archive '{}' is read-only; original untouched, edited copy retained at '{}'",
+                archive.display(),
+                backup.display()
+            ),
             Self::Io { context, source } => write!(f, "{context}: {source}"),
         }
     }
@@ -228,6 +237,11 @@ fn io_err(context: impl Into<String>, source: io::Error) -> ArchiveWriteError {
         context: context.into(),
         source,
     }
+}
+
+fn is_portal_path(path: &Path) -> bool {
+    path.to_str()
+        .is_some_and(|s| s.starts_with("/run/user/") && s.split('/').nth(4) == Some("doc"))
 }
 
 /// Freshness fingerprint of the whole archive (design §2: TOCTOU row).
@@ -256,6 +270,12 @@ pub struct MemberEditContext {
     /// Central-directory entry count at edit time, for the post-repack
     /// member-count assertion.
     member_count: usize,
+    /// Whether the commit will use the atomic rename path (`true`) or degrade
+    /// to a non-atomic O_TRUNC write for portal-granted archives (`false`).
+    atomic: bool,
+    /// App-private backup path for portal-granted archives; retained across
+    /// commit so the original can be recovered.
+    portal_backup: Option<PathBuf>,
 }
 
 impl MemberEditContext {
@@ -277,6 +297,16 @@ impl MemberEditContext {
     /// The staged copy of the member, the file the user edits.
     pub fn staged_path(&self) -> &Path {
         &self.staged_path
+    }
+
+    /// Whether the commit uses the atomic rename path.
+    pub fn atomic(&self) -> bool {
+        self.atomic
+    }
+
+    /// The app-private backup path for portal-granted archives.
+    pub fn portal_backup(&self) -> Option<&Path> {
+        self.portal_backup.as_deref()
     }
 }
 
@@ -670,8 +700,15 @@ pub fn extract_member_for_edit(
     archive: &Path,
     member: &str,
     staging_root: &Path,
+    portal_backup: Option<&Path>,
 ) -> Result<MemberEditContext, ArchiveWriteError> {
-    extract_member_for_edit_with_caps(archive, member, staging_root, &ArchiveEditCaps::default())
+    extract_member_for_edit_with_caps(
+        archive,
+        member,
+        staging_root,
+        &ArchiveEditCaps::default(),
+        portal_backup,
+    )
 }
 
 /// Extract `member` from the zip `archive` into `staging_root` for editing.
@@ -686,6 +723,7 @@ pub fn extract_member_for_edit_with_caps(
     member: &str,
     staging_root: &Path,
     caps: &ArchiveEditCaps,
+    portal_backup: Option<&Path>,
 ) -> Result<MemberEditContext, ArchiveWriteError> {
     validate_member_path(member)?;
 
@@ -694,6 +732,12 @@ pub fn extract_member_for_edit_with_caps(
         .map_err(|_| ArchiveWriteError::ArchiveNotFound {
             archive: archive.to_path_buf(),
         })?;
+    let atomic = !is_portal_path(&archive);
+    let portal_backup = if atomic {
+        None
+    } else {
+        portal_backup.map(|p| p.to_path_buf())
+    };
     let metadata =
         fs::symlink_metadata(&archive).map_err(|_| ArchiveWriteError::ArchiveNotFound {
             archive: archive.clone(),
@@ -884,6 +928,22 @@ pub fn extract_member_for_edit_with_caps(
         });
     }
 
+    if !atomic && let Some(ref bak) = portal_backup {
+        if let Some(parent) = bak.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| io_err("creating portal backup parent dir failed", e))?;
+        }
+        let mut src = File::open(&archive)
+            .map_err(|e| io_err("opening archive for portal backup copy failed", e))?;
+        let mut dst = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(bak)
+            .map_err(|e| io_err("creating portal backup file failed", e))?;
+        io::copy(&mut src, &mut dst)
+            .map_err(|e| io_err("copying archive to portal backup failed", e))?;
+    }
+
     Ok(MemberEditContext {
         archive,
         member: member.to_owned(),
@@ -894,6 +954,8 @@ pub fn extract_member_for_edit_with_caps(
         fingerprint,
         member_mode,
         member_count,
+        atomic,
+        portal_backup,
     })
     // `file` drops here, releasing LOCK_SH.
 }
@@ -1072,95 +1134,133 @@ pub fn commit_member_edit(
         });
     }
 
-    // §3 steps 1–2 + 5 (host side): publish the verified working copy as
-    // `<archive>.linsync-tmp` in the same directory (same filesystem ⇒ the
-    // final rename(2) is atomic), with the original's mode and best-effort
-    // ownership, then fsync it.
-    let tmp = tmp_path_for(archive);
-    let remove_tmp = || {
-        let _ = fs::remove_file(&tmp);
-    };
-    {
-        let mut work_file = File::open(&work_copy)
-            .map_err(|e| io_err("reopening working copy for publish failed", e))?;
-        let mut tmp_opts = OpenOptions::new();
-        tmp_opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
+    if ctx.atomic {
+        // §3 steps 1–2 + 5 (host side): publish the verified working copy as
+        // `<archive>.linsync-tmp` in the same directory (same filesystem ⇒ the
+        // final rename(2) is atomic), with the original's mode and best-effort
+        // ownership, then fsync it.
+        let tmp = tmp_path_for(archive);
+        let remove_tmp = || {
+            let _ = fs::remove_file(&tmp);
+        };
         {
-            use std::os::unix::fs::OpenOptionsExt;
-            // O_NOFOLLOW: if an attacker planted a symlink at the predictable
-            // tmp path, refuse to follow it and truncate the target.
-            tmp_opts.custom_flags(libc::O_NOFOLLOW);
-        }
-        let mut tmp_file = tmp_opts.open(&tmp).map_err(|e| {
-            io_err(
-                format!("creating working copy '{}' failed", tmp.display()),
-                e,
-            )
-        })?;
-        let copy_steps = io::copy(&mut work_file, &mut tmp_file).and_then(|_| {
-            tmp_file.set_permissions(fs::Permissions::from_mode(orig_meta.mode() & 0o7777))?;
-            // Best-effort fchown: EPERM for foreign-owned files is logged,
-            // not fatal (design §3 step 2).
-            // SAFETY: fchown on a valid open fd.
-            let rc =
-                unsafe { libc::fchown(tmp_file.as_raw_fd(), orig_meta.uid(), orig_meta.gid()) };
-            if rc != 0 {
-                tracing::warn!(
-                    "fchown of '{}' failed ({}); committing user becomes the owner",
-                    tmp.display(),
-                    io::Error::last_os_error()
-                );
+            let mut work_file = File::open(&work_copy)
+                .map_err(|e| io_err("reopening working copy for publish failed", e))?;
+            let mut tmp_opts = OpenOptions::new();
+            tmp_opts.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                // O_NOFOLLOW: if an attacker planted a symlink at the predictable
+                // tmp path, refuse to follow it and truncate the target.
+                tmp_opts.custom_flags(libc::O_NOFOLLOW);
             }
-            tmp_file.sync_all()
-        });
-        if let Err(e) = copy_steps {
-            remove_tmp();
-            return Err(io_err("writing the publish working copy failed", e));
+            let mut tmp_file = tmp_opts.open(&tmp).map_err(|e| {
+                io_err(
+                    format!("creating working copy '{}' failed", tmp.display()),
+                    e,
+                )
+            })?;
+            let copy_steps = io::copy(&mut work_file, &mut tmp_file).and_then(|_| {
+                tmp_file.set_permissions(fs::Permissions::from_mode(orig_meta.mode() & 0o7777))?;
+                // Best-effort fchown: EPERM for foreign-owned files is logged,
+                // not fatal (design §3 step 2).
+                // SAFETY: fchown on a valid open fd.
+                let rc =
+                    unsafe { libc::fchown(tmp_file.as_raw_fd(), orig_meta.uid(), orig_meta.gid()) };
+                if rc != 0 {
+                    tracing::warn!(
+                        "fchown of '{}' failed ({}); committing user becomes the owner",
+                        tmp.display(),
+                        io::Error::last_os_error()
+                    );
+                }
+                tmp_file.sync_all()
+            });
+            if let Err(e) = copy_steps {
+                remove_tmp();
+                return Err(io_err("writing the publish working copy failed", e));
+            }
         }
-    }
-    let bak = bak_path_for(archive);
-    if bak.exists() {
-        // A stale backup from a previous keep_backup commit; replace it.
-        let _ = fs::remove_file(&bak);
-    }
-    if let Err(e) = create_backup_from_link_result(fs::hard_link(archive, &bak), archive, &bak) {
-        let _ = fs::remove_file(&bak);
-        remove_tmp();
-        return Err(io_err("creating .bak backup failed", e));
-    }
+        let bak = bak_path_for(archive);
+        if bak.exists() {
+            // A stale backup from a previous keep_backup commit; replace it.
+            let _ = fs::remove_file(&bak);
+        }
+        if let Err(e) = create_backup_from_link_result(fs::hard_link(archive, &bak), archive, &bak)
+        {
+            let _ = fs::remove_file(&bak);
+            remove_tmp();
+            return Err(io_err("creating .bak backup failed", e));
+        }
 
-    // §3 step 6: atomic publish. On failure the original is untouched and
-    // both the working copy and the backup are retained for retry.
-    if let Err(e) = fs::rename(&tmp, archive) {
-        return Err(ArchiveWriteError::RenameFailed {
-            archive: archive.clone(),
-            tmp,
-            bak,
-            detail: e.to_string(),
-        });
-    }
-    if let Some(parent) = archive.parent()
-        && let Err(e) = File::open(parent).and_then(|d| d.sync_all())
-    {
-        tracing::warn!("fsync of '{}' failed after publish: {e}", parent.display());
-    }
+        // §3 step 6: atomic publish. On failure the original is untouched and
+        // both the working copy and the backup are retained for retry.
+        if let Err(e) = fs::rename(&tmp, archive) {
+            return Err(ArchiveWriteError::RenameFailed {
+                archive: archive.clone(),
+                tmp,
+                bak,
+                detail: e.to_string(),
+            });
+        }
+        if let Some(parent) = archive.parent()
+            && let Err(e) = File::open(parent).and_then(|d| d.sync_all())
+        {
+            tracing::warn!("fsync of '{}' failed after publish: {e}", parent.display());
+        }
 
-    // §3 step 7: cleanup-only. A `.bak` deletion failure does not fail the
-    // commit; the stale path is reported in diagnostics.
-    let mut outcome = CommitOutcome {
-        bak_path: None,
-        bak_cleanup_warning: None,
-    };
-    if options.keep_backup {
-        outcome.bak_path = Some(bak);
-    } else if let Err(e) = fs::remove_file(&bak) {
-        outcome.bak_cleanup_warning = Some(format!(
-            "commit succeeded but deleting backup '{}' failed: {e}",
-            bak.display()
-        ));
+        // §3 step 7: cleanup-only. A `.bak` deletion failure does not fail the
+        // commit; the stale path is reported in diagnostics.
+        let mut outcome = CommitOutcome {
+            bak_path: None,
+            bak_cleanup_warning: None,
+        };
+        if options.keep_backup {
+            outcome.bak_path = Some(bak);
+        } else if let Err(e) = fs::remove_file(&bak) {
+            outcome.bak_cleanup_warning = Some(format!(
+                "commit succeeded but deleting backup '{}' failed: {e}",
+                bak.display()
+            ));
+        }
+        Ok(outcome)
+    } else {
+        // Portal path: non-atomic O_TRUNC write over the original portal FD.
+        let mut work_file = File::open(&work_copy)
+            .map_err(|e| io_err("reopening working copy for portal publish failed", e))?;
+        let mut portal_file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(archive)
+            .map_err(|e| {
+                if e.kind() == io::ErrorKind::PermissionDenied {
+                    ArchiveWriteError::PortalReadOnly {
+                        archive: archive.clone(),
+                        backup: ctx.portal_backup.clone().unwrap_or_default(),
+                    }
+                } else {
+                    io_err(
+                        format!(
+                            "opening portal path '{}' for write failed",
+                            archive.display()
+                        ),
+                        e,
+                    )
+                }
+            })?;
+        io::copy(&mut work_file, &mut portal_file)
+            .map_err(|e| io_err("copying working copy to portal path failed", e))?;
+        portal_file
+            .sync_all()
+            .map_err(|e| io_err("fsync of portal path failed", e))?;
+
+        let outcome = CommitOutcome {
+            bak_path: ctx.portal_backup.clone(),
+            bak_cleanup_warning: None,
+        };
+        Ok(outcome)
     }
-    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -1215,5 +1315,72 @@ mod tests {
         .expect_err("non-degradable link failure must propagate");
         assert_eq!(err.raw_os_error(), Some(libc::EACCES));
         assert!(!bak.exists(), "no .bak may be created on a hard failure");
+    }
+
+    #[test]
+    fn portal_path_detection() {
+        assert!(is_portal_path(Path::new("/run/user/1000/doc/abc/file.zip")));
+        assert!(!is_portal_path(Path::new("/home/user/file.zip")));
+        assert!(!is_portal_path(Path::new("/run/user/1000/file.zip")));
+    }
+
+    #[test]
+    fn portal_commit_path_uses_o_trunc_and_retains_backup() {
+        if !std::process::Command::new("zip")
+            .arg("-v")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+            || !std::process::Command::new("unzip")
+                .arg("-v")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        {
+            eprintln!("SKIP: zip or unzip not on PATH");
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("zip-src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"alpha\n").unwrap();
+        let archive = dir.path().join("test.zip");
+        let status = std::process::Command::new("zip")
+            .arg("-q")
+            .arg("-r")
+            .arg(&archive)
+            .arg(".")
+            .current_dir(&src)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let staging = dir.path().join("staging");
+        let mut ctx =
+            extract_member_for_edit(&archive, "a.txt", &staging, None).expect("extract failed");
+
+        // Force portal path by mutating the context directly.
+        let portal_bak = dir.path().join("portal.bak");
+        std::fs::copy(&archive, &portal_bak).unwrap();
+        ctx.atomic = false;
+        ctx.portal_backup = Some(portal_bak.clone());
+
+        std::fs::write(ctx.staged_path(), b"edited\n").unwrap();
+
+        let outcome =
+            commit_member_edit(&ctx, &CommitOptions::default()).expect("portal commit failed");
+
+        // O_TRUNC write should have updated the archive.
+        let output = std::process::Command::new("unzip")
+            .arg("-p")
+            .arg(&archive)
+            .arg("a.txt")
+            .output()
+            .unwrap();
+        assert_eq!(output.stdout, b"edited\n");
+
+        // Backup is always retained for portal commits.
+        assert_eq!(outcome.bak_path, Some(portal_bak.clone()));
+        assert!(portal_bak.exists());
     }
 }

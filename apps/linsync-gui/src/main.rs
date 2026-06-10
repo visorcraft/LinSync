@@ -5299,8 +5299,18 @@ fn archive_member_edit_bridge_response(
         }
     };
     let staging_root = paths.cache_dir.join("archive-edits").join(&token);
+    let portal_bak = paths
+        .state_dir
+        .join("archive-edit")
+        .join(&token)
+        .with_extension("bak");
 
-    let ctx = match linsync_core::extract_member_for_edit(&archive, &member, &staging_root) {
+    let ctx = match linsync_core::extract_member_for_edit(
+        &archive,
+        &member,
+        &staging_root,
+        Some(&portal_bak),
+    ) {
         Ok(ctx) => ctx,
         Err(e) => {
             let _ = fs::remove_dir_all(&staging_root);
@@ -5342,11 +5352,13 @@ fn archive_member_edit_bridge_response(
             );
         }
         let staged_path = ctx.staged_path().to_path_buf();
+        let atomic = ctx.atomic();
         state_guard.archive_edit_tokens.insert(token.clone(), ctx);
         let body = serde_json::json!({
             "ok": true,
             "token": token,
             "staged_path": staged_path,
+            "atomic": atomic,
         })
         .to_string();
         http_response(200, "OK", "application/json", body.into_bytes())
@@ -5376,9 +5388,13 @@ fn archive_member_commit_bridge_response(
 
     let options = linsync_core::CommitOptions { keep_backup };
     match linsync_core::commit_member_edit(&ctx, &options) {
-        Ok(outcome) => {
+        Ok(mut outcome) => {
             let _ = fs::remove_dir_all(ctx.staging_root());
             let mut response = serde_json::json!({"ok": true});
+            // Portal commits always retain the backup regardless of keep_backup.
+            if !ctx.atomic() {
+                outcome.bak_path = ctx.portal_backup().map(|p| p.to_path_buf());
+            }
             if let Some(bak) = &outcome.bak_path {
                 response["bak_path"] = serde_json::json!(bak);
             }
@@ -5396,6 +5412,9 @@ fn archive_member_commit_bridge_response(
             // Preserve the token and staging on RenameFailed so the user can
             // retry the atomic publish without re-extracting.
             let is_retryable = matches!(e, linsync_core::ArchiveWriteError::RenameFailed { .. });
+            // PortalReadOnly keeps staging so the edited bytes remain recoverable.
+            let preserve_staging =
+                is_retryable || matches!(e, linsync_core::ArchiveWriteError::PortalReadOnly { .. });
             if is_retryable {
                 let mut state_guard = match state.lock() {
                     Ok(g) => g,
@@ -5423,7 +5442,7 @@ fn archive_member_commit_bridge_response(
                 state_guard
                     .archive_edit_tokens
                     .insert(token.to_owned(), ctx.clone());
-            } else {
+            } else if !preserve_staging {
                 let _ = fs::remove_dir_all(ctx.staging_root());
             }
             let status = match e {
@@ -5437,16 +5456,23 @@ fn archive_member_commit_bridge_response(
                 | linsync_core::ArchiveWriteError::MemberNotFound { .. } => 404,
                 linsync_core::ArchiveWriteError::StaleArchive { .. }
                 | linsync_core::ArchiveWriteError::LockContention { .. } => 409,
+                linsync_core::ArchiveWriteError::PortalReadOnly { .. } => 500,
                 _ => 500,
             };
-            bridge_error_json(
-                status,
-                "Error",
-                serde_json::json!({
-                    "error": e.to_string(),
-                    "retryable": is_retryable,
-                }),
-            )
+            let error_body =
+                if let linsync_core::ArchiveWriteError::PortalReadOnly { backup, .. } = &e {
+                    serde_json::json!({
+                        "error": e.to_string(),
+                        "retryable": is_retryable,
+                        "backup_path": backup,
+                    })
+                } else {
+                    serde_json::json!({
+                        "error": e.to_string(),
+                        "retryable": is_retryable,
+                    })
+                };
+            bridge_error_json(status, "Error", error_body)
         }
     }
 }

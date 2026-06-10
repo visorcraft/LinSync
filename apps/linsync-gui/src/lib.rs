@@ -849,7 +849,7 @@ pub mod test_support {
         member: &str,
         staging_root: &std::path::Path,
     ) -> Result<(linsync_core::MemberEditContext, std::path::PathBuf), String> {
-        linsync_core::extract_member_for_edit(archive, member, staging_root)
+        linsync_core::extract_member_for_edit(archive, member, staging_root, None)
             .map(|ctx| {
                 let path = ctx.staged_path().to_path_buf();
                 (ctx, path)
