@@ -545,6 +545,8 @@ Kirigami.ScrollablePage {
             id: renameField
             Layout.fillWidth: true
             placeholderText: qsTr("Session title")
+            Accessible.name: qsTr("Session title")
+            Accessible.description: qsTr("New title for the selected recent session")
         }
     }
 }
