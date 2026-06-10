@@ -5265,20 +5265,33 @@ fn archive_member_edit_bridge_response(
         );
     }
 
-    let staging_root = paths.cache_dir.join("archive-edits").join(&member);
-    if staging_root.exists() {
-        let _ = fs::remove_dir_all(&staging_root);
+    // Reject a second concurrent edit for the same archive.
+    if let Ok(state_guard) = state.lock() {
+        let canonical = archive.canonicalize().unwrap_or_else(|_| archive.clone());
+        if state_guard
+            .archive_edit_tokens
+            .values()
+            .any(|ctx| ctx.archive() == canonical)
+        {
+            return bridge_error(
+                409,
+                "Conflict",
+                "an edit is already in progress for this archive",
+            );
+        }
     }
+
+    // Generate the token first so the staging dir is unpredictable and unique.
+    let token = match bridge_token() {
+        Ok(t) => t,
+        Err(e) => {
+            return bridge_error(500, "Internal Server Error", &e.to_string());
+        }
+    };
+    let staging_root = paths.cache_dir.join("archive-edits").join(&token);
 
     match linsync_core::extract_member_for_edit(&archive, &member, &staging_root) {
         Ok(ctx) => {
-            let token = match bridge_token() {
-                Ok(t) => t,
-                Err(e) => {
-                    let _ = fs::remove_dir_all(&staging_root);
-                    return bridge_error(500, "Internal Server Error", &e.to_string());
-                }
-            };
             let staged_path = ctx.staged_path().to_path_buf();
             if let Ok(mut state) = state.lock() {
                 state.archive_edit_tokens.insert(token.clone(), ctx);
@@ -5292,6 +5305,7 @@ fn archive_member_edit_bridge_response(
             http_response(200, "OK", "application/json", body.into_bytes())
         }
         Err(e) => {
+            let _ = fs::remove_dir_all(&staging_root);
             let status = match e {
                 linsync_core::ArchiveWriteError::InvalidMemberName { .. }
                 | linsync_core::ArchiveWriteError::MemberNameEncoding { .. }
@@ -5349,7 +5363,18 @@ fn archive_member_commit_bridge_response(
             )
         }
         Err(e) => {
-            let _ = fs::remove_dir_all(ctx.staging_root());
+            // Preserve the token and staging on RenameFailed so the user can
+            // retry the atomic publish without re-extracting.
+            let is_retryable = matches!(e, linsync_core::ArchiveWriteError::RenameFailed { .. });
+            if is_retryable {
+                if let Ok(mut state) = state.lock() {
+                    state
+                        .archive_edit_tokens
+                        .insert(token.to_owned(), ctx.clone());
+                }
+            } else {
+                let _ = fs::remove_dir_all(ctx.staging_root());
+            }
             let status = match e {
                 linsync_core::ArchiveWriteError::InvalidMemberName { .. }
                 | linsync_core::ArchiveWriteError::MemberNameEncoding { .. }
@@ -12791,5 +12816,113 @@ mod tests {
         assert!(resp.contains("HTTP/1.1 200"));
         let body = json_response_body(&resp);
         assert!(body["ok"].as_bool().unwrap());
+    }
+
+    // ── Phase 5: Archive member edit bridge endpoints ────────────────────────
+    fn make_test_zip(root: &Path, entries: &[(String, String)]) -> PathBuf {
+        let zip_path = root.join("test.zip");
+        for (name, content) in entries {
+            let path = root.join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, content).unwrap();
+        }
+        let mut cmd = Command::new("zip");
+        cmd.arg("-q").arg(&zip_path);
+        for (name, _) in entries {
+            cmd.arg(name);
+        }
+        cmd.current_dir(root);
+        let status = cmd.status().expect("zip command should be available");
+        assert!(status.success(), "zip command failed");
+        zip_path
+    }
+
+    #[test]
+    fn bridge_archive_member_edit_returns_token_and_staged_path() {
+        if !command_available("zip") || !command_available("unzip") {
+            return;
+        }
+        let root = test_file_root("archive-edit-bridge");
+        let zip = make_test_zip(&root, &[("file.txt".to_owned(), "hello".to_owned())]);
+        let paths = test_app_paths("archive-edit-bridge");
+        let state = test_bridge_state(None);
+        let zip_str = zip.to_string_lossy().to_string();
+        let resp = String::from_utf8(bridge_response(
+            &format!(
+                "GET /archive/member/edit?archive={}&member=file.txt HTTP/1.1\r\n",
+                urlencoding::encode(&zip_str)
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.contains("HTTP/1.1 200"), "expected 200, got: {resp}");
+        let body = json_response_body(&resp);
+        assert!(body["ok"].as_bool().unwrap_or(false));
+        assert!(body["token"].as_str().unwrap_or("").len() >= 16);
+        assert!(
+            PathBuf::from(body["staged_path"].as_str().unwrap_or("")).exists(),
+            "staged file should exist"
+        );
+    }
+
+    #[test]
+    fn bridge_archive_member_commit_rejects_invalid_token() {
+        let paths = test_app_paths("archive-edit-commit-invalid");
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            "GET /archive/member/commit?token=nosuchtoken HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.contains("HTTP/1.1 400"), "expected 400, got: {resp}");
+        let body = json_response_body(&resp);
+        assert!(body["error"].as_str().unwrap_or("").contains("invalid"));
+    }
+
+    #[test]
+    fn bridge_archive_member_edit_rejects_concurrent_edit_for_same_archive() {
+        if !command_available("zip") || !command_available("unzip") {
+            return;
+        }
+        let root = test_file_root("archive-edit-concurrent");
+        let zip = make_test_zip(
+            &root,
+            &[
+                ("a.txt".to_owned(), "a".to_owned()),
+                ("b.txt".to_owned(), "b".to_owned()),
+            ],
+        );
+        let paths = test_app_paths("archive-edit-concurrent");
+        let state = test_bridge_state(None);
+        let zip_str = zip.to_string_lossy().to_string();
+        let enc = urlencoding::encode(&zip_str);
+        let first = String::from_utf8(bridge_response(
+            &format!(
+                "GET /archive/member/edit?archive={}&member=a.txt HTTP/1.1\r\n",
+                enc
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(first.contains("HTTP/1.1 200"), "first edit should succeed");
+
+        let second = String::from_utf8(bridge_response(
+            &format!(
+                "GET /archive/member/edit?archive={}&member=b.txt HTTP/1.1\r\n",
+                enc
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(
+            second.contains("HTTP/1.1 409"),
+            "second edit for same archive should be rejected: {second}"
+        );
     }
 }

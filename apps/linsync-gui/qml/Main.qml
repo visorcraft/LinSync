@@ -1264,7 +1264,11 @@ Kirigami.ApplicationWindow {
             return
         }
         const archivePath = side === "left" ? root.leftPath : root.rightPath
-        if (!archivePath.endsWith(".zip")) {
+        const lower = archivePath.toLowerCase()
+        const isZip = lower.endsWith(".zip") || lower.endsWith(".jar")
+                     || lower.endsWith(".war") || lower.endsWith(".apk")
+                     || lower.endsWith(".ipa")
+        if (!isZip) {
             root.statusText = "Editing is only supported for zip archives"
             return
         }
@@ -1305,6 +1309,16 @@ Kirigami.ApplicationWindow {
                 root.requestCompare(false)
             } else {
                 root.statusText = payload && payload.error ? payload.error : "Failed to commit archive edit"
+                // The bridge has already removed/invalidated the token on a
+                // non-retryable failure. Clear local state so the user cannot
+                // retry with a stale token.
+                if (payload && payload.error && !String(payload.error).includes("retry")) {
+                    root.archiveEditInProgress = false
+                    root.archiveEditToken = ""
+                    root.archiveEditStagedPath = ""
+                    root.archiveEditMember = ""
+                    root.archiveEditSide = ""
+                }
             }
         })
     }

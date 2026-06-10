@@ -76,7 +76,7 @@ fn archive_member_edit_extracts_and_commit_repacks() {
 }
 
 #[test]
-fn archive_member_commit_on_unchanged_file_is_no_op() {
+fn archive_member_commit_on_unchanged_file_preserves_byte_identity() {
     let dir = TempDir::new().unwrap();
     let zip = make_zip(
         &dir,
