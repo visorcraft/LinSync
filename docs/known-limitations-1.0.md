@@ -84,6 +84,13 @@ The only remaining gaps are noted below.
   result view are served by `/folder/query`, which applies the user's
   active filters, sort, type filter, and path search server-side and
   pages the tree so it never loads in full.
+- **Permanent-delete confirmation** is implemented: when trash is
+  disabled or unavailable, `/folder/op/plan` reports
+  `permanent_delete`/`permanent_warning`, the folder operations dialog
+  shows the warning and gates its Apply button on an explicit
+  "Permanently delete" checkbox (reset on every open), and
+  `/folder/op/execute` rejects permanent deletes with 409 unless
+  `confirm_permanent=1` is sent.
 - The **Merge page** conflict navigation uses per-side numeric line
   ranges (`currentConflictStart`/`End` derive from each side's `*_lines`
   array), so conflict next/previous scrolls each pane to the correct

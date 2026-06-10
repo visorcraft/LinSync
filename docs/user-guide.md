@@ -519,9 +519,14 @@ If plugin execution fails, inspect the helper stderr and verify:
 - diagnostics go to stderr, not stdout
 - output stays within configured size limits
 
-If trashing is unavailable, LinSync's core delete planner requires
-explicit permanent-delete confirmation. The GUI for this workflow is
-not implemented yet.
+If trashing is unavailable (or disabled in Settings), folder-operation
+deletes become permanent. The plan dialog then shows a warning that the
+selected entries will be deleted permanently and cannot be recovered,
+and the Apply button stays disabled until the "Permanently delete —
+this cannot be undone" checkbox is ticked. The checkbox resets every
+time the dialog opens. The bridge enforces this server-side too:
+`/folder/op/execute` returns 409 for a permanent delete unless the
+request carries `confirm_permanent=1`.
 
 If Flatpak packaging is used later, filesystem access, external
 editors, and helper/plugin execution may require portals or extra

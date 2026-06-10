@@ -1233,6 +1233,8 @@ Kirigami.ApplicationWindow {
             folderOpDialog.summary = qsTr("%1 operation(s), %2 warning(s)")
                 .arg(opCount).arg(warnings.length)
             folderOpDialog.details = JSON.stringify(payload, null, 2)
+            folderOpDialog.permanentDelete = payload.permanent_delete === true
+            folderOpDialog.permanentWarning = String(payload.permanent_warning || "")
             folderOpDialog.open()
         })
     }
@@ -1242,6 +1244,8 @@ Kirigami.ApplicationWindow {
                + root.encodeEntries(entries)
         if (options && options.new_name)
             qs += "&new_name=" + encodeURIComponent(options.new_name)
+        if (options && options.confirm_permanent)
+            qs += "&confirm_permanent=1"
         bridgeGet(qs, function (ok, payload) {
             if (callback) callback(ok, payload)
         })
@@ -3136,8 +3140,13 @@ Kirigami.ApplicationWindow {
         id: folderOpDialog
         property string summary: ""
         property string details: ""
+        property bool permanentDelete: false
+        property string permanentWarning: ""
         modal: true
         title: qsTr("Run folder operation?")
+        // Permanent deletes must be re-confirmed for every plan: never
+        // carry a checked box over from a previous dialog invocation.
+        onOpened: permanentConfirmCheck.checked = false
         width: Math.min(root.width - 48, 520)
         height: Math.min(root.height - 80, 460)
         x: Math.round((root.width - width) / 2)
@@ -3155,6 +3164,31 @@ Kirigami.ApplicationWindow {
                 Layout.fillWidth: true
                 text: folderOpDialog.summary
                 opacity: 0.75
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+                visible: folderOpDialog.permanentDelete
+                Kirigami.Icon {
+                    source: "data-warning"
+                    color: root.activeNegativeText
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+                }
+                Controls.Label {
+                    Layout.fillWidth: true
+                    text: folderOpDialog.permanentWarning
+                    color: root.activeNegativeText
+                    wrapMode: Text.WordWrap
+                    Accessible.name: qsTr("Permanent delete warning")
+                }
+            }
+            AppCheckBox {
+                id: permanentConfirmCheck
+                Layout.fillWidth: true
+                visible: folderOpDialog.permanentDelete
+                text: qsTr("Permanently delete — this cannot be undone")
+                Accessible.name: qsTr("Confirm permanent delete")
             }
             Controls.ScrollView {
                 Layout.fillWidth: true
@@ -3175,9 +3209,13 @@ Kirigami.ApplicationWindow {
                 icon.name: "dialog-ok"
                 icon.color: root.activeText
                 text: qsTr("Apply")
+                enabled: !folderOpDialog.permanentDelete || permanentConfirmCheck.checked
+                Accessible.name: qsTr("Apply folder operation")
                 onClicked: {
+                    const opts = (folderOpDialog.permanentDelete && permanentConfirmCheck.checked)
+                        ? { confirm_permanent: true } : {}
                     folderOpDialog.close()
-                    root.executeFolderOp(root.pendingFolderOpKind, root.pendingFolderOpEntries, {}, function (ok, payload) {
+                    root.executeFolderOp(root.pendingFolderOpKind, root.pendingFolderOpEntries, opts, function (ok, payload) {
                         if (ok && payload) {
                             const summary = payload.summary || {}
                             root.statusText = qsTr("Folder op done: %1 succeeded / %2 failed of %3")
