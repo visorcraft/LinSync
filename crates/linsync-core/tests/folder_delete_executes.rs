@@ -4,19 +4,25 @@
 //! the path to remove in `op.source` (and leaves `target` = `None`), so every
 //! delete failed with "delete operation missing target" and nothing was ever
 //! deleted or trashed. No prior test executed a real delete.
+//!
+//! Also covers the permanent-delete confirmation gate: executing a plan with
+//! `use_trash_for_deletes = false` must fail unless the caller passes
+//! `PermanentDeleteConfirmation::Confirmed`.
 
 use std::fs;
+use std::path::PathBuf;
 
 use linsync_core::{
-    FolderCompareOptions, FolderOperationKind, FolderOperationStatus, compare_folders,
-    execute_folder_operation_plan, plan_folder_operation,
+    FolderCompareOptions, FolderOperationKind, FolderOperationPlan, FolderOperationStatus,
+    PermanentDeleteConfirmation, compare_folders, execute_folder_operation_plan,
+    plan_folder_operation,
 };
 
-#[test]
-fn planned_delete_left_removes_the_file() {
-    let tmp = tempfile::tempdir().unwrap();
-    let left = tmp.path().join("left");
-    let right = tmp.path().join("right");
+/// Builds left/right trees where `left/gone.txt` is the only deletable entry,
+/// and returns the planned `DeleteLeft` operation plus the victim's path.
+fn plan_single_delete(tmp: &std::path::Path) -> (FolderOperationPlan, PathBuf) {
+    let left = tmp.join("left");
+    let right = tmp.join("right");
     fs::create_dir_all(&left).unwrap();
     fs::create_dir_all(&right).unwrap();
     // `gone.txt` exists only on the left, so it is a deletable entry.
@@ -27,7 +33,7 @@ fn planned_delete_left_removes_the_file() {
     let plan = plan_folder_operation(
         &result,
         FolderOperationKind::DeleteLeft,
-        &[std::path::PathBuf::from("gone.txt")],
+        &[PathBuf::from("gone.txt")],
     );
     assert_eq!(
         plan.operations.len(),
@@ -35,9 +41,21 @@ fn planned_delete_left_removes_the_file() {
         "expected exactly one delete operation, got {:?}",
         plan.operations
     );
+    (plan, victim)
+}
+
+#[test]
+fn planned_delete_left_removes_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (plan, victim) = plan_single_delete(tmp.path());
 
     // use_trash = false → permanent delete, so the test needs no XDG trash dirs.
-    let outcomes = execute_folder_operation_plan(&plan, tmp.path(), false);
+    let outcomes = execute_folder_operation_plan(
+        &plan,
+        tmp.path(),
+        false,
+        PermanentDeleteConfirmation::Confirmed,
+    );
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
         outcomes[0].status,
@@ -47,4 +65,93 @@ fn planned_delete_left_removes_the_file() {
         outcomes[0].status
     );
     assert!(!victim.exists(), "the file should have been deleted");
+}
+
+#[test]
+fn permanent_folder_delete_requires_confirmation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (plan, victim) = plan_single_delete(tmp.path());
+    assert!(
+        plan.contains_deletes,
+        "a delete plan must advertise contains_deletes so callers know to confirm"
+    );
+
+    let outcomes = execute_folder_operation_plan(
+        &plan,
+        tmp.path(),
+        false,
+        PermanentDeleteConfirmation::NotConfirmed,
+    );
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0].status,
+        FolderOperationStatus::Failed,
+        "unconfirmed permanent delete must fail, got: {} ({:?})",
+        outcomes[0].message,
+        outcomes[0].status
+    );
+    assert!(
+        outcomes[0].message.contains("requires confirmation"),
+        "message should explain the confirmation gate, got: {}",
+        outcomes[0].message
+    );
+    assert!(
+        victim.exists(),
+        "nothing may be deleted without confirmation"
+    );
+}
+
+#[test]
+fn permanent_folder_delete_executes_when_confirmed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (plan, victim) = plan_single_delete(tmp.path());
+
+    let outcomes = execute_folder_operation_plan(
+        &plan,
+        tmp.path(),
+        false,
+        PermanentDeleteConfirmation::Confirmed,
+    );
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0].status,
+        FolderOperationStatus::Succeeded,
+        "confirmed permanent delete should succeed, got: {} ({:?})",
+        outcomes[0].message,
+        outcomes[0].status
+    );
+    assert!(!victim.exists(), "the file should have been deleted");
+}
+
+#[test]
+fn trash_delete_needs_no_confirmation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (plan, victim) = plan_single_delete(tmp.path());
+    let data_home = tmp.path().join("data");
+    fs::create_dir_all(&data_home).unwrap();
+
+    // use_trash = true is recoverable, so the confirmation gate does not apply.
+    let outcomes = execute_folder_operation_plan(
+        &plan,
+        &data_home,
+        true,
+        PermanentDeleteConfirmation::NotConfirmed,
+    );
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0].status,
+        FolderOperationStatus::Succeeded,
+        "trash delete should succeed without confirmation, got: {} ({:?})",
+        outcomes[0].message,
+        outcomes[0].status
+    );
+    assert!(!victim.exists(), "the file should have moved to the trash");
+    assert!(
+        data_home
+            .join("Trash")
+            .join("files")
+            .join("gone.txt")
+            .exists(),
+        "the file should be recoverable from the trash"
+    );
 }

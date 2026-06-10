@@ -308,6 +308,9 @@ pub struct FolderOperationPlan {
     pub operations: Vec<FolderOperation>,
     pub counts: FolderOperationCounts,
     pub warnings: Vec<FolderOperationWarning>,
+    /// True when executing this plan with use_trash=false would permanently
+    /// destroy data — the GUI/CLI must collect explicit confirmation first.
+    pub contains_deletes: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -749,10 +752,17 @@ pub fn plan_folder_operation(
     }
 
     let counts = summarize_operation_plan(&operations, &warnings);
+    let contains_deletes = operations.iter().any(|op| {
+        matches!(
+            op.kind,
+            FolderOperationKind::DeleteLeft | FolderOperationKind::DeleteRight
+        )
+    });
     FolderOperationPlan {
         operations,
         counts,
         warnings,
+        contains_deletes,
     }
 }
 
@@ -1253,10 +1263,11 @@ pub fn execute_folder_operation_plan(
     plan: &FolderOperationPlan,
     data_home: &Path,
     use_trash_for_deletes: bool,
+    confirmation: crate::trash::PermanentDeleteConfirmation,
 ) -> Vec<FolderOperationOutcome> {
     plan.operations
         .iter()
-        .map(|op| execute_folder_operation(op, data_home, use_trash_for_deletes))
+        .map(|op| execute_folder_operation(op, data_home, use_trash_for_deletes, confirmation))
         .collect()
 }
 
@@ -1264,13 +1275,14 @@ fn execute_folder_operation(
     op: &FolderOperation,
     data_home: &Path,
     use_trash_for_deletes: bool,
+    confirmation: crate::trash::PermanentDeleteConfirmation,
 ) -> FolderOperationOutcome {
     let status_message = match &op.kind {
         FolderOperationKind::CopyLeftToRight | FolderOperationKind::CopyRightToLeft => {
             execute_copy(op)
         }
         FolderOperationKind::DeleteLeft | FolderOperationKind::DeleteRight => {
-            execute_delete(op, data_home, use_trash_for_deletes)
+            execute_delete(op, data_home, use_trash_for_deletes, confirmation)
         }
         FolderOperationKind::RenameLeft { .. } | FolderOperationKind::RenameRight { .. } => {
             execute_rename(op)
@@ -1388,6 +1400,7 @@ fn execute_delete(
     op: &FolderOperation,
     data_home: &Path,
     use_trash: bool,
+    confirmation: crate::trash::PermanentDeleteConfirmation,
 ) -> Result<String, String> {
     // Delete operations carry the path to remove in `source` (see
     // `plan_delete_side`); `target` is always `None` for a delete.
@@ -1395,6 +1408,14 @@ fn execute_delete(
         .source
         .as_ref()
         .ok_or_else(|| "delete operation missing source path".to_owned())?;
+    if !use_trash && confirmation != crate::trash::PermanentDeleteConfirmation::Confirmed {
+        // Permanent deletes are unrecoverable; refuse before touching the
+        // filesystem unless the caller collected explicit confirmation.
+        return Err(format!(
+            "permanent delete of '{}' requires confirmation",
+            target.display()
+        ));
+    }
     if use_trash {
         crate::trash::move_to_freedesktop_trash(target, data_home)
             .map(|trashed| format!("moved to trash at '{}'", trashed.trash_file_path.display()))
@@ -3108,7 +3129,13 @@ mod tests {
         );
         assert_eq!(plan.operations.len(), 1, "symlink entry should be copyable");
 
-        let outcomes = execute_folder_operation_plan(&plan, fixture.path.as_path(), false);
+        // A copy never consults the permanent-delete confirmation.
+        let outcomes = execute_folder_operation_plan(
+            &plan,
+            fixture.path.as_path(),
+            false,
+            crate::trash::PermanentDeleteConfirmation::NotConfirmed,
+        );
         assert_eq!(
             outcomes[0].status,
             FolderOperationStatus::Succeeded,
@@ -3182,8 +3209,14 @@ mod tests {
                 "{kind:?} should emit an InvalidSelection warning; got {:?}",
                 plan.warnings
             );
-            // Even if executed, the external file is untouched.
-            let _ = execute_folder_operation_plan(&plan, fixture.path.as_path(), false);
+            // Even if executed (with full confirmation), the external file is
+            // untouched because the plan itself refused the operation.
+            let _ = execute_folder_operation_plan(
+                &plan,
+                fixture.path.as_path(),
+                false,
+                crate::trash::PermanentDeleteConfirmation::Confirmed,
+            );
         }
         assert!(victim.exists(), "victim file outside the root must survive");
         assert_eq!(fs::read_to_string(&victim).unwrap(), "do not touch");
@@ -3811,6 +3844,7 @@ mod tests {
             operations: Vec::new(),
             counts: FolderOperationCounts::default(),
             warnings: Vec::new(),
+            contains_deletes: false,
         };
         let summary = plan.risk_summary();
         assert_eq!(summary.total_operations, 0);
@@ -3845,6 +3879,7 @@ mod tests {
                 kind: FolderOperationWarningKind::OverwriteExisting,
                 message: "target exists".to_owned(),
             }],
+            contains_deletes: false,
         };
         let summary = plan.risk_summary();
         assert_eq!(summary.total_operations, 2);
@@ -3882,6 +3917,7 @@ mod tests {
             ],
             counts: FolderOperationCounts::default(),
             warnings: Vec::new(),
+            contains_deletes: true,
         };
         let summary = plan.risk_summary();
         assert_eq!(summary.total_operations, 3);

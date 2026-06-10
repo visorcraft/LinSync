@@ -6565,7 +6565,15 @@ fn folder_op_execute_bridge_response(
         .map(|settings| settings.delete_preference == DeletePreference::MoveToTrash)
         .unwrap_or(true);
 
-    let outcomes = execute_folder_operation_plan(&plan, &paths.data_dir, use_trash);
+    // TODO(Task 2.2): parse confirm_permanent from the request instead of
+    // hardcoding Confirmed (which preserves the bridge's historical behavior
+    // of executing permanent deletes without an explicit confirmation step).
+    let outcomes = execute_folder_operation_plan(
+        &plan,
+        &paths.data_dir,
+        use_trash,
+        linsync_core::PermanentDeleteConfirmation::Confirmed,
+    );
     let body = folder_outcomes_to_json(&plan, &outcomes).to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
 }
