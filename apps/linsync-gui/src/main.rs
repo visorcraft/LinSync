@@ -5404,6 +5404,22 @@ fn archive_member_commit_bridge_response(
                         return bridge_error(500, "Internal Server Error", "state lock poisoned");
                     }
                 };
+                // Another edit may have started while we were committing
+                // without the state lock. Reject the race: keep the other
+                // token and clean up our staging.
+                let canonical = ctx.archive();
+                if state_guard
+                    .archive_edit_tokens
+                    .values()
+                    .any(|c| c.archive() == canonical)
+                {
+                    let _ = fs::remove_dir_all(ctx.staging_root());
+                    return bridge_error(
+                        409,
+                        "Conflict",
+                        "another edit was started for this archive during commit; retry aborted",
+                    );
+                }
                 state_guard
                     .archive_edit_tokens
                     .insert(token.to_owned(), ctx.clone());

@@ -596,11 +596,18 @@ fn spawn_confined(cmd: Command, grants: &SandboxGrants) -> io::Result<std::proce
 }
 
 #[cfg(not(feature = "sandbox"))]
-fn spawn_confined(mut cmd: Command, _grants: &SandboxGrants) -> io::Result<std::process::Child> {
-    cmd.spawn()
+fn spawn_confined(_cmd: Command, _grants: &SandboxGrants) -> io::Result<std::process::Child> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "archive write requires the 'sandbox' feature to confine helper processes",
+    ))
 }
 
+/// Default wall-clock timeout for sandboxed archive helpers.
+const HELPER_TIMEOUT_MS: u64 = 60_000;
+
 /// Run a helper under the sandbox grants, capturing bounded stdout/stderr.
+/// Kills the child if it does not finish within [`HELPER_TIMEOUT_MS`].
 fn run_helper(
     mut cmd: Command,
     grants: &SandboxGrants,
@@ -609,17 +616,49 @@ fn run_helper(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child =
+    let mut child =
         spawn_confined(cmd, grants).map_err(|e| io_err(format!("spawning {what} failed"), e))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|e| io_err(format!("waiting for {what} failed"), e))?;
-    let mut stderr = output.stderr;
-    stderr.truncate(STDERR_CAP);
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_millis(HELPER_TIMEOUT_MS);
+    let output = loop {
+        match child
+            .try_wait()
+            .map_err(|e| io_err(format!("waiting for {what} failed"), e))?
+        {
+            Some(status) => {
+                let mut stdout = Vec::new();
+                if let Some(mut r) = child.stdout.take() {
+                    let _ = io::copy(&mut r, &mut stdout);
+                }
+                let mut stderr = Vec::new();
+                if let Some(mut r) = child.stderr.take() {
+                    let _ = io::copy(&mut r, &mut stderr);
+                }
+                stderr.truncate(STDERR_CAP);
+                break std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                };
+            }
+            None => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(io_err(
+                        format!("{what} exceeded {HELPER_TIMEOUT_MS}s timeout"),
+                        io::Error::new(io::ErrorKind::TimedOut, "helper timeout"),
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    };
     Ok((
         output.status.success(),
         output.stdout,
-        String::from_utf8_lossy(&stderr).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
     ))
 }
 
@@ -1044,17 +1083,21 @@ pub fn commit_member_edit(
     {
         let mut work_file = File::open(&work_copy)
             .map_err(|e| io_err("reopening working copy for publish failed", e))?;
-        let mut tmp_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)
-            .map_err(|e| {
-                io_err(
-                    format!("creating working copy '{}' failed", tmp.display()),
-                    e,
-                )
-            })?;
+        let mut tmp_opts = OpenOptions::new();
+        tmp_opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // O_NOFOLLOW: if an attacker planted a symlink at the predictable
+            // tmp path, refuse to follow it and truncate the target.
+            tmp_opts.custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut tmp_file = tmp_opts.open(&tmp).map_err(|e| {
+            io_err(
+                format!("creating working copy '{}' failed", tmp.display()),
+                e,
+            )
+        })?;
         let copy_steps = io::copy(&mut work_file, &mut tmp_file).and_then(|_| {
             tmp_file.set_permissions(fs::Permissions::from_mode(orig_meta.mode() & 0o7777))?;
             // Best-effort fchown: EPERM for foreign-owned files is logged,
