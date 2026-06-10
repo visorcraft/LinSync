@@ -340,7 +340,7 @@ not from the sidebar.
 | 2. Tab: path pickers and Start (text-named controls) | base/left/right fields and start button reachable and named | | |
 | 3. Tab: conflict navigation | "Previous conflict" (~219), "Next conflict" (~237) | | |
 | 4. Tab into the output editor | "Merged output" text area (~466) | | |
-| 5. Start a merge on conflicting fixtures | Live announce: "N conflicts remaining" / saved-path message (status values ~100–179; announce handler ~47–50). Flat-review of the status label reads the same text ("Status: …", ~493–502) | | |
+| 5. Start a merge on conflicting fixtures | Live announce: "N conflict(s) remaining" (exact spoken text, MergePage.qml:128) / saved-path message (status values ~99–181; announce handler ~47–50). Flat-review of the status label reads the same text ("Status: …", ~493–502) | | |
 
 ---
 
