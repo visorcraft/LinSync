@@ -307,6 +307,26 @@ the permission.
 3. **Cookie lifetime:** current design is per-operation in-memory. Per-pair
    ephemeral profile with an explicit cookie-file opt-in is out of scope for
    Phase 9.
-4. **Flatpak network scope:** `--share=network` is broad; a future improvement
-   can use `org.freedesktop.portal.NetworkMonitor` to restrict outbound access
-   to the two target domains only.
+
+### Resolved: Flatpak network scope
+
+An earlier draft of this list suggested using
+`org.freedesktop.portal.NetworkMonitor` to restrict outbound access to the two
+target domains only. Evaluation showed that is not possible: the NetworkMonitor
+portal is connectivity *signaling* only (online/offline, metered) — it cannot
+filter or restrict egress — and Flatpak has no per-domain firewall mechanism at
+any layer.
+
+**Decision:** keep `--share=network` with its scope documented in the manifest
+(`packaging/flatpak/com.visorcraft.LinSync.yml`): the permission exists solely
+for webpage compare — the `web-fetch` plugin (html / extracted-text /
+resource-tree modes) and the Qt WebEngine (Chromium) renderer (rendered /
+screenshot modes). Distributors who strip it lose exactly those features;
+everything else works offline.
+
+Genuine per-domain restriction would require routing all webpage traffic
+through an in-app HTTP(S) proxy that filters by host. That is declared a
+**permanent non-goal** — the complexity and attack surface of a bundled proxy
+outweigh the benefit, given the runtime safeguards already in place: the
+opt-in, explicit-consent flow and isolated profile described under
+"Privacy architecture" above.

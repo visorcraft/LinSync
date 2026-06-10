@@ -49,9 +49,19 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri
-  # Network for webpage compare: fetching page content (html/text/tree modes)
-  # and the QtWebEngine renderer (rendered/screenshot modes, provided by the
-  # org.kde.Platform runtime). Gated in-app by an explicit consent dialog.
+  # Network — needed ONLY by webpage compare:
+  #   * the web-fetch plugin fetches page content for the html / extracted-text
+  #     / resource-tree modes;
+  #   * the Qt WebEngine (Chromium) renderer, provided by the org.kde.Platform
+  #     runtime, loads pages for the rendered / screenshot modes.
+  # No other LinSync feature performs network I/O. Distributors who strip
+  # this permission lose exactly the webpage compare feature; text, folder,
+  # table, hex, image, document, merge, sessions, and plugins all keep
+  # working offline. Per-domain restriction is impossible at the Flatpak
+  # layer (the NetworkMonitor portal only reports connectivity, it cannot
+  # filter egress) — see docs/webpage-compare-implementation.md,
+  # "Resolved: Flatpak network scope". Usage is gated in-app by an explicit
+  # consent dialog naming both URLs before any request.
   - --share=network
   # Filesystem access. LinSync compares user-visible paths so we ask
   # for $HOME + removable media; everything else is portal-mediated.

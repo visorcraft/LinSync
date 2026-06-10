@@ -120,6 +120,11 @@ The only remaining gaps are noted below.
   enable it; the Debian `.deb` does not (it builds the external QML host
   against Debian's stable Qt). Source/text/resource-tree webpage compare
   works without the feature.
+- **Flatpak `--share=network`** is used only by webpage compare; Flatpak
+  cannot restrict egress per-domain, and the in-app proxy that real
+  restriction would require is a permanent non-goal (see
+  `docs/webpage-compare-implementation.md`, "Resolved: Flatpak network
+  scope"). Stripping the permission disables only webpage compare.
 - **Document compare** requires Tesseract OCR, Poppler utilities, and
   LibreOffice on the host (used by helper plugins under
   `packaging/plugins/`). Installation is best-effort: distro repos
