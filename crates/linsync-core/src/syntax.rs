@@ -63,6 +63,14 @@ pub(crate) fn syntax_mode_from_path(path: &Path) -> Option<TextSyntaxMode> {
         "sh" | "bash" | "zsh" | "fish" => Some(TextSyntaxMode::Shell),
         "toml" => Some(TextSyntaxMode::Toml),
         "yaml" | "yml" => Some(TextSyntaxMode::Yaml),
+        "c" | "h" => Some(TextSyntaxMode::C),
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" => Some(TextSyntaxMode::Cpp),
+        "py" => Some(TextSyntaxMode::Python),
+        "js" | "mjs" | "jsx" => Some(TextSyntaxMode::JavaScript),
+        "ts" | "tsx" => Some(TextSyntaxMode::TypeScript),
+        "go" => Some(TextSyntaxMode::Go),
+        "java" => Some(TextSyntaxMode::Java),
+        "css" => Some(TextSyntaxMode::Css),
         _ => None,
     }
 }
@@ -312,6 +320,71 @@ fn span(start: usize, end: usize, class: &str) -> SyntaxSpan {
     }
 }
 
+#[cfg(test)]
+mod path_mode_tests {
+    use super::*;
+
+    #[track_caller]
+    fn assert_ext(name: &str, expected: Option<TextSyntaxMode>) {
+        assert_eq!(syntax_mode_from_path(Path::new(name)), expected, "{name}");
+    }
+
+    #[test]
+    fn maps_original_extensions() {
+        assert_ext("a.rs", Some(TextSyntaxMode::Rust));
+        assert_ext("a.json", Some(TextSyntaxMode::Json));
+        assert_ext("a.html", Some(TextSyntaxMode::Html));
+        assert_ext("a.md", Some(TextSyntaxMode::Markdown));
+        assert_ext("a.sh", Some(TextSyntaxMode::Shell));
+        assert_ext("a.toml", Some(TextSyntaxMode::Toml));
+        assert_ext("a.yml", Some(TextSyntaxMode::Yaml));
+    }
+
+    #[test]
+    fn maps_python() {
+        assert_ext("a.py", Some(TextSyntaxMode::Python));
+    }
+
+    #[test]
+    fn maps_c_family() {
+        assert_ext("a.c", Some(TextSyntaxMode::C));
+        assert_ext("a.h", Some(TextSyntaxMode::C));
+        assert_ext("a.cc", Some(TextSyntaxMode::Cpp));
+        assert_ext("a.cpp", Some(TextSyntaxMode::Cpp));
+        assert_ext("a.cxx", Some(TextSyntaxMode::Cpp));
+        assert_ext("a.hpp", Some(TextSyntaxMode::Cpp));
+        assert_ext("a.hh", Some(TextSyntaxMode::Cpp));
+    }
+
+    #[test]
+    fn maps_javascript_and_typescript() {
+        assert_ext("a.js", Some(TextSyntaxMode::JavaScript));
+        assert_ext("a.mjs", Some(TextSyntaxMode::JavaScript));
+        assert_ext("a.jsx", Some(TextSyntaxMode::JavaScript));
+        assert_ext("a.ts", Some(TextSyntaxMode::TypeScript));
+        assert_ext("a.tsx", Some(TextSyntaxMode::TypeScript));
+    }
+
+    #[test]
+    fn maps_go_java_css() {
+        assert_ext("a.go", Some(TextSyntaxMode::Go));
+        assert_ext("a.java", Some(TextSyntaxMode::Java));
+        assert_ext("a.css", Some(TextSyntaxMode::Css));
+    }
+
+    #[test]
+    fn extension_match_is_case_insensitive() {
+        assert_ext("A.PY", Some(TextSyntaxMode::Python));
+        assert_ext("A.CPP", Some(TextSyntaxMode::Cpp));
+    }
+
+    #[test]
+    fn unknown_or_missing_extension_is_none() {
+        assert_ext("a.unknownext", None);
+        assert_ext("noext", None);
+    }
+}
+
 /// syntect-backed span computation. Stateless per line by design: callers
 /// highlight one row at a time, so multi-line constructs (block comments, raw
 /// strings) degrade gracefully per line. Returns `None` when syntect cannot
@@ -403,6 +476,9 @@ mod rich {
     }
 
     pub(super) fn spans(text: &str, mode: TextSyntaxMode) -> Option<Vec<SyntaxSpan>> {
+        // Oversized lines return Some(empty) rather than None: this
+        // deliberately suppresses the hand-rolled fallback lexers too, so a
+        // pathological line gets no highlighting at all instead of a slow scan.
         if text.len() > MAX_LINE_BYTES {
             return Some(Vec::new());
         }
@@ -410,6 +486,8 @@ mod rich {
         let set = syntax_set();
         let syntax = set.find_syntax_by_token(token)?;
         let mut state = ParseState::new(syntax);
+        // The "newlines" grammar set requires every parsed line to end with a
+        // trailing '\n', so append one when the caller's line lacks it.
         let line = if text.ends_with('\n') {
             text.to_owned()
         } else {
@@ -448,6 +526,9 @@ mod rich {
         };
         let mut cursor = 0usize;
         for (offset, op) in &ops {
+            // Ops may reference the synthetic newline byte appended above;
+            // the clamp keeps byte_to_char indexing in bounds and the newline
+            // out of emitted spans.
             let end = (*offset).min(text.len());
             if end > cursor {
                 emit(cursor, end, &stack);
@@ -537,6 +618,36 @@ mod syntect_tests {
                 assert!(
                     rich::syntax_set().find_syntax_by_token(token).is_some(),
                     "token {token:?} for {mode:?} does not resolve"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn syntect_spans_uphold_structural_invariants() {
+        // Representative lines: a trailing comment (exercises the synthetic
+        // newline clamp) and a multi-keyword run (exercises adjacent-span
+        // merging), plus a mixed JSON line.
+        let cases = [
+            ("let x = 1; // trailing comment", TextSyntaxMode::Rust),
+            ("pub unsafe fn f() {}", TextSyntaxMode::Rust),
+            ("{\"k\": [true, 2]}", TextSyntaxMode::Json),
+        ];
+        for (line, mode) in cases {
+            let spans = syntax_spans(line, mode);
+            let char_count = line.chars().count();
+            for s in &spans {
+                assert!(s.start < s.end, "{line:?}: empty/inverted span {s:?}");
+                assert!(s.end <= char_count, "{line:?}: span past end {s:?}");
+            }
+            for pair in spans.windows(2) {
+                assert!(
+                    pair[0].start <= pair[1].start,
+                    "{line:?}: spans not sorted: {pair:?}"
+                );
+                assert!(
+                    !(pair[0].end == pair[1].start && pair[0].class == pair[1].class),
+                    "{line:?}: unmerged contiguous same-class spans: {pair:?}"
                 );
             }
         }

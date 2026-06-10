@@ -267,3 +267,47 @@ fn moved_block_detection_smoke() {
     assert_eq!(json["moved_blocks"], 2);
     assert!(!json["equal"].as_bool().unwrap());
 }
+
+/// Auto syntax detection end-to-end: comparing `.py` files with the syntax
+/// mode left at `Auto` must resolve to Python via the file extension and
+/// attach keyword spans on the view rows (the path the GUI renders from).
+#[cfg(feature = "syntax-rich")]
+#[test]
+fn auto_syntax_mode_detects_python_and_attaches_keyword_spans()
+-> Result<(), Box<dyn std::error::Error>> {
+    use linsync_core::TextSyntaxMode;
+
+    let dir = tempfile::tempdir()?;
+    let left = dir.path().join("left.py");
+    let right = dir.path().join("right.py");
+    fs::write(&left, "def f():\n    return 1\n")?;
+    fs::write(&right, "def f():\n    return 2\n")?;
+
+    let options = TextCompareOptions {
+        syntax_mode: TextSyntaxMode::Auto,
+        ..TextCompareOptions::default()
+    };
+    let result = compare_text_files(&left, &right, &options)?;
+
+    let rows = result.view_rows(&options);
+    assert!(
+        rows.iter().any(|row| row
+            .left_syntax
+            .iter()
+            .chain(row.right_syntax.iter())
+            .any(|span| span.class == "keyword")),
+        "expected keyword spans from auto-detected Python on view rows"
+    );
+
+    // Windowed path must resolve Auto identically.
+    let page = result.view_rows_window(&options, 0, 10);
+    assert!(
+        page.rows.iter().any(|row| row
+            .left_syntax
+            .iter()
+            .chain(row.right_syntax.iter())
+            .any(|span| span.class == "keyword")),
+        "expected keyword spans from auto-detected Python on windowed rows"
+    );
+    Ok(())
+}
