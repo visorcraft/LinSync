@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.9.5
+Version:        1.10.0
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -122,6 +122,13 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Wed Jun 10 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.10.0-1
+- Rich syntax highlighting for text diff (syntect-backed, 13 languages).
+- Permanent-delete confirmation in folder operations GUI.
+- Webpage compare hardening: Chromium headless fallback renderer.
+- Writable zip archive-member editing with sandboxed repack, TOCTOU
+  fingerprinting, and Flatpak portal-path degradation.
+
 * Wed Jun 03 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.9.5-1
 - Align Image, Webpage, and Document Compare top controls with the main Compare page toolbar style.
 - Match the Sessions page header layout to the Plugins page header.

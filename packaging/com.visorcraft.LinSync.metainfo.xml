@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.10.0" date="2026-06-10">
+      <description>
+        <p>Add rich syntax highlighting for text diff (13 languages via syntect). Add permanent-delete confirmation dialog for folder operations. Add Chromium headless fallback renderer for webpage compare. Add writable zip archive-member editing with sandboxed repack, TOCTOU fingerprinting, and Flatpak portal-path degradation.</p>
+      </description>
+    </release>
     <release version="1.9.5" date="2026-06-03">
       <description>
         <p>Align the Image Compare, Webpage Compare, and Document Compare pages with the main Compare page's flat top-toolbar layout, removing inset fieldset styling from their path/URL and mode controls. The Document Compare page now exposes the same clear Left/Right document picker row as the other compare modes. The Sessions page header also now matches the Plugins page, with status text grouped under the title and actions aligned on the right.</p>

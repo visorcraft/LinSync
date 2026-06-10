@@ -1,3 +1,13 @@
+linsync (1.10.0-1) unstable; urgency=medium
+
+  * Rich syntax highlighting for text diff (syntect-backed, 13 languages).
+  * Permanent-delete confirmation in folder operations GUI.
+  * Webpage compare hardening: Chromium headless fallback renderer.
+  * Writable zip archive-member editing with sandboxed repack, TOCTOU
+    fingerprinting, and Flatpak portal-path degradation.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 10 Jun 2026 22:33:00 -0500
+
 linsync (1.9.5-1) unstable; urgency=medium
 
   * Align the specialized compare pages with the main Compare page's top-bar

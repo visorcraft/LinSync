@@ -10,7 +10,7 @@ import org.kde.kirigami as Kirigami
 Kirigami.ScrollablePage {
     id: page
 
-    property string appVersion: "1.9.5"
+    property string appVersion: "1.10.0"
 
     signal navigateRequested(int section)
     signal creditsRequested()
