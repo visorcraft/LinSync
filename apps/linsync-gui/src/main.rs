@@ -4987,9 +4987,19 @@ fn folder_query_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
 
 /// Report compile-time capabilities so the QML can hide modes the binary can't
 /// serve (e.g. webpage rendered/screenshot, which need the `web-engine` build).
+///
+/// `web_renderer` adds the runtime dimension: which backend rendered/screenshot
+/// would actually use on this host — `"qml"` (Qt WebEngine), `"chromium"`
+/// (headless Chromium fallback), or `"none"` (web-engine build but no usable
+/// renderer binary, or a non-web-engine build).
 fn capabilities_bridge_response() -> Vec<u8> {
+    #[cfg(feature = "web-engine")]
+    let web_renderer = linsync_core::active_renderer_kind();
+    #[cfg(not(feature = "web-engine"))]
+    let web_renderer = "none";
     let body = serde_json::json!({
         "web_engine": cfg!(feature = "web-engine"),
+        "web_renderer": web_renderer,
     })
     .to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
@@ -7849,6 +7859,40 @@ mod tests {
     }
 
     #[test]
+    fn webpage_qml_surfaces_renderer_backend() {
+        let page_file =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/WebpageComparePage.qml");
+        let page =
+            fs::read_to_string(&page_file).expect("WebpageComparePage.qml should be readable");
+        // Rendered/screenshot are additionally gated on a usable runtime
+        // renderer ("none" hides them and shows the unavailable hint).
+        assert!(
+            page.contains("root.webRenderer !== \"none\""),
+            "mode combo must hide rendered/screenshot when web_renderer is none"
+        );
+        assert!(
+            page.contains("root.webRenderer === \"none\""),
+            "the renderer-unavailable hint must show only when web_renderer is none"
+        );
+        // The Chromium fallback is disclosed with a small tag.
+        assert!(
+            page.contains("root.webRenderer === \"chromium\""),
+            "the via-Chromium tag must show only for the chromium backend"
+        );
+        assert!(
+            page.contains("qsTr(\"via Chromium\")"),
+            "the chromium backend tag text must be present"
+        );
+        // Main.qml feeds the property from /capabilities.
+        let main_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
+        let main = fs::read_to_string(&main_file).expect("Main.qml should be readable");
+        assert!(
+            main.contains("payload.web_renderer"),
+            "Main.qml must wire web_renderer from /capabilities into the page"
+        );
+    }
+
+    #[test]
     fn source_tree_qml_keeps_folder_table_on_entry_model() {
         let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
         let qml = fs::read_to_string(&source_file).expect("Main.qml should be readable");
@@ -8267,6 +8311,33 @@ mod tests {
             body["web_engine"],
             serde_json::json!(cfg!(feature = "web-engine"))
         );
+    }
+
+    #[test]
+    fn capabilities_reports_web_renderer_kind() {
+        let paths = test_app_paths("capabilities-renderer");
+        let state = test_bridge_state(None);
+        let body = json_response_body(
+            &String::from_utf8(bridge_response(
+                "GET /capabilities HTTP/1.1\r\n",
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        let kind = body["web_renderer"]
+            .as_str()
+            .expect("capabilities must report a web_renderer string");
+        // The value is host-dependent (which renderer binaries exist on PATH),
+        // so assert membership rather than a fixed value.
+        assert!(
+            ["qml", "chromium", "none"].contains(&kind),
+            "web_renderer must be qml | chromium | none, got: {kind}"
+        );
+        // A build without the web-engine feature can never render.
+        if !cfg!(feature = "web-engine") {
+            assert_eq!(kind, "none", "non-web-engine build must report none");
+        }
     }
 
     #[test]

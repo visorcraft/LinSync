@@ -96,6 +96,12 @@ impl WebpageCompareResult {
     }
 }
 
+/// Which renderer backend rendered/screenshot compares would use right now:
+/// `"qml"`, `"chromium"`, or `"none"`. Re-exported so clients (GUI bridge,
+/// CLI) can report capabilities without depending on `linsync-webengine`.
+#[cfg(feature = "web-engine")]
+pub use linsync_webengine::active_renderer_kind;
+
 /// Structured result from the Rendered sub-mode.
 #[cfg(feature = "web-engine")]
 #[derive(Debug)]

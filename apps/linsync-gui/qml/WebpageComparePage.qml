@@ -39,6 +39,11 @@ Controls.Pane {
     // True when the binary was built with Qt WebEngine (set from /capabilities);
     // gates the rendered/screenshot modes.
     property bool webEngineAvailable: false
+    // Which renderer backend rendered/screenshot would use on this host
+    // ("qml" | "chromium" | "none"; set from /capabilities web_renderer).
+    // "none" means the build supports rendering but no usable renderer binary
+    // was found, so the rendered/screenshot modes stay hidden.
+    property string webRenderer: "none"
     property string resultSummary: ""
     property var resultRows: []
     property bool resultEqual: false
@@ -320,9 +325,10 @@ Controls.Pane {
                     id: subModeCombo
                     Layout.preferredWidth: 280
                     implicitHeight: 30
-                    // Rendered/screenshot need the web-engine build; offered
-                    // only when /capabilities reports it (see Main.qml).
-                    model: root.webEngineAvailable
+                    // Rendered/screenshot need the web-engine build AND a
+                    // usable renderer binary on this host; offered only when
+                    // /capabilities reports both (see Main.qml).
+                    model: root.webEngineAvailable && root.webRenderer !== "none"
                         ? [
                             { text: qsTr("HTML source"), value: "html" },
                             { text: qsTr("Extracted text"), value: "text" },
@@ -341,6 +347,31 @@ Controls.Pane {
                         root.subMode = currentValue
                     }
                     Accessible.name: qsTr("Compare mode")
+                }
+
+                // Backend tag: rendered/screenshot fall back to a headless
+                // Chromium browser when no Qt WebEngine QML runner is found.
+                Controls.Label {
+                    visible: root.webEngineAvailable && root.webRenderer === "chromium"
+                    text: qsTr("via Chromium")
+                    color: root.activeText
+                    opacity: 0.7
+                    font.pixelSize: 11
+                    Accessible.name: qsTr("Rendered and screenshot modes use a headless Chromium browser")
+                    Controls.ToolTip.text: qsTr("Rendered and screenshot modes use a headless Chromium browser on this system; rendered output may differ from Qt WebEngine.")
+                    Controls.ToolTip.visible: chromiumTagHover.hovered
+                    Controls.ToolTip.delay: 300
+                    HoverHandler { id: chromiumTagHover }
+                }
+
+                // Renderer-unavailable hint: web-engine build, but neither a
+                // QML runner nor a Chromium binary was found on this host.
+                Controls.Label {
+                    visible: root.webEngineAvailable && root.webRenderer === "none"
+                    text: qsTr("Rendered modes unavailable — no QML runner or Chromium found")
+                    color: Kirigami.Theme.neutralTextColor
+                    font.pixelSize: 11
+                    Accessible.name: text
                 }
 
                 AppButton {

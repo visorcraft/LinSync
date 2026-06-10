@@ -152,6 +152,19 @@ fn resolve_backend() -> Option<RenderBackend> {
     resolve_chromium_binary().map(RenderBackend::ChromiumHeadless)
 }
 
+/// Report which renderer backend [`render_url`] would use right now, as a
+/// stable string for capability reporting: `"qml"` (Qt WebEngine via a QML
+/// runner), `"chromium"` (headless Chromium binary), or `"none"` (no usable
+/// backend — rendered/screenshot modes are unavailable). Honors the same
+/// `LINSYNC_WEB_RENDERER` override as [`render_url`].
+pub fn active_renderer_kind() -> &'static str {
+    match resolve_backend() {
+        Some(RenderBackend::QtQml(_)) => "qml",
+        Some(RenderBackend::ChromiumHeadless(_)) => "chromium",
+        None => "none",
+    }
+}
+
 /// Escape a string for embedding inside a QML double-quoted string literal.
 fn qml_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
@@ -222,11 +235,13 @@ fn read_tail(path: &Path, max_bytes: usize) -> String {
 /// Render `url` with a headless Chromium `binary` and return the path to the
 /// PNG screenshot written to `output_dir/<url_hash>.png`.
 ///
-/// Privacy contract: the browser runs against a LinSync-owned ephemeral
-/// profile (`--user-data-dir` under [`WebEngineOptions::profile_storage_dir`],
-/// so [`clear_profile`] wipes it too) — it never touches the user's real
-/// browser profile. Chromium's own sandbox stays enabled except inside
-/// Flatpak/bwrap, where nested user namespaces are unavailable.
+/// Privacy contract: the browser runs against a LinSync-owned profile
+/// (`--user-data-dir` under [`WebEngineOptions::profile_storage_dir`]) — it
+/// never touches the user's real browser profile. "Ephemeral" here means
+/// wiped-by-[`clear_profile`]: the directory persists between renders (so
+/// per-URL cache survives), and concurrent renders would contend on
+/// Chromium's `SingletonLock` in it — fine today because core renders
+/// sequentially (left, then right).
 fn render_url_chromium(
     binary: &Path,
     url: &str,
@@ -263,6 +278,10 @@ fn render_url_chromium(
         command.arg("--no-sandbox");
     }
     command
+        // `--` terminates flag parsing so a hostile URL beginning with `-`
+        // can never be interpreted as a Chromium switch (defense-in-depth:
+        // callers validate URLs upstream).
+        .arg("--")
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -278,10 +297,18 @@ fn render_url_chromium(
     let status = match wait_with_deadline(&mut child, deadline) {
         Ok(Some(status)) => status,
         Ok(None) => {
+            // Surface whatever the browser logged before the kill — it is
+            // usually the only clue to why a render hung.
+            let tail = read_tail(&stderr_log, 400);
             let _ = std::fs::remove_file(&stderr_log);
+            let reason = if tail.is_empty() {
+                "render timed out".to_owned()
+            } else {
+                format!("render timed out; chromium stderr tail: {tail}")
+            };
             return Err(WebEngineError::PageLoadFailed {
                 url: url.to_owned(),
-                reason: "render timed out".to_owned(),
+                reason,
             });
         }
         Err(e) => {
@@ -462,6 +489,19 @@ mod tests {
             ..Default::default()
         };
         clear_profile(&opts).unwrap();
+    }
+
+    #[test]
+    fn active_renderer_kind_is_one_of_known_values() {
+        // Host-dependent (depends on which binaries are on PATH), so assert
+        // membership in the contract set rather than a fixed value. This test
+        // does not set LINSYNC_WEB_RENDERER — env vars are process-global and
+        // the suite runs in parallel.
+        let kind = active_renderer_kind();
+        assert!(
+            ["qml", "chromium", "none"].contains(&kind),
+            "active_renderer_kind must be qml | chromium | none, got: {kind}"
+        );
     }
 
     #[test]

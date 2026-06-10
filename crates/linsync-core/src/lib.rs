@@ -118,4 +118,7 @@ pub use webpage::{
     compare_webpage_resource_tree, webcompare_cache_dir,
 };
 #[cfg(feature = "web-engine")]
-pub use webpage::{WebpageRenderedResult, compare_webpage_rendered, compare_webpage_screenshot};
+pub use webpage::{
+    WebpageRenderedResult, active_renderer_kind, compare_webpage_rendered,
+    compare_webpage_screenshot,
+};

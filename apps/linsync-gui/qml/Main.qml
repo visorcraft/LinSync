@@ -5408,8 +5408,12 @@ Kirigami.ApplicationWindow {
                 separatorColor:     root.separatorColor
                 onSessionUpdated: context => root.applyLaunchContext(context, false)
                 Component.onCompleted: root.bridgeGet("/capabilities", function (ok, payload) {
-                    if (ok && payload)
+                    if (ok && payload) {
                         webpageComparePage.webEngineAvailable = payload.web_engine === true
+                        webpageComparePage.webRenderer =
+                            (payload.web_renderer === "qml" || payload.web_renderer === "chromium")
+                                ? payload.web_renderer : "none"
+                    }
                 })
             }
 
