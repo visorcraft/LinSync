@@ -18,8 +18,19 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+/// Chromium flags shared by both backends: the QtQml arm forwards them via
+/// `QTWEBENGINE_CHROMIUM_FLAGS`, the headless arm passes them on the command
+/// line directly. Keep the two arms consistent by editing this list only.
+const SHARED_CHROMIUM_FLAGS: &[&str] = &["--disable-gpu", "--disable-dev-shm-usage"];
+
+/// True when running inside a Flatpak/bwrap sandbox, where nested user
+/// namespaces are unavailable and Chromium's own sandbox cannot start.
+fn inside_flatpak_sandbox() -> bool {
+    Path::new("/.flatpak-info").exists()
+}
 
 /// Errors from the web-engine wrapper.
 #[derive(Debug)]
@@ -76,8 +87,7 @@ impl Default for WebEngineOptions {
 enum RenderBackend {
     /// Qt WebEngine via a `qml6`/`qml` runner subprocess — the current path.
     QtQml(PathBuf),
-    /// Headless Chromium binary — implemented in a later task.
-    #[allow(dead_code)]
+    /// Headless Chromium binary (`--headless=new --screenshot=…`).
     ChromiumHeadless(PathBuf),
 }
 
@@ -160,7 +170,8 @@ fn url_hash(url: &str) -> String {
 ///
 /// Dispatches to a renderer backend (see [`resolve_backend`]). The Qt backend
 /// spawns a `qml6` subprocess running a generated `WebEngineView` that loads the
-/// URL, grabs the rendered view, and saves a PNG. Returns
+/// URL, grabs the rendered view, and saves a PNG; the Chromium backend spawns
+/// `chromium --headless=new --screenshot=…` against an ephemeral profile. Returns
 /// [`WebEngineError::NotImplemented`] when no usable backend is available (so
 /// callers can fall back to HTML-source compare), and a specific error on
 /// load/capture failure or timeout.
@@ -174,9 +185,131 @@ pub fn render_url(
     };
     match backend {
         RenderBackend::QtQml(runner) => render_url_qtqml(url, output_dir, options, &runner),
-        // Implemented in a later task; callers treat this exactly like "no
-        // renderer available" and fall back to HTML-source compare.
-        RenderBackend::ChromiumHeadless(_) => Err(WebEngineError::NotImplemented),
+        RenderBackend::ChromiumHeadless(binary) => {
+            render_url_chromium(&binary, url, output_dir, options)
+        }
+    }
+}
+
+/// Wait for `child` with a hard wall-clock `deadline`. Returns `Ok(None)` when
+/// the deadline passed (the child has been killed and reaped).
+fn wait_with_deadline(child: &mut Child, deadline: Instant) -> std::io::Result<Option<ExitStatus>> {
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(Some(status)),
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(None);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+/// Read at most the last `max_bytes` bytes of the file at `path` as lossy
+/// UTF-8, trimmed. Returns an empty string when the file cannot be read.
+fn read_tail(path: &Path, max_bytes: usize) -> String {
+    let Ok(bytes) = std::fs::read(path) else {
+        return String::new();
+    };
+    let start = bytes.len().saturating_sub(max_bytes);
+    String::from_utf8_lossy(&bytes[start..]).trim().to_owned()
+}
+
+/// Render `url` with a headless Chromium `binary` and return the path to the
+/// PNG screenshot written to `output_dir/<url_hash>.png`.
+///
+/// Privacy contract: the browser runs against a LinSync-owned ephemeral
+/// profile (`--user-data-dir` under [`WebEngineOptions::profile_storage_dir`],
+/// so [`clear_profile`] wipes it too) — it never touches the user's real
+/// browser profile. Chromium's own sandbox stays enabled except inside
+/// Flatpak/bwrap, where nested user namespaces are unavailable.
+fn render_url_chromium(
+    binary: &Path,
+    url: &str,
+    output_dir: &Path,
+    options: &WebEngineOptions,
+) -> Result<PathBuf, WebEngineError> {
+    std::fs::create_dir_all(output_dir).map_err(|e| WebEngineError::InitFailed(e.to_string()))?;
+    let user_data_dir = options.profile_storage_dir.join("chromium-profile");
+    std::fs::create_dir_all(&user_data_dir)
+        .map_err(|e| WebEngineError::InitFailed(e.to_string()))?;
+
+    let output_png = output_dir.join(format!("{}.png", url_hash(url)));
+    let _ = std::fs::remove_file(&output_png);
+
+    let width = options.viewport_width.max(1);
+    let height = options.viewport_height.max(1);
+    let timeout_ms = u64::from(options.timeout_secs.max(1)).saturating_mul(1000);
+
+    // Capture stderr into a file (not a pipe) so a chatty browser can never
+    // fill a pipe buffer and deadlock against our wait loop.
+    let stderr_log = user_data_dir.join(format!("stderr-{}.log", url_hash(url)));
+    let stderr_file = std::fs::File::create(&stderr_log)
+        .map_err(|e| WebEngineError::InitFailed(e.to_string()))?;
+
+    let mut command = Command::new(binary);
+    command
+        .arg("--headless=new")
+        .args(SHARED_CHROMIUM_FLAGS)
+        .arg(format!("--user-data-dir={}", user_data_dir.display()))
+        .arg(format!("--window-size={width},{height}"))
+        .arg(format!("--virtual-time-budget={timeout_ms}"))
+        .arg(format!("--screenshot={}", output_png.display()));
+    if inside_flatpak_sandbox() {
+        command.arg("--no-sandbox");
+    }
+    command
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(stderr_file));
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| WebEngineError::InitFailed(format!("failed to launch {binary:?}: {e}")))?;
+
+    // Same backstop as the QtQml arm: the page-load budget plus grace for
+    // browser startup/teardown, then a hard kill.
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.saturating_add(5_000));
+    let status = match wait_with_deadline(&mut child, deadline) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            let _ = std::fs::remove_file(&stderr_log);
+            return Err(WebEngineError::PageLoadFailed {
+                url: url.to_owned(),
+                reason: "render timed out".to_owned(),
+            });
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&stderr_log);
+            return Err(WebEngineError::InitFailed(e.to_string()));
+        }
+    };
+
+    let stderr_tail = read_tail(&stderr_log, 400);
+    let _ = std::fs::remove_file(&stderr_log);
+
+    if !status.success() {
+        let reason = if stderr_tail.is_empty() {
+            format!("chromium exited with code {}", status.code().unwrap_or(-1))
+        } else {
+            stderr_tail
+        };
+        return Err(WebEngineError::PageLoadFailed {
+            url: url.to_owned(),
+            reason,
+        });
+    }
+
+    match std::fs::metadata(&output_png) {
+        Ok(meta) if meta.len() > 0 => Ok(output_png),
+        _ => Err(WebEngineError::CaptureFailed(
+            "chromium exited successfully but no screenshot PNG was produced".to_owned(),
+        )),
     }
 }
 
@@ -255,7 +388,10 @@ Item {{
         .env("QTWEBENGINE_DISABLE_SANDBOX", "1")
         .env(
             "QTWEBENGINE_CHROMIUM_FLAGS",
-            "--disable-gpu --no-sandbox --disable-dev-shm-usage",
+            // QtWebEngine's bundled Chromium runs with its sandbox disabled
+            // here (offscreen embedding requires it); the standalone Chromium
+            // arm keeps its sandbox on outside Flatpak.
+            format!("{} --no-sandbox", SHARED_CHROMIUM_FLAGS.join(" ")),
         );
 
     let mut child = command
@@ -264,26 +400,19 @@ Item {{
 
     // Wait with a hard wall-clock ceiling (the QML guard timer should exit
     // first; this is a backstop against a hung runner).
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms + 5_000);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = std::fs::remove_file(&renderer_path);
-                    return Err(WebEngineError::PageLoadFailed {
-                        url: url.to_owned(),
-                        reason: "render timed out".to_owned(),
-                    });
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&renderer_path);
-                return Err(WebEngineError::InitFailed(e.to_string()));
-            }
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.saturating_add(5_000));
+    let status = match wait_with_deadline(&mut child, deadline) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            let _ = std::fs::remove_file(&renderer_path);
+            return Err(WebEngineError::PageLoadFailed {
+                url: url.to_owned(),
+                reason: "render timed out".to_owned(),
+            });
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&renderer_path);
+            return Err(WebEngineError::InitFailed(e.to_string()));
         }
     };
     let _ = std::fs::remove_file(&renderer_path);
@@ -338,6 +467,35 @@ mod tests {
     #[test]
     fn qml_escape_quotes_and_backslashes() {
         assert_eq!(qml_escape(r#"a"b\c"#), r#"a\"b\\c"#);
+    }
+
+    /// Live chromium-headless screenshot of a local HTML file. Self-skips
+    /// (with a stderr note) on hosts without a Chromium binary, so it runs for
+    /// real wherever one is installed.
+    #[test]
+    fn chromium_backend_screenshots_local_file() {
+        let Some(chromium) = resolve_chromium_binary() else {
+            eprintln!("skip: no chromium binary on PATH");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let html = tmp.path().join("page.html");
+        std::fs::write(
+            &html,
+            "<!doctype html><html><body style='background:#0a0'>hi</body></html>",
+        )
+        .unwrap();
+        let url = format!("file://{}", html.display());
+        let out_dir = tmp.path().join("out");
+        let options = WebEngineOptions {
+            profile_storage_dir: tmp.path().join("profile"),
+            ..Default::default()
+        };
+        let png = render_url_chromium(&chromium, &url, &out_dir, &options)
+            .expect("chromium render should produce a PNG");
+        let bytes = std::fs::read(&png).unwrap();
+        assert!(bytes.len() > 100, "PNG should be non-trivial");
+        assert_eq!(&bytes[1..4], b"PNG", "output is a PNG");
     }
 
     /// Live render of a local HTML page to PNG. Ignored by default because it
