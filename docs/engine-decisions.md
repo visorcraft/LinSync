@@ -6,14 +6,20 @@ work from starting with unresolved architecture questions.
 
 ## Syntax Highlighting
 
-Prefer KDE's syntax-highlighting stack for the Qt/Kirigami GUI if it integrates
-cleanly with the chosen editor rendering path. It aligns with the KDE-first
-desktop target and avoids duplicating language grammar management in LinSync.
+Use syntect on the Rust side (`linsync-core::syntax`, behind the default-on
+`syntax-rich` feature) and ship character-indexed spans with a closed
+six-class vocabulary (keyword / string / number / comment / key / tag) over
+the HTTP bridge. KDE's KSyntaxHighlighting was rejected because the shipped
+renderer consumes spans over the bridge in both QML host modes, and the
+external `qml6` host cannot host C++ KSyntaxHighlighting.
 
-Tree-sitter remains a fallback for cases where the editor rendering strategy
-needs syntax spans from Rust or where KDE integration cannot support the
-required QML/editor model. Broad syntax highlighting stays deferred until the
-core file compare workflow is stable.
+Span computation is stateless line-at-a-time: multi-line constructs (block
+comments, raw strings) degrade gracefully per line, and lines over 20,000
+bytes are skipped. syntect's default grammar set has no TOML grammar (the
+hand-rolled TOML lexer still covers that mode) and no TypeScript grammar
+(TypeScript maps to the JavaScript grammar).
+
+Tree-sitter remains the fallback if grammar coverage becomes insufficient.
 
 ## Image Compare
 

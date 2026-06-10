@@ -74,6 +74,12 @@ The only remaining gaps are noted below.
   `resolve_profile_for_request`, which merges per-request query overrides
   (`?ignore_case`, `?ignore_whitespace`, …) over the active profile. The
   CLI honours all options too.
+- **Syntax highlighting** in text compare is computed line-at-a-time
+  without cross-line state: multi-line constructs (block comments, raw
+  strings) highlight per line, and lines over 20,000 bytes are skipped.
+  TOML uses LinSync's hand-rolled lexer (syntect's default grammar set
+  has no TOML grammar); TypeScript is highlighted with the JavaScript
+  grammar.
 - **Folder operations** (copy, delete, rename, refresh) and the folder
   result view are served by `/folder/query`, which applies the user's
   active filters, sort, type filter, and path search server-side and

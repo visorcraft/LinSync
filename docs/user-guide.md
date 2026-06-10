@@ -141,6 +141,25 @@ cargo run -p linsync-cli -- compare --type table left.csv right.csv
 likely-binary files to binary compare, and `.csv`/`.tsv` files to table
 compare.
 
+Syntax highlighting:
+
+```sh
+cargo run -p linsync-cli -- compare --render html --syntax auto left.rs right.rs
+cargo run -p linsync-cli -- compare --render html --syntax python left.py right.py
+```
+
+`--syntax` accepts `plain` (default), `auto`, `rust`, `json`, `html`,
+`markdown`, `shell`, `toml`, `yaml`, `c`, `cpp`, `python`, `javascript`,
+`typescript`, `go`, `java`, and `css`. `auto` picks the mode from the
+file extension (`.rs`, `.json`, `.html`/`.htm`/`.xml`, `.md`,
+`.sh`/`.bash`/`.zsh`/`.fish`, `.toml`, `.yaml`/`.yml`, `.c`/`.h`,
+`.cc`/`.cpp`/`.cxx`/`.hpp`/`.hh`, `.py`, `.js`/`.mjs`/`.jsx`,
+`.ts`/`.tsx`, `.go`, `.java`, `.css`) and falls back to plain for
+anything else. Highlighting is line-at-a-time — multi-line constructs
+such as block comments render per line — and lines over 20,000 bytes
+are skipped. The GUI Compare page exposes the same modes through its
+Syntax selector.
+
 ## Folder Compare
 
 Compare two folders:
