@@ -206,17 +206,23 @@ fn html_syntax_spans(text: &str) -> Vec<SyntaxSpan> {
 fn generic_syntax_spans(text: &str, mode: TextSyntaxMode) -> Vec<SyntaxSpan> {
     let chars: Vec<char> = text.chars().collect();
     let mut spans = Vec::new();
-    if let Some(comment_start) = comment_start(&chars, mode) {
-        spans.push(span(comment_start, chars.len(), "comment"));
-    }
+    // Token lexing stops at the comment start so token spans never overlap
+    // the comment span (overlaps bleed colors in the GUI rich-text path).
+    let limit = match comment_start(&chars, mode) {
+        Some(comment_start) => {
+            spans.push(span(comment_start, chars.len(), "comment"));
+            comment_start
+        }
+        None => chars.len(),
+    };
     let mut i = 0usize;
-    while i < chars.len() {
+    while i < limit {
         let ch = chars[i];
         if ch == '"' || ch == '\'' {
             let quote = ch;
             let start = i;
             i += 1;
-            while i < chars.len() {
+            while i < limit {
                 if chars[i] == '\\' {
                     i += 2;
                     continue;
@@ -227,18 +233,18 @@ fn generic_syntax_spans(text: &str, mode: TextSyntaxMode) -> Vec<SyntaxSpan> {
                 }
                 i += 1;
             }
-            spans.push(span(start, i, "string"));
+            spans.push(span(start, i.min(limit), "string"));
         } else if ch.is_ascii_digit() {
             let start = i;
             i += 1;
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+            while i < limit && (chars[i].is_ascii_digit() || chars[i] == '.') {
                 i += 1;
             }
             spans.push(span(start, i, "number"));
         } else if ch.is_alphabetic() || ch == '_' {
             let start = i;
             i += 1;
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+            while i < limit && (chars[i].is_alphanumeric() || chars[i] == '_') {
                 i += 1;
             }
             let word: String = chars[start..i].iter().collect();
@@ -275,6 +281,12 @@ fn comment_start(chars: &[char], mode: TextSyntaxMode) -> Option<usize> {
     for i in 0..chars.len() {
         match mode {
             TextSyntaxMode::Rust
+            | TextSyntaxMode::C
+            | TextSyntaxMode::Cpp
+            | TextSyntaxMode::Go
+            | TextSyntaxMode::Java
+            | TextSyntaxMode::JavaScript
+            | TextSyntaxMode::TypeScript
                 if i + 1 < chars.len() && chars[i] == '/' && chars[i + 1] == '/' =>
             {
                 return Some(i);
@@ -283,10 +295,12 @@ fn comment_start(chars: &[char], mode: TextSyntaxMode) -> Option<usize> {
             | TextSyntaxMode::Toml
             | TextSyntaxMode::Yaml
             | TextSyntaxMode::Markdown
+            | TextSyntaxMode::Python
                 if chars[i] == '#' =>
             {
                 return Some(i);
             }
+            // CSS only has /* */ block comments — no line-comment marker.
             _ => {}
         }
     }
@@ -308,6 +322,232 @@ fn keyword_list(mode: TextSyntaxMode) -> &'static [&'static str] {
         TextSyntaxMode::Toml | TextSyntaxMode::Yaml | TextSyntaxMode::Markdown => {
             &["true", "false", "null"]
         }
+        TextSyntaxMode::C => &[
+            "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+            "enum", "extern", "float", "for", "goto", "if", "int", "long", "return", "short",
+            "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned",
+            "void", "volatile", "while",
+        ],
+        TextSyntaxMode::Cpp => &[
+            "bool",
+            "break",
+            "case",
+            "catch",
+            "char",
+            "class",
+            "const",
+            "constexpr",
+            "continue",
+            "default",
+            "delete",
+            "do",
+            "double",
+            "else",
+            "enum",
+            "false",
+            "float",
+            "for",
+            "if",
+            "int",
+            "namespace",
+            "new",
+            "nullptr",
+            "private",
+            "protected",
+            "public",
+            "return",
+            "static",
+            "struct",
+            "switch",
+            "template",
+            "this",
+            "throw",
+            "true",
+            "try",
+            "typedef",
+            "using",
+            "virtual",
+            "void",
+            "while",
+        ],
+        TextSyntaxMode::Python => &[
+            "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
+            "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global",
+            "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise",
+            "return", "try", "while", "with", "yield",
+        ],
+        TextSyntaxMode::JavaScript => &[
+            "async",
+            "await",
+            "break",
+            "case",
+            "catch",
+            "class",
+            "const",
+            "continue",
+            "default",
+            "delete",
+            "do",
+            "else",
+            "export",
+            "extends",
+            "false",
+            "finally",
+            "for",
+            "function",
+            "if",
+            "import",
+            "in",
+            "instanceof",
+            "let",
+            "new",
+            "null",
+            "of",
+            "return",
+            "super",
+            "switch",
+            "this",
+            "throw",
+            "true",
+            "try",
+            "typeof",
+            "undefined",
+            "var",
+            "void",
+            "while",
+            "yield",
+        ],
+        TextSyntaxMode::TypeScript => &[
+            "abstract",
+            "any",
+            "as",
+            "async",
+            "await",
+            "boolean",
+            "break",
+            "case",
+            "catch",
+            "class",
+            "const",
+            "continue",
+            "declare",
+            "default",
+            "delete",
+            "do",
+            "else",
+            "enum",
+            "export",
+            "extends",
+            "false",
+            "finally",
+            "for",
+            "function",
+            "if",
+            "implements",
+            "import",
+            "in",
+            "instanceof",
+            "interface",
+            "let",
+            "namespace",
+            "new",
+            "null",
+            "number",
+            "of",
+            "readonly",
+            "return",
+            "string",
+            "super",
+            "switch",
+            "this",
+            "throw",
+            "true",
+            "try",
+            "type",
+            "typeof",
+            "undefined",
+            "var",
+            "void",
+            "while",
+            "yield",
+        ],
+        TextSyntaxMode::Go => &[
+            "break",
+            "case",
+            "chan",
+            "const",
+            "continue",
+            "default",
+            "defer",
+            "else",
+            "fallthrough",
+            "false",
+            "for",
+            "func",
+            "go",
+            "goto",
+            "if",
+            "import",
+            "interface",
+            "map",
+            "nil",
+            "package",
+            "range",
+            "return",
+            "select",
+            "struct",
+            "switch",
+            "true",
+            "type",
+            "var",
+        ],
+        TextSyntaxMode::Java => &[
+            "abstract",
+            "boolean",
+            "break",
+            "case",
+            "catch",
+            "char",
+            "class",
+            "continue",
+            "default",
+            "do",
+            "double",
+            "else",
+            "enum",
+            "extends",
+            "false",
+            "final",
+            "finally",
+            "float",
+            "for",
+            "if",
+            "implements",
+            "import",
+            "instanceof",
+            "int",
+            "interface",
+            "long",
+            "new",
+            "null",
+            "package",
+            "private",
+            "protected",
+            "public",
+            "return",
+            "static",
+            "super",
+            "switch",
+            "this",
+            "throw",
+            "throws",
+            "true",
+            "try",
+            "void",
+            "while",
+        ],
+        // CSS keeps an empty keyword list: generic string/number lexing is
+        // already the useful part for stylesheets.
         _ => &[],
     }
 }
@@ -382,6 +622,169 @@ mod path_mode_tests {
     fn unknown_or_missing_extension_is_none() {
         assert_ext("a.unknownext", None);
         assert_ext("noext", None);
+    }
+}
+
+/// Tests for the hand-rolled fallback lexer. They call `generic_syntax_spans`
+/// directly so they exercise the fallback path under both feature configs
+/// (with `syntax-rich` enabled the public `syntax_spans` would route most of
+/// these modes through syntect instead).
+#[cfg(test)]
+mod fallback_lexer_tests {
+    use super::*;
+
+    fn keyword_words(line: &str, mode: TextSyntaxMode) -> Vec<String> {
+        let chars: Vec<char> = line.chars().collect();
+        generic_syntax_spans(line, mode)
+            .iter()
+            .filter(|s| s.class == "keyword")
+            .map(|s| chars[s.start..s.end].iter().collect())
+            .collect()
+    }
+
+    #[track_caller]
+    fn assert_comment_bounds_tokens(line: &str, mode: TextSyntaxMode, marker: &str) {
+        let spans = generic_syntax_spans(line, mode);
+        let comment = spans
+            .iter()
+            .find(|s| s.class == "comment")
+            .unwrap_or_else(|| panic!("{mode:?}: no comment span in {line:?}"));
+        let chars: Vec<char> = line.chars().collect();
+        let marker_start = line
+            .find(marker)
+            .map(|byte| line[..byte].chars().count())
+            .unwrap();
+        assert_eq!(comment.start, marker_start, "{mode:?}: comment start");
+        assert_eq!(comment.end, chars.len(), "{mode:?}: comment end");
+        for s in spans.iter().filter(|s| s.class != "comment") {
+            assert!(
+                s.end <= comment.start,
+                "{mode:?}: token span {s:?} overlaps comment in {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn python_hash_comment_bounds_token_spans() {
+        assert_comment_bounds_tokens("x = 1  # trailing 42 'str'", TextSyntaxMode::Python, "#");
+    }
+
+    #[test]
+    fn c_line_comment_bounds_token_spans() {
+        let line = "int x = 1; // note 9";
+        assert_comment_bounds_tokens(line, TextSyntaxMode::C, "//");
+        let spans = generic_syntax_spans(line, TextSyntaxMode::C);
+        // The `1` before the comment is still lexed as a number; the `9`
+        // inside the comment is not.
+        let numbers: Vec<_> = spans.iter().filter(|s| s.class == "number").collect();
+        assert_eq!(numbers.len(), 1);
+        assert_eq!(
+            numbers[0].start,
+            line.chars().position(|c| c == '1').unwrap()
+        );
+    }
+
+    #[test]
+    fn rust_comment_no_longer_overlaps_tokens() {
+        // Pre-existing bug: token spans used to be lexed across the full line,
+        // overlapping the comment span ("ragged" rich-text coloring).
+        assert_comment_bounds_tokens("let x = 1; // \"s\" 2", TextSyntaxMode::Rust, "//");
+    }
+
+    #[test]
+    fn line_comment_markers_cover_new_modes() {
+        let slash: Vec<char> = "a + b // tail".chars().collect();
+        for mode in [
+            TextSyntaxMode::C,
+            TextSyntaxMode::Cpp,
+            TextSyntaxMode::Go,
+            TextSyntaxMode::Java,
+            TextSyntaxMode::JavaScript,
+            TextSyntaxMode::TypeScript,
+        ] {
+            assert_eq!(comment_start(&slash, mode), Some(6), "{mode:?}");
+        }
+        let hash: Vec<char> = "a + b # tail".chars().collect();
+        assert_eq!(comment_start(&hash, TextSyntaxMode::Python), Some(6));
+    }
+
+    #[test]
+    fn css_has_no_line_comment_marker() {
+        // CSS only has /* */ block comments; neither // nor # starts one.
+        let chars: Vec<char> = "width: 10px // not a comment # neither".chars().collect();
+        assert_eq!(comment_start(&chars, TextSyntaxMode::Css), None);
+        let spans = generic_syntax_spans("a { width: 10px; }", TextSyntaxMode::Css);
+        assert!(spans.iter().all(|s| s.class != "comment"));
+        // Generic number lexing still applies.
+        assert!(spans.iter().any(|s| s.class == "number"));
+    }
+
+    #[test]
+    fn python_keywords_recognized() {
+        let words = keyword_words("def f(): return None", TextSyntaxMode::Python);
+        assert!(words.contains(&"def".to_owned()), "{words:?}");
+        assert!(words.contains(&"return".to_owned()), "{words:?}");
+        assert!(words.contains(&"None".to_owned()), "{words:?}");
+    }
+
+    #[test]
+    fn c_family_keywords_recognized() {
+        let words = keyword_words("static int n = 0;", TextSyntaxMode::C);
+        assert!(words.contains(&"static".to_owned()), "{words:?}");
+        assert!(words.contains(&"int".to_owned()), "{words:?}");
+        let words = keyword_words("class T : public B {};", TextSyntaxMode::Cpp);
+        assert!(words.contains(&"class".to_owned()), "{words:?}");
+        assert!(words.contains(&"public".to_owned()), "{words:?}");
+    }
+
+    #[test]
+    fn javascript_and_typescript_keywords_recognized() {
+        let words = keyword_words("const f = function () {}", TextSyntaxMode::JavaScript);
+        assert!(words.contains(&"const".to_owned()), "{words:?}");
+        assert!(words.contains(&"function".to_owned()), "{words:?}");
+        let words = keyword_words(
+            "interface T { readonly x: void }",
+            TextSyntaxMode::TypeScript,
+        );
+        assert!(words.contains(&"interface".to_owned()), "{words:?}");
+        assert!(words.contains(&"readonly".to_owned()), "{words:?}");
+        assert!(words.contains(&"void".to_owned()), "{words:?}");
+    }
+
+    #[test]
+    fn go_and_java_keywords_recognized() {
+        let words = keyword_words("func main() { defer close(ch) }", TextSyntaxMode::Go);
+        assert!(words.contains(&"func".to_owned()), "{words:?}");
+        assert!(words.contains(&"defer".to_owned()), "{words:?}");
+        let words = keyword_words("public class Main extends Base {}", TextSyntaxMode::Java);
+        assert!(words.contains(&"public".to_owned()), "{words:?}");
+        assert!(words.contains(&"class".to_owned()), "{words:?}");
+        assert!(words.contains(&"extends".to_owned()), "{words:?}");
+    }
+
+    #[test]
+    fn css_keyword_list_is_empty() {
+        assert!(keyword_list(TextSyntaxMode::Css).is_empty());
+        assert!(keyword_words("display: flex;", TextSyntaxMode::Css).is_empty());
+    }
+
+    #[test]
+    fn toml_fallback_lexes_via_public_entry_point() {
+        // TOML has no syntect grammar, so syntax_spans always reaches the
+        // fallback lexer regardless of the syntax-rich feature.
+        let line = "key = \"value\" # note 7";
+        let spans = syntax_spans(line, TextSyntaxMode::Toml);
+        let string = spans.iter().find(|s| s.class == "string").expect("string");
+        let comment = spans
+            .iter()
+            .find(|s| s.class == "comment")
+            .expect("comment");
+        assert!(string.end <= comment.start, "string overlaps comment");
+        assert_eq!(comment.end, line.chars().count());
+        assert!(
+            spans.iter().all(|s| s.class != "number"),
+            "7 is commented out"
+        );
     }
 }
 
