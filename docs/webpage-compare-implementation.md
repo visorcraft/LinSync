@@ -80,9 +80,10 @@ continues to pass.
 
 ### `chromium --headless` helper
 
-Spawning `chromium --headless --dump-dom` as a subprocess avoids all LGPL
-linkage concerns (process boundary = no linkage), but requires the user to have
-Chromium installed and gives less profile-isolation control.
+Spawning `chromium --headless=new --screenshot=…` as a subprocess avoids all
+LGPL linkage concerns (process boundary = no linkage), but requires the user to
+have Chromium installed and gives less profile-isolation control (the renderer
+uses a dedicated `--user-data-dir` under LinSync's cache to compensate).
 
 ---
 
@@ -92,8 +93,11 @@ Chromium installed and gives less profile-isolation control.
 excludes it; rendered and screenshot modes are only available when a distributor
 enables `--features web-engine`. HTML source, extracted text, and resource-tree
 modes ship in the default build via the `web-fetch` plugin with no browser
-engine. The `chromium --headless` path is a documented future alternative, not
-implemented in Phase 9.
+engine. The `chromium --headless` path, originally deferred from Phase 9, is
+now implemented as an auto-detected fallback backend: `render_url` prefers a
+QML runner (`qml6`, then `qml`, honoring `LINSYNC_QML_RUNNER`) and falls back
+to a headless Chromium binary on `PATH` (`chromium`, `chromium-browser`,
+`google-chrome-stable`); `LINSYNC_WEB_RENDERER=qml|chromium` forces a backend.
 
 ---
 

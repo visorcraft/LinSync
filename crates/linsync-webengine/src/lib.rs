@@ -45,7 +45,11 @@ impl std::fmt::Display for WebEngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotImplemented => {
-                write!(f, "Qt WebEngine rendering is not available in this build")
+                write!(
+                    f,
+                    "no web rendering backend available: the build lacks the web-engine \
+                     feature or no QML runner / Chromium binary was found on PATH"
+                )
             }
             Self::InitFailed(s) => write!(f, "Qt WebEngine initialization failed: {s}"),
             Self::PageLoadFailed { url, reason } => {
@@ -166,8 +170,24 @@ pub fn active_renderer_kind() -> &'static str {
 }
 
 /// Escape a string for embedding inside a QML double-quoted string literal.
+///
+/// Besides backslashes and quotes, line terminators and NUL must be escaped:
+/// QML/JS string literals reject raw newlines, so a hostile URL containing one
+/// would otherwise turn into a `qml6` parse error (or worse, inject QML).
 fn qml_escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\0' => escaped.push_str("\\u0000"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 /// A stable, filesystem-safe hash of a URL for naming its PNG.
@@ -507,6 +527,15 @@ mod tests {
     #[test]
     fn qml_escape_quotes_and_backslashes() {
         assert_eq!(qml_escape(r#"a"b\c"#), r#"a\"b\\c"#);
+    }
+
+    #[test]
+    fn qml_escape_control_characters() {
+        assert_eq!(
+            qml_escape("a\nb\rc\td\0e"),
+            r"a\nb\rc\td\u0000e",
+            "newline, carriage return, tab, and NUL must all be escaped"
+        );
     }
 
     /// Live chromium-headless screenshot of a local HTML file. Self-skips
