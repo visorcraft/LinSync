@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub use crate::syntax::{SyntaxSpan, TextSyntaxMode};
-use crate::syntax::{syntax_highlight_html, syntax_mode_from_path, syntax_spans};
+use crate::syntax::{escape_html, syntax_highlight_html, syntax_mode_from_path, syntax_spans};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -3004,21 +3004,6 @@ fn line_is_within_context(lines: &[DiffLine], index: usize, context: usize) -> b
     lines[start..end]
         .iter()
         .any(|line| line.kind != DiffLineKind::Equal)
-}
-
-pub(crate) fn escape_html(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
 }
 
 fn collect_find_matches(

@@ -90,6 +90,7 @@ pub use storage::{
     StoreError, ThemePreference, WindowSize, artifact_dir, cleanup_artifacts,
     relativize_session_paths_against, save_artifact,
 };
+pub use syntax::{SyntaxSpan, TextSyntaxMode};
 pub use table::{
     TableCellDiff, TableCellState, TableColumnRule, TableCompareOptions, TableCompareResult,
     TableError, TableParseError, TableRowDiff, compare_table_files, compare_tables,
@@ -98,10 +99,10 @@ pub use table::{
 pub use text::{
     CompareOptions, CompareSession, CompareSide, CompareSummary, DiffAlgorithm, DiffBlock,
     DiffBlockKind, DiffLine, DiffLineKind, EncodingSummary, InlineDiff, InlineGranularity,
-    LineEnding, MergeAction, MergeConflict, MoveDirection, SavePlan, SyntaxSpan, TextBookmark,
+    LineEnding, MergeAction, MergeConflict, MoveDirection, SavePlan, TextBookmark,
     TextCompareOptions, TextCompareResult, TextDocument, TextEncoding, TextFindMatch,
     TextFindOptions, TextInputEncoding, TextRegexRuleSet, TextRenderMode, TextSubstitution,
-    TextSyntaxMode, TextViewPage, TextViewRow, builtin_text_regex_rule_sets, compare_documents,
+    TextViewPage, TextViewRow, builtin_text_regex_rule_sets, compare_documents,
     compare_documents_cancellable, compare_text, compare_text_files,
     compare_text_files_cancellable, compare_text_files_with_prediffer,
     compare_text_files_with_prediffer_chain, text_regex_rule_set,
