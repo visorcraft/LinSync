@@ -84,6 +84,27 @@ If legacy-compatible data files are ever imported, they must live in an
 isolated compatibility directory with attribution, license notes, and tests that
 prove LinSync does not depend on them for the default build.
 
+## Syntax definitions
+
+The planned syntax-highlighting dependency is the `syntect` crate (current
+stable 5.3.0, MIT). `deny.toml` covers the crate itself and its notable
+transitive paths: `onig`/`onig_sys` (MIT bindings bundling the Oniguruma C
+library, BSD-2-Clause) and `fancy-regex` (MIT) are all on the allow-list.
+
+`deny.toml` only gates Cargo crate licenses, so the syntax definitions bundled
+inside syntect's default `SyntaxSet` need this separate record. They derive
+from sublimehq/Packages, whose `LICENSE` is a short custom permissive grant:
+"Permission to copy, use, modify, sell and distribute this software is
+granted…" with a warranty disclaimer (HPND-style, no attribution or copyleft
+obligations). This is GPL-3.0-compatible, so shipping the bundled definitions
+inside LinSync is acceptable. The repository's license carves out files that
+carry their own license text; the defaults syntect bundles fall under the
+blanket grant.
+
+Recorded fallback if that provenance were ever judged unacceptable: build
+syntect with its default-syntaxes feature disabled and load definitions from
+the `two-face` crate (MIT OR Apache-2.0) instead.
+
 ## Release Materials
 
 The current source tree ships `docs/third-party-notices.md` with the Cargo
