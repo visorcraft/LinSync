@@ -1,3 +1,4 @@
+pub mod archive_write;
 pub mod binary;
 #[cfg(feature = "document-compare")]
 pub mod document;
@@ -17,6 +18,11 @@ pub mod text;
 pub mod trash;
 pub mod webpage;
 
+pub use archive_write::{
+    ArchiveEditCaps, ArchiveWriteError, CommitOptions, CommitOutcome, MemberEditContext,
+    commit_member_edit, extract_member_for_edit, extract_member_for_edit_with_caps,
+    validate_member_path, verify_post_repack_listing,
+};
 pub use binary::{
     BinaryCompareOptions, BinaryCompareResult, BinaryFileMetadata, BinaryMetadataCompare,
     BinaryMetadataDifference, ByteDiff, HexParseError, HexRow, SearchMatch, SearchSide,

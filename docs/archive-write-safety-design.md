@@ -134,6 +134,17 @@ Notable tightenings versus the obvious policy:
 - The atomic publish (steps 4–7 in §3) is performed by the trusted host
   process, never by the helper.
 
+> **Implementation note (v1, as shipped).** Info-ZIP `zip` publishes its
+> output by re-creating the destination file (unlink + create), which a
+> Landlock *file* grant on `<archive>.linsync-tmp` cannot authorize —
+> creation rights live on the parent directory, which is never granted. The
+> implementation therefore confines the helpers to the **staging dir alone**
+> (a strict subset of the policy above): `zip` repacks a working copy inside
+> staging, the post-repack listing runs against that working copy, and the
+> trusted host copies the verified bytes to `<archive>.linsync-tmp` and
+> performs steps 4–7 itself. No helper receives any grant in the archive's
+> directory; every safety property of §3 is preserved.
+
 The v1 built-in repack does **not** go through `policy_for_plugin`: like the
 built-in `unzip`/`tar` extraction in `linsync-cli archive`, it constructs the
 policy above directly with `SandboxPolicy::builder()`. This is deliberate —
