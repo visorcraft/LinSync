@@ -251,7 +251,7 @@ fn compare_command(args: &[String]) -> Result<ExitCode, String> {
     let compare_args = split_compare_args(args)?;
     if compare_args.paths.len() != 2 {
         return Err(
-            "usage: linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--prediffer-conflict-policy chain|first-wins|last-wins] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--image-frames first|all] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--document-pages FIRST-LAST] [--save-result FILE] LEFT RIGHT"
+            "usage: linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--prediffer-conflict-policy chain|first-wins|last-wins] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml|c|cpp|python|javascript|typescript|go|java|css] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--image-frames first|all] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--document-pages FIRST-LAST] [--save-result FILE] LEFT RIGHT"
                 .to_owned(),
         );
     }
@@ -5174,7 +5174,7 @@ fn split_compare_args(args: &[String]) -> Result<CompareArgs, String> {
             }
             "--syntax" => {
                 let Some(value) = args.get(index + 1) else {
-                    return Err("--syntax requires a value: plain | auto | rust | json | html | markdown | shell | toml | yaml".to_owned());
+                    return Err("--syntax requires a value: plain | auto | rust | json | html | markdown | shell | toml | yaml | c | cpp | python | javascript | typescript | go | java | css".to_owned());
                 };
                 text_options.syntax_mode = parse_text_syntax_mode(value)?;
                 explicit_text_options = true;
@@ -5399,6 +5399,14 @@ fn parse_text_syntax_mode(value: &str) -> Result<TextSyntaxMode, String> {
         "shell" | "sh" | "bash" => Ok(TextSyntaxMode::Shell),
         "toml" => Ok(TextSyntaxMode::Toml),
         "yaml" | "yml" => Ok(TextSyntaxMode::Yaml),
+        "c" => Ok(TextSyntaxMode::C),
+        "cpp" => Ok(TextSyntaxMode::Cpp),
+        "python" => Ok(TextSyntaxMode::Python),
+        "javascript" => Ok(TextSyntaxMode::JavaScript),
+        "typescript" => Ok(TextSyntaxMode::TypeScript),
+        "go" => Ok(TextSyntaxMode::Go),
+        "java" => Ok(TextSyntaxMode::Java),
+        "css" => Ok(TextSyntaxMode::Css),
         other => Err(format!("unknown --syntax '{other}'")),
     }
 }
@@ -6342,7 +6350,7 @@ _linsync_cli() {{
     fi
 
     if [[ "$prev" == "--syntax" ]]; then
-        COMPREPLY=( $(compgen -W "plain auto rust json html markdown shell toml yaml" -- "$cur") )
+        COMPREPLY=( $(compgen -W "plain auto rust json html markdown shell toml yaml c cpp python javascript typescript go java css" -- "$cur") )
         return 0
     fi
 
@@ -6673,7 +6681,7 @@ Compare two archive files by extracting them (via tar / unzip subprocesses) and 
 .B cache clear [--scope webcompare]
 Clear LinSync cache directories. Currently the only supported scope is webcompare (the webpage compare HTTP fetch cache under $XDG_CACHE_HOME/linsync/webcompare).
 .TP
-.B compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--prediffer-conflict-policy chain|first-wins|last-wins] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--image-frames first|all] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--save-result FILE] LEFT RIGHT
+.B compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--prediffer-conflict-policy chain|first-wins|last-wins] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml|c|cpp|python|javascript|typescript|go|java|css] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--image-frames first|all] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--save-result FILE] LEFT RIGHT
 Compare two files and exit with 0 for equal files or 1 for differences. The --type auto default routes Folder/Binary/Table/Text; --type image and --type document must be selected explicitly because auto-detection does not route to those engines. --profile seeds every per-mode option from a built-in id (default, strict-bytes, ignore-formatting, code-review, prose-review, folder-sync-preview, webpage-source-safe), a saved user profile id, or a path to a profile JSON file; explicit CLI flags override the profile values regardless of argument order. --prediffer PLUGIN_ID (repeatable; also settable per profile as text.prediffer_plugins) routes enabled, installed prediffer plugins to normalize each side before diffing. Multiple ids form an ordered chain — each stage normalizes the previous stage's output. Ids that are missing, the wrong class, or disabled are skipped with a note and the comparison proceeds without them. --save-result FILE (text/folder/table/binary/image/document compares) writes the full result as versioned JSON so "report --from-json FILE" can re-render it later without recomparing.
 .TP
 .B compare3 [--markers|--json] LEFT BASE RIGHT
@@ -6765,7 +6773,7 @@ linsync-cli {}
 USAGE:
     linsync-cli archive [--keep-temp] [--json] [--unpacker PLUGIN_ID] LEFT RIGHT
     linsync-cli cache clear [--scope webcompare]
-    linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--prediffer-conflict-policy chain|first-wins|last-wins] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--image-frames first|all] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--save-result FILE] LEFT RIGHT
+    linsync-cli compare [--profile NAME-OR-PATH] [--type auto|text|binary|hex|folder|table|image|document] [--json|--count|--quiet] [--ignore-case] [--ignore-whitespace] [--ignore-blank-lines] [--ignore-eol] [--ignore-line-regex REGEX] [--regex-rule-set NAME] [--prediffer PLUGIN_ID] [--prediffer-conflict-policy chain|first-wins|last-wins] [--substitute-regex REGEX REPLACEMENT] [--detect-moves] [--diff-algorithm lcs|patience|myers] [--inline-granularity char|word|grapheme] [--context LINES] [--show-only-changes] [--render side-by-side|unified|context|normal|html] [--syntax plain|auto|rust|json|html|markdown|shell|toml|yaml|c|cpp|python|javascript|typescript|go|java|css] [--find PATTERN] [--find-regex] [--find-case-sensitive] [--bookmark SIDE:LINE[:LABEL]] [--encoding auto|utf8|utf8-bom|utf16le|utf16be|lossy-utf8] [--image-mode exact|tolerance|perceptual] [--image-tolerance F] [--image-delta-e F] [--image-frames first|all] [--document-mode text|ocr_text|rendered] [--ocr-language LANG] [--save-result FILE] LEFT RIGHT
     linsync-cli compare3 [--markers|--json] LEFT BASE RIGHT
     linsync-cli conflict [--json] FILE
     linsync-cli completions SHELL
@@ -7023,5 +7031,27 @@ mod tests {
         assert_eq!(parsed.effective_profile.as_deref(), Some("default"));
         assert_eq!(parsed.text_options.substitutions.len(), 1);
         assert_eq!(parsed.paths, vec!["left.txt", "right.txt"]);
+    }
+
+    #[test]
+    fn parse_text_syntax_mode_accepts_extended_language_tokens() {
+        let cases = [
+            ("c", TextSyntaxMode::C),
+            ("cpp", TextSyntaxMode::Cpp),
+            ("python", TextSyntaxMode::Python),
+            ("javascript", TextSyntaxMode::JavaScript),
+            ("typescript", TextSyntaxMode::TypeScript),
+            ("go", TextSyntaxMode::Go),
+            ("java", TextSyntaxMode::Java),
+            ("css", TextSyntaxMode::Css),
+        ];
+        for (token, expected) in cases {
+            assert_eq!(
+                parse_text_syntax_mode(token),
+                Ok(expected),
+                "token '{token}' should parse"
+            );
+        }
+        assert!(parse_text_syntax_mode("fortran").is_err());
     }
 }

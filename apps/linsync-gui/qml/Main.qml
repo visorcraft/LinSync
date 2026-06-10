@@ -4170,10 +4170,10 @@ Kirigami.ApplicationWindow {
                         id: syntaxSelector
                         implicitHeight: 30
                         Layout.preferredWidth: 130
-                        model: [qsTr("Plain"), qsTr("Auto"), qsTr("Rust"), qsTr("JSON"), qsTr("HTML"), qsTr("Markdown"), qsTr("Shell"), qsTr("TOML"), qsTr("YAML")]
+                        model: [qsTr("Plain"), qsTr("Auto"), qsTr("Rust"), qsTr("JSON"), qsTr("HTML"), qsTr("Markdown"), qsTr("Shell"), qsTr("TOML"), qsTr("YAML"), qsTr("C"), qsTr("C++"), qsTr("Python"), qsTr("JavaScript"), qsTr("TypeScript"), qsTr("Go"), qsTr("Java"), qsTr("CSS")]
                         Accessible.name: qsTr("Syntax mode")
                         onActivated: {
-                            const values = ["plain", "auto", "rust", "json", "html", "markdown", "shell", "toml", "yaml"]
+                            const values = ["plain", "auto", "rust", "json", "html", "markdown", "shell", "toml", "yaml", "c", "cpp", "python", "javascript", "typescript", "go", "java", "css"]
                             root.syntaxMode = values[currentIndex] || "plain"
                             root.requestCompare(false)
                         }

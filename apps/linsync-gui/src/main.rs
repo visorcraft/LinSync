@@ -4253,6 +4253,14 @@ fn parse_text_syntax_mode_query(value: &str) -> Result<TextSyntaxMode, String> {
         "shell" | "sh" | "bash" => Ok(TextSyntaxMode::Shell),
         "toml" => Ok(TextSyntaxMode::Toml),
         "yaml" | "yml" => Ok(TextSyntaxMode::Yaml),
+        "c" => Ok(TextSyntaxMode::C),
+        "cpp" => Ok(TextSyntaxMode::Cpp),
+        "python" => Ok(TextSyntaxMode::Python),
+        "javascript" => Ok(TextSyntaxMode::JavaScript),
+        "typescript" => Ok(TextSyntaxMode::TypeScript),
+        "go" => Ok(TextSyntaxMode::Go),
+        "java" => Ok(TextSyntaxMode::Java),
+        "css" => Ok(TextSyntaxMode::Css),
         _ => Err(format!("unknown syntax '{value}'")),
     }
 }
@@ -11131,6 +11139,40 @@ mod tests {
         assert!(
             rows.iter().any(|row| row["bookmarked"] == true),
             "bookmark query should mark matching rows; body={body}"
+        );
+    }
+
+    #[test]
+    fn compare_text_bridge_accepts_python_syntax_mode() {
+        let root = test_file_root("text-python-syntax");
+        let left_path = root.join("left.py");
+        let right_path = root.join("right.py");
+        std::fs::write(&left_path, "def main():\n    value = 1\n").unwrap();
+        std::fs::write(&right_path, "def main():\n    value = 2\n").unwrap();
+
+        let paths = test_app_paths("text-python-syntax-paths");
+        let state = test_bridge_state(None);
+        let query = format!(
+            "left={}&right={}&mode=Text&syntax=python",
+            urlencoding::encode(left_path.to_str().unwrap()),
+            urlencoding::encode(right_path.to_str().unwrap()),
+        );
+        let resp = String::from_utf8(bridge_response(
+            &format!("GET /compare?{query} HTTP/1.1\r\n"),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.contains("HTTP/1.1 200"), "compare should succeed");
+        let body = json_response_body(&resp);
+        let rows = body["session"]["tabs"][0]["left_rows"]
+            .as_array()
+            .expect("left rows");
+        assert!(
+            rows.iter().any(|row| row["syntax_spans"]
+                .as_array()
+                .is_some_and(|spans| spans.iter().any(|span| span["class"] == "keyword"))),
+            "syntax=python should attach keyword syntax spans; body={body}"
         );
     }
 
