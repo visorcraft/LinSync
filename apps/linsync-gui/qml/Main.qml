@@ -93,6 +93,7 @@ Kirigami.ApplicationWindow {
     property string archiveEditMember: ""
     property bool archiveEditInProgress: false
     property string archiveEditSide: ""  // "left" or "right"
+    property string archiveEditPortalWarning: ""
     property var unfilteredLeftRows: []
     property var unfilteredRightRows: []
     // Lazy text windowing. When a text diff is larger than the server's window
@@ -1284,9 +1285,9 @@ Kirigami.ApplicationWindow {
             root.archiveEditMember = entry
             root.archiveEditSide = side
             root.archiveEditInProgress = true
-            if (payload.atomic === false) {
-                root.statusText = "Portal archive: commit is non-atomic and keeps a backup in app state."
-            }
+            root.archiveEditPortalWarning = payload.atomic === false
+                ? "Portal archive: commit is non-atomic and keeps a backup in app state."
+                : ""
             // Open in external editor
             root.bridgeGet("/open-external?path=" + encodeURIComponent(payload.staged_path), function (ok2) {
                 root.statusText = ok2 ? "Editing " + entry + " in external editor" : "Could not open external editor"
@@ -1308,6 +1309,7 @@ Kirigami.ApplicationWindow {
                 root.archiveEditStagedPath = ""
                 root.archiveEditMember = ""
                 root.archiveEditSide = ""
+                root.archiveEditPortalWarning = ""
                 // Refresh the compare to show updated content
                 root.requestCompare(false)
             } else {
@@ -1321,6 +1323,7 @@ Kirigami.ApplicationWindow {
                     root.archiveEditStagedPath = ""
                     root.archiveEditMember = ""
                     root.archiveEditSide = ""
+                    root.archiveEditPortalWarning = ""
                 }
             }
         })
@@ -1338,6 +1341,7 @@ Kirigami.ApplicationWindow {
             root.archiveEditStagedPath = ""
             root.archiveEditMember = ""
             root.archiveEditSide = ""
+            root.archiveEditPortalWarning = ""
             root.statusText = ok ? "Archive edit discarded" : "Archive edit discarded (cleanup may have failed)"
         })
     }

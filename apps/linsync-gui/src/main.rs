@@ -5486,18 +5486,24 @@ fn archive_member_discard_bridge_response(
         return bridge_error(400, "Bad Request", "missing token");
     };
 
-    let staging_root = {
+    let (staging_root, portal_backup) = {
         let mut state_guard = match state.lock() {
             Ok(g) => g,
             Err(_) => return bridge_error(500, "Internal Server Error", "state lock poisoned"),
         };
         match state_guard.archive_edit_tokens.remove(token) {
-            Some(ctx) => ctx.staging_root().to_path_buf(),
+            Some(ctx) => (
+                ctx.staging_root().to_path_buf(),
+                ctx.portal_backup().map(|p| p.to_path_buf()),
+            ),
             None => return bridge_error(400, "Bad Request", "invalid or expired token"),
         }
     };
 
     let _ = fs::remove_dir_all(&staging_root);
+    if let Some(bak) = portal_backup {
+        let _ = fs::remove_file(&bak);
+    }
     let body = serde_json::json!({"ok": true}).to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
 }

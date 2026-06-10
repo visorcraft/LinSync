@@ -240,8 +240,13 @@ fn io_err(context: impl Into<String>, source: io::Error) -> ArchiveWriteError {
 }
 
 fn is_portal_path(path: &Path) -> bool {
-    path.to_str()
-        .is_some_and(|s| s.starts_with("/run/user/") && s.split('/').nth(4) == Some("doc"))
+    use std::path::Component;
+    let mut comps = path.components();
+    matches!(comps.next(), Some(Component::RootDir))
+        && matches!(comps.next(), Some(Component::Normal(os)) if os == "run")
+        && matches!(comps.next(), Some(Component::Normal(os)) if os == "user")
+        && comps.next().is_some() // <uid>
+        && matches!(comps.next(), Some(Component::Normal(os)) if os == "doc")
 }
 
 /// Freshness fingerprint of the whole archive (design §2: TOCTOU row).
@@ -1227,6 +1232,11 @@ pub fn commit_member_edit(
         Ok(outcome)
     } else {
         // Portal path: non-atomic O_TRUNC write over the original portal FD.
+        // The file is truncated on open; if the copy or fsync fails partway,
+        // the archive may be left corrupted. This is an inherent limitation of
+        // portal-granted files (the parent directory is a FUSE mount, so
+        // atomic rename is impossible). The app-private backup is the recovery
+        // path (design §7).
         let mut work_file = File::open(&work_copy)
             .map_err(|e| io_err("reopening working copy for portal publish failed", e))?;
         let mut portal_file = OpenOptions::new()
@@ -1235,9 +1245,13 @@ pub fn commit_member_edit(
             .open(archive)
             .map_err(|e| {
                 if e.kind() == io::ErrorKind::PermissionDenied {
+                    let backup = ctx
+                        .portal_backup
+                        .clone()
+                        .expect("portal_backup must be set for portal paths");
                     ArchiveWriteError::PortalReadOnly {
                         archive: archive.clone(),
-                        backup: ctx.portal_backup.clone().unwrap_or_default(),
+                        backup,
                     }
                 } else {
                     io_err(
@@ -1322,6 +1336,14 @@ mod tests {
         assert!(is_portal_path(Path::new("/run/user/1000/doc/abc/file.zip")));
         assert!(!is_portal_path(Path::new("/home/user/file.zip")));
         assert!(!is_portal_path(Path::new("/run/user/1000/file.zip")));
+        // Must not match if "doc" is not the 5th component.
+        assert!(!is_portal_path(Path::new("/run/user/1000/other/file.zip")));
+        // A path ending exactly at /doc IS a portal directory (the FUSE mount
+        // root itself), so it matches.
+        assert!(is_portal_path(Path::new("/run/user/1000/doc")));
+        // Non-UTF-8 paths fall through to false (Path::components handles OS
+        // strings without requiring valid UTF-8).
+        assert!(!is_portal_path(Path::new("/home/user/file.zip")));
     }
 
     #[test]
@@ -1383,4 +1405,61 @@ mod tests {
         assert_eq!(outcome.bak_path, Some(portal_bak.clone()));
         assert!(portal_bak.exists());
     }
+
+    #[test]
+    fn portal_read_only_returns_error_with_backup_path() {
+        if !std::process::Command::new("zip")
+            .arg("-v")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+            || !std::process::Command::new("unzip")
+                .arg("-v")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        {
+            eprintln!("SKIP: zip or unzip not on PATH");
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("zip-src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"alpha\n").unwrap();
+        let archive = dir.path().join("ro.zip");
+        let status = std::process::Command::new("zip")
+            .arg("-q")
+            .arg("-r")
+            .arg(&archive)
+            .arg(".")
+            .current_dir(&src)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let meta = std::fs::metadata(&archive).unwrap();
+        // Make the file read-only.
+        let mut perms = meta.permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&archive, perms).unwrap();
+
+        let staging = dir.path().join("staging");
+        let mut ctx =
+            extract_member_for_edit(&archive, "a.txt", &staging, None).expect("extract failed");
+
+        let portal_bak = dir.path().join("portal.bak");
+        std::fs::copy(&archive, &portal_bak).unwrap();
+        ctx.atomic = false;
+        ctx.portal_backup = Some(portal_bak.clone());
+
+        let err = commit_member_edit(&ctx, &CommitOptions::default())
+            .expect_err("commit on read-only portal path must fail");
+        match err {
+            ArchiveWriteError::PortalReadOnly { archive: a, backup } => {
+                assert_eq!(a, archive);
+                assert_eq!(backup, portal_bak);
+            }
+            other => panic!("expected PortalReadOnly, got {other:?}"),
+        }
+    }
+
 }
