@@ -162,7 +162,7 @@ Kirigami.ScrollablePage {
         { name: "zune-core",                  version: "0.5.1",     license: "MIT OR Apache-2.0 OR Zlib" },
         { name: "zune-inflate",                  version: "0.2.54",     license: "MIT OR Apache-2.0 OR Zlib" },
         { name: "zune-jpeg",                  version: "0.5.15",     license: "MIT OR Apache-2.0 OR Zlib" },
-// END GENERATED CREDITS
+    // END GENERATED CREDITS
     ]
 
     property string filterText: ""

@@ -67,17 +67,12 @@ Kirigami.Page {
         "after any dependency change.\n" +
         "\n" +
         // BEGIN GENERATED CREDITS COUNTS (do not edit inside; run `just credits-update`)
-        " - MIT License                  (115 crates)
-" +
-        " - Apache License 2.0           (7 crates)
-" +
-        " - BSD 3-Clause                 (2 crates)
-" +
-        " - BSD 2-Clause                 (1 crate)
-" +
-        " - Zlib                         (1 crate)
-" +
-END GENERATED CREDITS COUNTS
+        " - MIT License                  (115 crates)\n" +
+        " - Apache License 2.0           (7 crates)\n" +
+        " - BSD 3-Clause                 (2 crates)\n" +
+        " - BSD 2-Clause                 (1 crate)\n" +
+        " - Zlib                         (1 crate)\n" +
+        // END GENERATED CREDITS COUNTS
         " - Unicode-3.0                   (applies to unicode-ident)\n" +
         " - Unlicense / CC0-1.0 / MIT-0   (public-domain equivalents)\n" +
         "\n" +
@@ -86,259 +81,133 @@ END GENERATED CREDITS COUNTS
         "| Package              | Version  | License expression |\n" +
         "| -------------------- | -------- | ------------------ |\n" +
         // BEGIN GENERATED CREDITS TABLE (do not edit inside; run `just credits-update`)
-        "| adler2               | 2.0.1    | 0BSD OR MIT OR Apache-2.0 |
-" +
-        "| aho-corasick         | 1.1.4    | Unlicense OR MIT |
-" +
-        "| anyhow               | 1.0.102  | MIT OR Apache-2.0 |
-" +
-        "| arrayref             | 0.3.9    | BSD-2-Clause |
-" +
-        "| arrayvec             | 0.7.6    | MIT OR Apache-2.0 |
-" +
-        "| autocfg              | 1.5.1    | Apache-2.0 OR MIT |
-" +
-        "| bincode              | 1.3.3    | MIT |
-" +
-        "| bit_field            | 0.10.3   | Apache-2.0/MIT |
-" +
-        "| bitflags             | 2.11.1   | MIT OR Apache-2.0 |
-" +
-        "| blake3               | 1.8.5    | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
-" +
-        "| block-buffer         | 0.10.4   | MIT OR Apache-2.0 |
-" +
-        "| bytemuck             | 1.25.0   | Zlib OR Apache-2.0 OR MIT |
-" +
-        "| byteorder-lite       | 0.1.0    | Unlicense OR MIT |
-" +
-        "| cc                   | 1.2.62   | MIT OR Apache-2.0 |
-" +
-        "| cfg-if               | 1.0.4    | MIT OR Apache-2.0 |
-" +
-        "| clang-format         | 0.3.0    | MIT OR Apache-2.0 |
-" +
-        "| codespan-reporting   | 0.11.1   | Apache-2.0 |
-" +
-        "| codespan-reporting   | 0.13.1   | Apache-2.0 |
-" +
-        "| color_quant          | 1.1.0    | MIT |
-" +
-        "| constant_time_eq     | 0.4.2    | CC0-1.0 OR MIT-0 OR Apache-2.0 |
-" +
-        "| convert_case         | 0.6.0    | MIT |
-" +
-        "| cpufeatures          | 0.2.17   | MIT OR Apache-2.0 |
-" +
-        "| cpufeatures          | 0.3.0    | MIT OR Apache-2.0 |
-" +
-        "| crc32fast            | 1.5.0    | MIT OR Apache-2.0 |
-" +
-        "| crypto-common        | 0.1.7    | MIT OR Apache-2.0 |
-" +
-        "| cxx                  | 1.0.194  | MIT OR Apache-2.0 |
-" +
-        "| cxxbridge-flags      | 1.0.194  | MIT OR Apache-2.0 |
-" +
-        "| cxxbridge-macro      | 1.0.194  | MIT OR Apache-2.0 |
-" +
-        "| cxx-gen              | 0.7.194  | MIT OR Apache-2.0 |
-" +
-        "| cxx-qt               | 0.8.1    | MIT OR Apache-2.0 |
-" +
-        "| cxx-qt-build         | 0.8.1    | MIT OR Apache-2.0 |
-" +
-        "| cxx-qt-gen           | 0.8.1    | MIT OR Apache-2.0 |
-" +
-        "| cxx-qt-lib           | 0.8.1    | MIT OR Apache-2.0 |
-" +
-        "| cxx-qt-macro         | 0.8.1    | MIT OR Apache-2.0 |
-" +
-        "| digest               | 0.10.7   | MIT OR Apache-2.0 |
-" +
-        "| enumflags2           | 0.7.12   | MIT OR Apache-2.0 |
-" +
-        "| enumflags2_derive    | 0.7.12   | MIT OR Apache-2.0 |
-" +
-        "| equivalent           | 1.0.2    | Apache-2.0 OR MIT |
-" +
-        "| exr                  | 1.74.0   | BSD-3-Clause |
-" +
-        "| fax                  | 0.2.7    | MIT |
-" +
-        "| fdeflate             | 0.3.7    | MIT OR Apache-2.0 |
-" +
-        "| find-msvc-tools      | 0.1.9    | MIT OR Apache-2.0 |
-" +
-        "| flate2               | 1.1.9    | MIT OR Apache-2.0 |
-" +
-        "| fnv                  | 1.0.7    | Apache-2.0 / MIT |
-" +
-        "| foldhash             | 0.2.0    | Zlib |
-" +
-        "| generic-array        | 0.14.7   | MIT |
-" +
-        "| gif                  | 0.14.2   | MIT OR Apache-2.0 |
-" +
-        "| half                 | 2.7.1    | MIT OR Apache-2.0 |
-" +
-        "| hashbrown            | 0.17.1   | MIT OR Apache-2.0 |
-" +
-        "| image                | 0.25.10  | MIT OR Apache-2.0 |
-" +
-        "| image-webp           | 0.2.4    | MIT OR Apache-2.0 |
-" +
-        "| indexmap             | 2.14.0   | Apache-2.0 OR MIT |
-" +
-        "| indoc                | 2.0.7    | MIT OR Apache-2.0 |
-" +
-        "| itoa                 | 1.0.18   | MIT OR Apache-2.0 |
-" +
-        "| jobserver            | 0.1.34   | MIT OR Apache-2.0 |
-" +
-        "| lab                  | 0.11.0   | MIT |
-" +
-        "| landlock             | 0.4.5    | MIT OR Apache-2.0 |
-" +
-        "| lazy_static          | 1.5.0    | MIT OR Apache-2.0 |
-" +
-        "| lebe                 | 0.5.3    | BSD-3-Clause |
-" +
-        "| libc                 | 0.2.186  | MIT OR Apache-2.0 |
-" +
-        "| link-cplusplus       | 1.0.12   | MIT OR Apache-2.0 |
-" +
-        "| log                  | 0.4.29   | MIT OR Apache-2.0 |
-" +
-        "| memchr               | 2.8.0    | Unlicense OR MIT |
-" +
-        "| miniz_oxide          | 0.8.9    | MIT OR Zlib OR Apache-2.0 |
-" +
-        "| moxcms               | 0.8.1    | BSD-3-Clause OR Apache-2.0 |
-" +
-        "| nu-ansi-term         | 0.50.3   | MIT |
-" +
-        "| num-traits           | 0.2.19   | MIT OR Apache-2.0 |
-" +
-        "| once_cell            | 1.21.4   | MIT OR Apache-2.0 |
-" +
-        "| onig                 | 6.5.3    | MIT |
-" +
-        "| onig_sys             | 69.9.3   | MIT |
-" +
-        "| pin-project-lite     | 0.2.17   | Apache-2.0 OR MIT |
-" +
-        "| pkg-config           | 0.3.33   | MIT OR Apache-2.0 |
-" +
-        "| png                  | 0.18.1   | MIT OR Apache-2.0 |
-" +
-        "| proc-macro2          | 1.0.106  | MIT OR Apache-2.0 |
-" +
-        "| pxfm                 | 0.1.29   | BSD-3-Clause OR Apache-2.0 |
-" +
-        "| qt-build-utils       | 0.8.1    | MIT OR Apache-2.0 |
-" +
-        "| quick-error          | 2.0.1    | MIT/Apache-2.0 |
-" +
-        "| quote                | 1.0.45   | MIT OR Apache-2.0 |
-" +
-        "| regex                | 1.12.3   | MIT OR Apache-2.0 |
-" +
-        "| regex-automata       | 0.4.14   | MIT OR Apache-2.0 |
-" +
-        "| regex-syntax         | 0.8.10   | MIT OR Apache-2.0 |
-" +
-        "| rustversion          | 1.0.22   | MIT OR Apache-2.0 |
-" +
-        "| same-file            | 1.0.6    | Unlicense/MIT |
-" +
-        "| seccompiler          | 0.4.0    | Apache-2.0 OR BSD-3-Clause |
-" +
-        "| semver               | 1.0.28   | MIT OR Apache-2.0 |
-" +
-        "| serde                | 1.0.228  | MIT OR Apache-2.0 |
-" +
-        "| serde_core           | 1.0.228  | MIT OR Apache-2.0 |
-" +
-        "| serde_derive         | 1.0.228  | MIT OR Apache-2.0 |
-" +
-        "| serde_json           | 1.0.149  | MIT OR Apache-2.0 |
-" +
-        "| serde_repr           | 0.1.20   | MIT OR Apache-2.0 |
-" +
-        "| sha2                 | 0.10.9   | MIT OR Apache-2.0 |
-" +
-        "| sharded-slab         | 0.1.7    | MIT |
-" +
-        "| shlex                | 1.3.0    | MIT OR Apache-2.0 |
-" +
-        "| simd-adler32         | 0.3.9    | MIT |
-" +
-        "| smallvec             | 1.15.1   | MIT OR Apache-2.0 |
-" +
-        "| static_assertions    | 1.1.0    | MIT OR Apache-2.0 |
-" +
-        "| syn                  | 2.0.117  | MIT OR Apache-2.0 |
-" +
-        "| syntect              | 5.3.0    | MIT |
-" +
-        "| termcolor            | 1.4.1    | Unlicense OR MIT |
-" +
-        "| thiserror            | 1.0.69   | MIT OR Apache-2.0 |
-" +
-        "| thiserror            | 2.0.18   | MIT OR Apache-2.0 |
-" +
-        "| thiserror-impl       | 1.0.69   | MIT OR Apache-2.0 |
-" +
-        "| thiserror-impl       | 2.0.18   | MIT OR Apache-2.0 |
-" +
-        "| thread_local         | 1.1.9    | MIT OR Apache-2.0 |
-" +
-        "| tiff                 | 0.11.3   | MIT |
-" +
-        "| tracing              | 0.1.44   | MIT |
-" +
-        "| tracing-attributes   | 0.1.31   | MIT |
-" +
-        "| tracing-core         | 0.1.36   | MIT |
-" +
-        "| tracing-log          | 0.2.0    | MIT |
-" +
-        "| tracing-serde        | 0.2.0    | MIT |
-" +
-        "| tracing-subscriber   | 0.3.23   | MIT |
-" +
-        "| typenum              | 1.20.1   | MIT OR Apache-2.0 |
-" +
-        "| unicode-ident        | 1.0.24   | (MIT OR Apache-2.0) AND Unicode-3.0 |
-" +
-        "| unicode-segmentation | 1.13.2   | MIT OR Apache-2.0 |
-" +
-        "| unicode-width        | 0.1.14   | MIT OR Apache-2.0 |
-" +
-        "| unicode-width        | 0.2.2    | MIT OR Apache-2.0 |
-" +
-        "| urlencoding          | 2.1.3    | MIT |
-" +
-        "| version_check        | 0.9.5    | MIT/Apache-2.0 |
-" +
-        "| walkdir              | 2.5.0    | Unlicense/MIT |
-" +
-        "| weezl                | 0.1.12   | MIT OR Apache-2.0 |
-" +
-        "| zerocopy             | 0.8.48   | BSD-2-Clause OR Apache-2.0 OR MIT |
-" +
-        "| zerocopy-derive      | 0.8.48   | BSD-2-Clause OR Apache-2.0 OR MIT |
-" +
-        "| zmij                 | 1.0.21   | MIT |
-" +
-        "| zune-core            | 0.5.1    | MIT OR Apache-2.0 OR Zlib |
-" +
-        "| zune-inflate         | 0.2.54   | MIT OR Apache-2.0 OR Zlib |
-" +
-        "| zune-jpeg            | 0.5.15   | MIT OR Apache-2.0 OR Zlib |
-" +
-END GENERATED CREDITS TABLE
+        "| adler2               | 2.0.1    | 0BSD OR MIT OR Apache-2.0 |\n" +
+        "| aho-corasick         | 1.1.4    | Unlicense OR MIT |\n" +
+        "| anyhow               | 1.0.102  | MIT OR Apache-2.0 |\n" +
+        "| arrayref             | 0.3.9    | BSD-2-Clause |\n" +
+        "| arrayvec             | 0.7.6    | MIT OR Apache-2.0 |\n" +
+        "| autocfg              | 1.5.1    | Apache-2.0 OR MIT |\n" +
+        "| bincode              | 1.3.3    | MIT |\n" +
+        "| bit_field            | 0.10.3   | Apache-2.0/MIT |\n" +
+        "| bitflags             | 2.11.1   | MIT OR Apache-2.0 |\n" +
+        "| blake3               | 1.8.5    | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |\n" +
+        "| block-buffer         | 0.10.4   | MIT OR Apache-2.0 |\n" +
+        "| bytemuck             | 1.25.0   | Zlib OR Apache-2.0 OR MIT |\n" +
+        "| byteorder-lite       | 0.1.0    | Unlicense OR MIT |\n" +
+        "| cc                   | 1.2.62   | MIT OR Apache-2.0 |\n" +
+        "| cfg-if               | 1.0.4    | MIT OR Apache-2.0 |\n" +
+        "| clang-format         | 0.3.0    | MIT OR Apache-2.0 |\n" +
+        "| codespan-reporting   | 0.11.1   | Apache-2.0 |\n" +
+        "| codespan-reporting   | 0.13.1   | Apache-2.0 |\n" +
+        "| color_quant          | 1.1.0    | MIT |\n" +
+        "| constant_time_eq     | 0.4.2    | CC0-1.0 OR MIT-0 OR Apache-2.0 |\n" +
+        "| convert_case         | 0.6.0    | MIT |\n" +
+        "| cpufeatures          | 0.2.17   | MIT OR Apache-2.0 |\n" +
+        "| cpufeatures          | 0.3.0    | MIT OR Apache-2.0 |\n" +
+        "| crc32fast            | 1.5.0    | MIT OR Apache-2.0 |\n" +
+        "| crypto-common        | 0.1.7    | MIT OR Apache-2.0 |\n" +
+        "| cxx                  | 1.0.194  | MIT OR Apache-2.0 |\n" +
+        "| cxxbridge-flags      | 1.0.194  | MIT OR Apache-2.0 |\n" +
+        "| cxxbridge-macro      | 1.0.194  | MIT OR Apache-2.0 |\n" +
+        "| cxx-gen              | 0.7.194  | MIT OR Apache-2.0 |\n" +
+        "| cxx-qt               | 0.8.1    | MIT OR Apache-2.0 |\n" +
+        "| cxx-qt-build         | 0.8.1    | MIT OR Apache-2.0 |\n" +
+        "| cxx-qt-gen           | 0.8.1    | MIT OR Apache-2.0 |\n" +
+        "| cxx-qt-lib           | 0.8.1    | MIT OR Apache-2.0 |\n" +
+        "| cxx-qt-macro         | 0.8.1    | MIT OR Apache-2.0 |\n" +
+        "| digest               | 0.10.7   | MIT OR Apache-2.0 |\n" +
+        "| enumflags2           | 0.7.12   | MIT OR Apache-2.0 |\n" +
+        "| enumflags2_derive    | 0.7.12   | MIT OR Apache-2.0 |\n" +
+        "| equivalent           | 1.0.2    | Apache-2.0 OR MIT |\n" +
+        "| exr                  | 1.74.0   | BSD-3-Clause |\n" +
+        "| fax                  | 0.2.7    | MIT |\n" +
+        "| fdeflate             | 0.3.7    | MIT OR Apache-2.0 |\n" +
+        "| find-msvc-tools      | 0.1.9    | MIT OR Apache-2.0 |\n" +
+        "| flate2               | 1.1.9    | MIT OR Apache-2.0 |\n" +
+        "| fnv                  | 1.0.7    | Apache-2.0 / MIT |\n" +
+        "| foldhash             | 0.2.0    | Zlib |\n" +
+        "| generic-array        | 0.14.7   | MIT |\n" +
+        "| gif                  | 0.14.2   | MIT OR Apache-2.0 |\n" +
+        "| half                 | 2.7.1    | MIT OR Apache-2.0 |\n" +
+        "| hashbrown            | 0.17.1   | MIT OR Apache-2.0 |\n" +
+        "| image                | 0.25.10  | MIT OR Apache-2.0 |\n" +
+        "| image-webp           | 0.2.4    | MIT OR Apache-2.0 |\n" +
+        "| indexmap             | 2.14.0   | Apache-2.0 OR MIT |\n" +
+        "| indoc                | 2.0.7    | MIT OR Apache-2.0 |\n" +
+        "| itoa                 | 1.0.18   | MIT OR Apache-2.0 |\n" +
+        "| jobserver            | 0.1.34   | MIT OR Apache-2.0 |\n" +
+        "| lab                  | 0.11.0   | MIT |\n" +
+        "| landlock             | 0.4.5    | MIT OR Apache-2.0 |\n" +
+        "| lazy_static          | 1.5.0    | MIT OR Apache-2.0 |\n" +
+        "| lebe                 | 0.5.3    | BSD-3-Clause |\n" +
+        "| libc                 | 0.2.186  | MIT OR Apache-2.0 |\n" +
+        "| link-cplusplus       | 1.0.12   | MIT OR Apache-2.0 |\n" +
+        "| log                  | 0.4.29   | MIT OR Apache-2.0 |\n" +
+        "| memchr               | 2.8.0    | Unlicense OR MIT |\n" +
+        "| miniz_oxide          | 0.8.9    | MIT OR Zlib OR Apache-2.0 |\n" +
+        "| moxcms               | 0.8.1    | BSD-3-Clause OR Apache-2.0 |\n" +
+        "| nu-ansi-term         | 0.50.3   | MIT |\n" +
+        "| num-traits           | 0.2.19   | MIT OR Apache-2.0 |\n" +
+        "| once_cell            | 1.21.4   | MIT OR Apache-2.0 |\n" +
+        "| onig                 | 6.5.3    | MIT |\n" +
+        "| onig_sys             | 69.9.3   | MIT |\n" +
+        "| pin-project-lite     | 0.2.17   | Apache-2.0 OR MIT |\n" +
+        "| pkg-config           | 0.3.33   | MIT OR Apache-2.0 |\n" +
+        "| png                  | 0.18.1   | MIT OR Apache-2.0 |\n" +
+        "| proc-macro2          | 1.0.106  | MIT OR Apache-2.0 |\n" +
+        "| pxfm                 | 0.1.29   | BSD-3-Clause OR Apache-2.0 |\n" +
+        "| qt-build-utils       | 0.8.1    | MIT OR Apache-2.0 |\n" +
+        "| quick-error          | 2.0.1    | MIT/Apache-2.0 |\n" +
+        "| quote                | 1.0.45   | MIT OR Apache-2.0 |\n" +
+        "| regex                | 1.12.3   | MIT OR Apache-2.0 |\n" +
+        "| regex-automata       | 0.4.14   | MIT OR Apache-2.0 |\n" +
+        "| regex-syntax         | 0.8.10   | MIT OR Apache-2.0 |\n" +
+        "| rustversion          | 1.0.22   | MIT OR Apache-2.0 |\n" +
+        "| same-file            | 1.0.6    | Unlicense/MIT |\n" +
+        "| seccompiler          | 0.4.0    | Apache-2.0 OR BSD-3-Clause |\n" +
+        "| semver               | 1.0.28   | MIT OR Apache-2.0 |\n" +
+        "| serde                | 1.0.228  | MIT OR Apache-2.0 |\n" +
+        "| serde_core           | 1.0.228  | MIT OR Apache-2.0 |\n" +
+        "| serde_derive         | 1.0.228  | MIT OR Apache-2.0 |\n" +
+        "| serde_json           | 1.0.149  | MIT OR Apache-2.0 |\n" +
+        "| serde_repr           | 0.1.20   | MIT OR Apache-2.0 |\n" +
+        "| sha2                 | 0.10.9   | MIT OR Apache-2.0 |\n" +
+        "| sharded-slab         | 0.1.7    | MIT |\n" +
+        "| shlex                | 1.3.0    | MIT OR Apache-2.0 |\n" +
+        "| simd-adler32         | 0.3.9    | MIT |\n" +
+        "| smallvec             | 1.15.1   | MIT OR Apache-2.0 |\n" +
+        "| static_assertions    | 1.1.0    | MIT OR Apache-2.0 |\n" +
+        "| syn                  | 2.0.117  | MIT OR Apache-2.0 |\n" +
+        "| syntect              | 5.3.0    | MIT |\n" +
+        "| termcolor            | 1.4.1    | Unlicense OR MIT |\n" +
+        "| thiserror            | 1.0.69   | MIT OR Apache-2.0 |\n" +
+        "| thiserror            | 2.0.18   | MIT OR Apache-2.0 |\n" +
+        "| thiserror-impl       | 1.0.69   | MIT OR Apache-2.0 |\n" +
+        "| thiserror-impl       | 2.0.18   | MIT OR Apache-2.0 |\n" +
+        "| thread_local         | 1.1.9    | MIT OR Apache-2.0 |\n" +
+        "| tiff                 | 0.11.3   | MIT |\n" +
+        "| tracing              | 0.1.44   | MIT |\n" +
+        "| tracing-attributes   | 0.1.31   | MIT |\n" +
+        "| tracing-core         | 0.1.36   | MIT |\n" +
+        "| tracing-log          | 0.2.0    | MIT |\n" +
+        "| tracing-serde        | 0.2.0    | MIT |\n" +
+        "| tracing-subscriber   | 0.3.23   | MIT |\n" +
+        "| typenum              | 1.20.1   | MIT OR Apache-2.0 |\n" +
+        "| unicode-ident        | 1.0.24   | (MIT OR Apache-2.0) AND Unicode-3.0 |\n" +
+        "| unicode-segmentation | 1.13.2   | MIT OR Apache-2.0 |\n" +
+        "| unicode-width        | 0.1.14   | MIT OR Apache-2.0 |\n" +
+        "| unicode-width        | 0.2.2    | MIT OR Apache-2.0 |\n" +
+        "| urlencoding          | 2.1.3    | MIT |\n" +
+        "| version_check        | 0.9.5    | MIT/Apache-2.0 |\n" +
+        "| walkdir              | 2.5.0    | Unlicense/MIT |\n" +
+        "| weezl                | 0.1.12   | MIT OR Apache-2.0 |\n" +
+        "| zerocopy             | 0.8.48   | BSD-2-Clause OR Apache-2.0 OR MIT |\n" +
+        "| zerocopy-derive      | 0.8.48   | BSD-2-Clause OR Apache-2.0 OR MIT |\n" +
+        "| zmij                 | 1.0.21   | MIT |\n" +
+        "| zune-core            | 0.5.1    | MIT OR Apache-2.0 OR Zlib |\n" +
+        "| zune-inflate         | 0.2.54   | MIT OR Apache-2.0 OR Zlib |\n" +
+        "| zune-jpeg            | 0.5.15   | MIT OR Apache-2.0 OR Zlib |\n" +
+        // END GENERATED CREDITS TABLE
         "\n" +
         "Where a crate offers multiple licenses, LinSync selects the option\n" +
         "compatible with GPL-3.0-only.  No third-party copyleft Cargo crates\n" +

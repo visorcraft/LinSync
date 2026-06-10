@@ -183,20 +183,37 @@ def format_licenses_counts_source(counts: dict[str, int]) -> str:
     return "\n".join(lines)
 
 
-def patch_block(text: str, begin: str, end: str, replacement: str, *, keep_markers: bool = True) -> str:
+def patch_block(text: str, begin: str, end: str, replacement: str) -> str:
     """Replace content strictly between begin/end markers.
 
-    If keep_markers, the markers themselves remain and only interior changes.
-    The replacement should not include the markers.
+    The markers remain and only the interior changes; the full line carrying
+    the END marker (including its `// ` / indentation prefix) is captured and
+    re-emitted verbatim. The replacement must not include the markers and is
+    inserted literally via a callable so `re.sub` never interprets backslash
+    escapes (e.g. the `\\n` sequences inside generated QML string literals)
+    or group references in the generated content.
     """
     pattern = re.compile(
-        rf"(?P<prefix>{re.escape(begin)}).*?(?P<suffix>{re.escape(end)})",
+        rf"{re.escape(begin)}.*?\n(?P<endline>[^\n]*{re.escape(end)})",
         re.DOTALL,
     )
     if not pattern.search(text):
         raise RuntimeError(f"markers not found: {begin} ... {end}")
-    repl = f"{begin}\n{replacement}\n{end}" if keep_markers else replacement
-    return pattern.sub(repl, text)
+    return pattern.sub(lambda m: f"{begin}\n{replacement}\n{m.group('endline')}", text)
+
+
+def check_markers(path: Path, text: str, begin: str, end: str, prefix: str) -> None:
+    """Fail loudly if a generated block's markers got mangled while patching."""
+    for marker in (begin, end):
+        lines = [ln for ln in text.splitlines() if marker in ln]
+        if len(lines) != 1:
+            raise RuntimeError(
+                f"{path.name}: expected exactly 1 line containing {marker!r}, found {len(lines)}"
+            )
+        if not lines[0].lstrip().startswith(prefix):
+            raise RuntimeError(
+                f"{path.name}: marker line lost its {prefix!r} prefix: {lines[0]!r}"
+            )
 
 
 def write_json(crates: list[dict[str, str]]) -> None:
@@ -237,6 +254,7 @@ def update_md(crates: list[dict[str, str]]) -> None:
     else:
         text = patch_block(text, MD_BEGIN, MD_END, generated_rows)
 
+    check_markers(MD_PATH, text, MD_BEGIN, MD_END, "<!--")
     MD_PATH.write_text(text, encoding="utf-8")
 
 
@@ -264,6 +282,7 @@ def update_credits_qml(crates: list[dict[str, str]]) -> None:
         else:
             # last resort insert
             text = re.sub(r"(readonly property var crates:\s*\[)", lambda m: m.group(0) + "\n" + marked_block, text, count=1)
+    check_markers(CREDITS_QML, text, QML_BEGIN, QML_END, "//")
     CREDITS_QML.write_text(text, encoding="utf-8")
 
 
@@ -326,6 +345,8 @@ def update_licenses_qml(crates: list[dict[str, str]]) -> None:
     text = _replace_counts_block(text, counts_src)
     text = _replace_table_rows_block(text, table_src)
 
+    check_markers(LICENSES_QML, text, LICENSES_COUNTS_BEGIN, LICENSES_COUNTS_END, "//")
+    check_markers(LICENSES_QML, text, LICENSES_TABLE_BEGIN, LICENSES_TABLE_END, "//")
     LICENSES_QML.write_text(text, encoding="utf-8")
 
 
