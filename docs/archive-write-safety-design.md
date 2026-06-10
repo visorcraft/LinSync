@@ -47,12 +47,13 @@ Explicitly out of scope, each with its reason:
 
 | Threat | Vector | Mitigation |
 |---|---|---|
-| Zip-slip on repack | Member path containing `..`, leading `/`, drive prefix, or NUL escapes the staging root when staged, or smuggles a path into the `zip` invocation | Member paths are validated with the same rules `unpack_folder` imposes on `tree` paths (`docs/plugin-protocol.md` §Security: path traversal). The staged path is `staging_root.join(member)`, canonicalized, and prefix-checked against the staging root. Paths beginning with `-` are rejected so they can never be parsed as `zip` flags. |
+| Zip-slip on repack | Member path containing `..`, leading `/`, drive prefix, or NUL escapes the staging root when staged, or smuggles a path into the `zip` invocation | Member paths are validated with the same rules `unpack_folder` imposes on `tree` paths (`docs/plugin-protocol.md` §Security: path traversal). The staged path is `staging_root.join(member)`, canonicalized, and prefix-checked against the staging root. Paths beginning with `-` or `@` are rejected so they can never be parsed as `zip` flags or Info-ZIP `@filelist` specifiers. These argument checks are defense-in-depth, not the only gate — the Landlock/bwrap policy (§4) already contains the blast radius of a misparsed argument. |
 | Symlink member as edit target | User asks to edit a member whose zip entry is a symlink (`S_IFLNK` in external attributes); extraction would create a link, and "editing" it edits the link target | `/archive/member/edit` refuses symlink (and any non-regular-file) members with 400. |
 | Symlink as repack content | The staged file is replaced by a symlink (by the editor, or by an attacker with staging access) before repack, exfiltrating or injecting the link target | Immediately before repack the host `lstat`s the staged file and requires a regular file. The staging dir lives under app-private `AppPaths::cache_dir` with `0700` parent perms. |
 | Mode/permission loss | Repack records the staging file's mode instead of the member's original mode | Host restores the original member's recorded Unix mode (zip external attributes) onto the staged file before repack, so the mode round-trips. Untouched members keep their bytes (working-copy model, §3). |
+| Duplicate entry via name re-encoding | Info-ZIP re-encodes member names lacking the UTF-8 flag (cp437 legacy entries); a name mismatch makes `zip` *add* a second member instead of replacing the target | Members whose names fail a UTF-8 round-trip are rejected at edit time with 400. After repack the host asserts member count unchanged and the target member present exactly once before publishing (§5 built-in zip path); violation aborts the commit, original untouched. |
 | Archive bomb on staging | A crafted member decompresses to enormous size during the edit-extract | Caps enforced at extraction: max uncompressed member size (default 1 GiB) and max compressed:uncompressed ratio (default 200:1), both checked against the zip central-directory sizes before extraction and re-checked against actual bytes written. Exceeding either aborts with a clear error; nothing is staged. |
-| TOCTOU: archive modified externally mid-edit | Another program rewrites the archive between extract and commit; repacking would publish a stale or mixed archive | A freshness fingerprint — size + mtime (nanosecond) + SHA-256 of the whole archive — is captured at `/archive/member/edit` time and stored server-side with the token. At commit, size+mtime are checked first (cheap), then the full hash, all under the commit lock. Mismatch → 409, token invalidated, original untouched. |
+| TOCTOU: archive modified externally mid-edit | Another program rewrites the archive between extract and commit; repacking would publish a stale or mixed archive | A freshness fingerprint — size + mtime (nanosecond) + SHA-256 of the whole archive — is captured at `/archive/member/edit` time and stored server-side with the token. Edit-time extraction and fingerprinting run under a shared `flock(LOCK_SH)` on the archive, so the fingerprint provably matches the bytes that were extracted. At commit, size+mtime are checked first (cheap), then the full hash, all under the commit lock. Mismatch → 409, token invalidated, original untouched. |
 | Partial-write corruption | Crash or kill mid-repack leaves a truncated archive | The original is never opened for writing. All writing happens to `<archive>.linsync-tmp`; publish is a single atomic `rename(2)` (§3). A crash at any earlier step leaves the original byte-identical. |
 | Concurrent edits of the same archive | Two tabs/windows (or two LinSync processes) commit competing repacks | One outstanding edit token per canonical archive path in the bridge's token table (second `/archive/member/edit` → 409). Cross-process: commit takes a non-blocking `flock(LOCK_EX)` on the original for the fingerprint-check + rename window; contention → 409, retry later. |
 | Helper escape | The sandboxed `zip` (or plugin) writes outside its grants | Landlock/bwrap policy in §4: write grants are the staging dir and the `.linsync-tmp` file only. The original archive path is never in `write_paths`. |
@@ -74,8 +75,11 @@ The unit of publish is a whole-file rename. Steps, in order:
    matches its archive path. The original is read-only to the helper.
 4. Host re-verifies the freshness fingerprint against the original under
    `flock` (§2 TOCTOU row).
-5. Host `fsync`s the tmp file, hard-links the original to `<archive>.bak`
-   (no data copy; same filesystem), then
+5. Host `fsync`s the tmp file, then hard-links the original to
+   `<archive>.bak` (no data copy; same filesystem). Filesystems without hard
+   links (FAT32/exFAT, many FUSE mounts) fail the `link(2)` with
+   `EXDEV`/`EOPNOTSUPP`; the host then **copies** the original to `.bak`
+   instead — the backup is degraded to a copy, never silently skipped. Then
 6. `rename("<archive>.linsync-tmp", "<archive>")` and `fsync` the parent
    directory.
 7. On confirmed success the `.bak` is **deleted by default**; the boolean
@@ -84,7 +88,11 @@ The unit of publish is a whole-file rename. Steps, in order:
 
 Failure at any step ≤ 5 deletes the tmp file and leaves the original
 byte-identical; the `.bak` link (created in step 5) is removed only if the
-rename did not happen. Failure *after* a successful rename cannot occur in this
+rename did not happen. If step 6's `rename(2)` itself fails (`EACCES`,
+`EROFS`, …), the original is untouched — a failed rename changes nothing —
+and the host **retains** both the `.bak` and the `.linsync-tmp` for retry: the
+token stays valid and the error body names both paths. Failure *after* a
+successful rename cannot occur in this
 protocol (step 7 is cleanup only); if `.bak` deletion itself fails, the commit
 still reports success and the stale `.bak` is reported in diagnostics.
 
@@ -126,13 +134,29 @@ Notable tightenings versus the obvious policy:
 - The atomic publish (steps 4–7 in §3) is performed by the trusted host
   process, never by the helper.
 
-Plugin repack helpers (§5) get the same shape via `policy_for_plugin` with the
-working copy as the writable source: `writes_input: true` semantics scoped to
-the tmp file, plugin dir read-only, staging dir as the writable temp dir.
+The v1 built-in repack does **not** go through `policy_for_plugin`: like the
+built-in `unzip`/`tar` extraction in `linsync-cli archive`, it constructs the
+policy above directly with `SandboxPolicy::builder()`. This is deliberate —
+the manifest declares a `writes_input` field (core's `PluginSandbox`), but
+`PluginSandboxFields` does not mirror it and `policy_for_plugin` adds
+`source_path` to read paths only, so the plugin spawn path cannot express a
+writable source today. Plugin repack helpers are blocked on closing that gap
+(§5).
 
 ## 5. Plugin protocol extension: `repack_member`
 
 A new operation for the `unpacker` class, following the `unpack_folder` style.
+
+**v1 ships the built-in zip path only; plugin `repack_member` is specified
+here but deferred, blocked on sandbox API support.** `policy_for_plugin` makes
+`source_path` read-only and `PluginSandboxFields` has no `writes_input` field,
+so today's plugin spawn path cannot grant a writable working copy. Required
+API change before any plugin may repack: add `writes_input` to
+`PluginSandboxFields` (mirroring the existing manifest field) and have
+`policy_for_plugin` move `source_path` into `write_paths` when it is set —
+scoped to the `.linsync-tmp` working copy, plugin dir read-only, staging dir
+as the writable temp dir. Until that lands, a manifest declaring
+`supports_repack: true` parses cleanly but is never offered the op.
 
 Manifest opt-in (defaults to `false`; absent field keeps every existing
 manifest valid and read-only):
@@ -192,6 +216,18 @@ cwd=<staging extract root>  zip -q -b <staging_dir> <tmp-archive> <member>
 ```
 
 `-b` keeps zip's own temp file inside the staging grant.
+
+Two guards close Info-ZIP's name-encoding hole (a cp437 legacy name that
+`zip` re-encodes would be *added* as a second entry rather than replaced):
+
+- **Edit-time:** members whose names fail a UTF-8 round-trip are rejected at
+  `/archive/member/edit` with 400 "member name encoding not supported for
+  editing" — simpler and safer than attempting a replacement `zip` cannot
+  address by name.
+- **Post-repack:** before §3 step 4, the host lists the working copy
+  (`unzip -l`/`zipinfo` parse, under the same sandbox policy) and asserts the
+  member count is unchanged and the target member appears exactly once.
+  Violation aborts the commit; the original is untouched.
 
 ### Capability detection
 
@@ -267,7 +303,10 @@ mount. Consequences:
   this path carries distinct wording: atomic replace is unavailable, a crash
   mid-write can corrupt the archive, and the backup's exact path. The 409
   warning body differs accordingly so the GUI cannot show the atomic-path text
-  by mistake.
+  by mistake. The portal grant may also be **read-only** (FileChooser does not
+  guarantee write access): when `open(O_WRONLY)` on the portal path fails,
+  commit returns 500 with the original untouched, and the error body names the
+  state-dir backup path so the edited bytes remain recoverable from staging.
 - The alternative — requiring users to grant directory access — was rejected:
   it pushes a Flatpak permission decision onto every edit and trains users to
   widen sandbox holes.
@@ -281,7 +320,8 @@ mount. Consequences:
 POST /archive/member/edit?archive=<path>&member=<path>
   → 200 {"ok":true,"token":"<128-bit hex>","staging_path":"…",
           "member":"…","atomic":true|false}        // atomic=false ⇒ portal path
-  → 400 invalid/symlink/non-regular member, caps exceeded, non-zip
+  → 400 invalid/symlink/non-regular member, non-UTF-8 member name,
+        caps exceeded, non-zip
   → 404 archive or member not found
   → 409 an edit token is already outstanding for this archive
 
@@ -296,7 +336,9 @@ POST /archive/member/discard?token=<token>
   → 200; deletes the staging dir, frees the token
 ```
 
-The token is an opaque server-side id mapping to
+The token is 128 bits drawn from the OS CSPRNG (`OsRng`/getrandom-backed),
+hex-encoded — unguessable, not merely unique. It is an opaque server-side id
+mapping to
 `{archive_path, member_path, staging_path, fingerprint, atomic}` held in the
 bridge process. **Commit and discard never accept client-supplied paths** —
 the token is the only handle, so a confused or malicious bridge client cannot
@@ -319,7 +361,13 @@ Implementation must ship at least these tests (names indicative):
   (helper exits nonzero / is killed mid-write); original byte-identical, tmp
   removed, error surfaced.
 - `archive_edit_rejects_zip_slip_member_paths` — `../`, absolute, drive
-  prefix, NUL, leading `-` members all → 400, nothing staged.
+  prefix, NUL, leading `-`, leading `@` members all → 400, nothing staged.
+- `archive_edit_rejects_non_utf8_member_name_and_asserts_count` — cp437
+  member name → 400 at edit time; a simulated repack that adds a duplicate
+  entry fails the post-repack member-count assertion, original untouched.
+- `archive_edit_bak_falls_back_to_copy_on_exdev` — `link(2)` failure
+  (FAT32/exFAT/FUSE-style `EXDEV`/`EOPNOTSUPP`) yields a copied `.bak`, never
+  a missing backup.
 - `archive_edit_rejects_symlink_member_and_symlinked_replacement` — symlink
   zip entry refused at edit; staged file swapped for a symlink refused at
   commit.
@@ -335,29 +383,26 @@ Implementation must ship at least these tests (names indicative):
   `just test-sandbox` suite: helper attempts writes to the original archive,
   a sibling, and `$HOME`; all denied under Landlock and under the bwrap
   fallback.
-- `repack_member_plugin_roundtrip` — fixture unpacker with
-  `supports_repack: true` performs the protocol exchange; manifest without the
-  field never receives the op and the GUI hides the action.
+- `repack_member_plugin_roundtrip` — deferred with plugin repack (§5): fixture
+  unpacker with `supports_repack: true` performs the protocol exchange;
+  manifest without the field never receives the op and the GUI hides the
+  action. For v1, only the manifest-parses-but-no-op-offered half applies.
 
 ## 10. Open questions for the reviewer
 
-1. **Filename encoding:** Info-ZIP `zip` may re-encode member names lacking
-   the UTF-8 flag (cp437 legacy entries). Does a name mismatch risk `zip`
-   *adding* a second member instead of replacing? May need a post-repack
-   member-count assertion, or a libzip-based helper instead of the CLI binary.
-2. **`.bak` default:** delete-on-success is proposed (§3) to avoid littering
+1. **`.bak` default:** delete-on-success is proposed (§3) to avoid littering
    user directories; is a retained-by-default first release safer for early
    adopters, flipping the default later?
-3. **Cap defaults:** 1 GiB member / 200:1 ratio are starting points; should
+2. **Cap defaults:** 1 GiB member / 200:1 ratio are starting points; should
    they share configuration with the existing plugin output-size limits
    instead of introducing new knobs?
-4. **Token lifetime:** tokens currently die with the bridge process; should a
+3. **Token lifetime:** tokens currently die with the bridge process; should a
    long-lived edit survive a GUI restart (persist the token table to state
    dir), or is forcing re-extract after restart acceptable for v1?
-5. **`flock` scope:** advisory `flock` protects against other LinSync
+4. **`flock` scope:** advisory `flock` protects against other LinSync
    instances only; non-cooperating writers are covered solely by the
    fingerprint check. Is that sufficient, or should commit also compare the
    original against the `.bak` link post-rename as a belt-and-braces audit?
-6. **CLI parity:** should `linsync-cli archive` grow a matching
+5. **CLI parity:** should `linsync-cli archive` grow a matching
    `--repack-member` subcommand in the same milestone, or is GUI-only
    acceptable for v1 (CLI can follow once the core API exists)?
