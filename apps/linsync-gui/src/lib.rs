@@ -837,6 +837,34 @@ pub mod test_support {
             serde_json::to_string_pretty(&map).map_err(|e| format!("serialize failed: {e}"))?;
         std::fs::write(&file, text).map_err(|e| format!("write failed: {e}"))
     }
+
+    // -------------------------------------------------------------------------
+    // Archive edit helpers
+    // -------------------------------------------------------------------------
+
+    /// Extract a zip member for editing (mirrors `/archive/member/edit`).
+    /// Returns the [`MemberEditContext`] and the staged file path.
+    pub fn extract_archive_member_for_test(
+        archive: &std::path::Path,
+        member: &str,
+        staging_root: &std::path::Path,
+    ) -> Result<(linsync_core::MemberEditContext, std::path::PathBuf), String> {
+        linsync_core::extract_member_for_edit(archive, member, staging_root)
+            .map(|ctx| {
+                let path = ctx.staged_path().to_path_buf();
+                (ctx, path)
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    /// Commit an archive member edit (mirrors `/archive/member/commit`).
+    pub fn commit_archive_member_edit_test(
+        ctx: &linsync_core::MemberEditContext,
+        keep_backup: bool,
+    ) -> Result<linsync_core::CommitOutcome, String> {
+        let options = linsync_core::CommitOptions { keep_backup };
+        linsync_core::commit_member_edit(ctx, &options).map_err(|e| e.to_string())
+    }
 }
 
 // ── Webpage compare bridge ────────────────────────────────────────────────────

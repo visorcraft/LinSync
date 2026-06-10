@@ -51,6 +51,11 @@ name = "webpage_compare_bridge"
 path = "tests/webpage_compare_bridge.rs"
 required-features = ["test-support"]
 
+[[test]]
+name = "archive_edit_bridge"
+path = "tests/archive_edit_bridge.rs"
+required-features = ["test-support"]
+
 [dependencies]
 cxx = { version = "1.0", optional = true }
 cxx-qt = { version = "0.8.1", optional = true }
@@ -69,4 +74,5 @@ qt-build-utils = { version = "0.8.1", optional = true }
 
 [dev-dependencies]
 image = { workspace = true }
+sha2 = { workspace = true }
 tempfile = "3"

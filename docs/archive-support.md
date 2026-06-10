@@ -2,13 +2,9 @@
 
 > Status: the read-only archive-as-virtual-folder pipeline (nested-archive
 > recursion + member extraction) has shipped. Writable archive-member editing
-> remains an explicit out-of-scope carve-out; the rest of this document records
-> the design constraints it shipped under and the bar a future writable
-> milestone would have to clear.
-
-Archive compare is a specialized view. The shipped implementation is read-only
-and presents archives as virtual folders; writable archive-member editing is
-deferred until a separate safety design exists.
+> for **zip archives** shipped in v1.10.0; tar and 7z remain read-only. The rest
+> of this document records the design constraints and the bar future formats
+> would have to clear.
 
 ## Helper Strategy
 
@@ -28,7 +24,7 @@ Preferred order:
 
 ## Read-Only First
 
-The first archive workflow should support:
+The archive workflow supports:
 
 - Listing archive members as virtual folder rows.
 - Comparing member name, path, size, timestamp, CRC/hash when available, and
@@ -38,13 +34,28 @@ The first archive workflow should support:
 - Showing archive member paths with an explicit virtual-path prefix so users do
   not confuse extracted temporary files with real editable filesystem paths.
 
-The first archive workflow must not:
+**Zip archives additionally support member editing** (see below). Tar and 7z
+remain read-only.
 
-- Save edits back into an archive.
-- Delete, rename, move, or overwrite archive members.
-- Treat archive members as writable folder-sync targets.
-- Silently extract or execute helper-produced files outside the assigned temp
-  directory.
+## Writable Zip Editing
+
+Zip archive member editing shipped in v1.10.0. The design is documented in
+`docs/archive-write-safety-design.md` and covers:
+
+- Atomic replace via tmp-then-rename (original never opened for writing).
+- Automatic `.bak` backup until commit succeeds.
+- Sandboxed `unzip`/`zip` helper processes under Landlock/seccomp.
+- Freshness fingerprinting (SHA-256 + flock) to prevent TOCTOU races.
+- Size and compression-ratio caps to mitigate archive bombs.
+- Path validation (zip-slip, symlink rejection, encoding round-trip checks).
+- Post-repack assertion (member count unchanged, target exactly once).
+
+Edit flow:
+
+1. Right-click a zip member row → "Edit member in left/right archive".
+2. The member is extracted to a staging file and opened in the external editor.
+3. Save in the editor, then click **Commit** (or **Discard**) in LinSync.
+4. Commit repacks the archive atomically; discard cleans up the staging file.
 
 ## Security Requirements
 
@@ -64,8 +75,8 @@ disabled for virtual archive folders.
 
 ## Writable Archive Milestone
 
-Writable archive-member workflows are not non-applicable forever, but they
-remain an out-of-scope carve-out. Before promotion, the project needs a separate design covering helper
-capability detection, atomic update behavior where possible, backup/restore
-behavior, failed-update recovery, conflict handling, Flatpak limitations, and
-clear corruption warnings.
+Writable archive-member workflows are now implemented for **zip**.
+Tar, 7z, and other formats remain read-only until a repack-capable helper or
+built-in path is available. The plugin protocol extension for `repack_member` is
+specified in `docs/archive-write-safety-design.md` §5 but deferred until
+`sandbox_writes_input` support lands in `linsync-sandbox`.

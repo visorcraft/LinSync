@@ -415,6 +415,9 @@ struct GuiBridgeState {
     compare_progress: HashMap<String, Arc<Mutex<CompareProgress>>>,
     last_image_result: Option<ImageCompareResult>,
     last_image_overlay_path: Option<PathBuf>,
+    /// In-progress archive member edits, keyed by opaque token. The bridge
+    /// holds the [`MemberEditContext`] so clients never supply paths to commit.
+    archive_edit_tokens: HashMap<String, linsync_core::MemberEditContext>,
 }
 
 struct CompareProgress {
@@ -564,6 +567,7 @@ impl GuiBridgeState {
             compare_progress: HashMap::new(),
             last_image_result: None,
             last_image_overlay_path: None,
+            archive_edit_tokens: HashMap::new(),
         }
     }
 
@@ -3589,6 +3593,9 @@ fn bridge_response_with_token(
         "/binary/window" => binary_window_bridge_response(query, state),
         "/folder/op/plan" => folder_op_plan_bridge_response(query, paths, state),
         "/folder/op/execute" => folder_op_execute_bridge_response(query, paths, state),
+        "/archive/member/edit" => archive_member_edit_bridge_response(query, paths, state),
+        "/archive/member/commit" => archive_member_commit_bridge_response(query, state),
+        "/archive/member/discard" => archive_member_discard_bridge_response(query, state),
         "/merge/conflicts" => merge_conflicts_bridge_response(state),
         "/merge3/start" => merge3_start_bridge_response(query, paths, state),
         "/merge3/resolve" => merge3_resolve_bridge_response(query, state),
@@ -5233,6 +5240,157 @@ fn copy_clipboard_bridge_response(query: &str) -> Vec<u8> {
             "no clipboard command found (need xclip or wl-copy)",
         ),
     }
+}
+
+fn archive_member_edit_bridge_response(
+    query: &str,
+    paths: &AppPaths,
+    state: &Arc<Mutex<GuiBridgeState>>,
+) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(archive_str) = query_value(&params, "archive") else {
+        return bridge_error(400, "Bad Request", "missing archive");
+    };
+    let Some(member_str) = query_value(&params, "member") else {
+        return bridge_error(400, "Bad Request", "missing member");
+    };
+    let archive = PathBuf::from(percent_decode(archive_str));
+    let member = percent_decode(member_str);
+
+    if !archive.exists() {
+        return bridge_error(
+            404,
+            "Not Found",
+            &format!("archive does not exist: {}", archive.display()),
+        );
+    }
+
+    let staging_root = paths.cache_dir.join("archive-edits").join(&member);
+    if staging_root.exists() {
+        let _ = fs::remove_dir_all(&staging_root);
+    }
+
+    match linsync_core::extract_member_for_edit(&archive, &member, &staging_root) {
+        Ok(ctx) => {
+            let token = match bridge_token() {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = fs::remove_dir_all(&staging_root);
+                    return bridge_error(500, "Internal Server Error", &e.to_string());
+                }
+            };
+            let staged_path = ctx.staged_path().to_path_buf();
+            if let Ok(mut state) = state.lock() {
+                state.archive_edit_tokens.insert(token.clone(), ctx);
+            }
+            let body = serde_json::json!({
+                "ok": true,
+                "token": token,
+                "staged_path": staged_path,
+            })
+            .to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
+        }
+        Err(e) => {
+            let status = match e {
+                linsync_core::ArchiveWriteError::InvalidMemberName { .. }
+                | linsync_core::ArchiveWriteError::MemberNameEncoding { .. }
+                | linsync_core::ArchiveWriteError::NonRegularMember { .. }
+                | linsync_core::ArchiveWriteError::CapsExceeded { .. }
+                | linsync_core::ArchiveWriteError::UnsupportedArchive { .. } => 400,
+                linsync_core::ArchiveWriteError::ArchiveNotFound { .. }
+                | linsync_core::ArchiveWriteError::MemberNotFound { .. } => 404,
+                linsync_core::ArchiveWriteError::StaleArchive { .. }
+                | linsync_core::ArchiveWriteError::LockContention { .. } => 409,
+                _ => 500,
+            };
+            bridge_error(status, "Error", &e.to_string())
+        }
+    }
+}
+
+fn archive_member_commit_bridge_response(
+    query: &str,
+    state: &Arc<Mutex<GuiBridgeState>>,
+) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(token) = query_value(&params, "token") else {
+        return bridge_error(400, "Bad Request", "missing token");
+    };
+    let keep_backup = query_bool(&params, "keep_backup");
+
+    let ctx = {
+        let mut state_guard = match state.lock() {
+            Ok(g) => g,
+            Err(_) => return bridge_error(500, "Internal Server Error", "state lock poisoned"),
+        };
+        match state_guard.archive_edit_tokens.remove(token) {
+            Some(ctx) => ctx,
+            None => return bridge_error(400, "Bad Request", "invalid or expired token"),
+        }
+    };
+
+    let options = linsync_core::CommitOptions { keep_backup };
+    match linsync_core::commit_member_edit(&ctx, &options) {
+        Ok(outcome) => {
+            let _ = fs::remove_dir_all(ctx.staging_root());
+            let mut response = serde_json::json!({"ok": true});
+            if let Some(bak) = &outcome.bak_path {
+                response["bak_path"] = serde_json::json!(bak);
+            }
+            if let Some(warn) = &outcome.bak_cleanup_warning {
+                response["bak_cleanup_warning"] = serde_json::json!(warn);
+            }
+            http_response(
+                200,
+                "OK",
+                "application/json",
+                response.to_string().into_bytes(),
+            )
+        }
+        Err(e) => {
+            let _ = fs::remove_dir_all(ctx.staging_root());
+            let status = match e {
+                linsync_core::ArchiveWriteError::InvalidMemberName { .. }
+                | linsync_core::ArchiveWriteError::MemberNameEncoding { .. }
+                | linsync_core::ArchiveWriteError::NonRegularMember { .. }
+                | linsync_core::ArchiveWriteError::NonRegularStagedFile { .. }
+                | linsync_core::ArchiveWriteError::CapsExceeded { .. }
+                | linsync_core::ArchiveWriteError::UnsupportedArchive { .. } => 400,
+                linsync_core::ArchiveWriteError::ArchiveNotFound { .. }
+                | linsync_core::ArchiveWriteError::MemberNotFound { .. } => 404,
+                linsync_core::ArchiveWriteError::StaleArchive { .. }
+                | linsync_core::ArchiveWriteError::LockContention { .. } => 409,
+                _ => 500,
+            };
+            bridge_error(status, "Error", &e.to_string())
+        }
+    }
+}
+
+fn archive_member_discard_bridge_response(
+    query: &str,
+    state: &Arc<Mutex<GuiBridgeState>>,
+) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(token) = query_value(&params, "token") else {
+        return bridge_error(400, "Bad Request", "missing token");
+    };
+
+    let staging_root = {
+        let mut state_guard = match state.lock() {
+            Ok(g) => g,
+            Err(_) => return bridge_error(500, "Internal Server Error", "state lock poisoned"),
+        };
+        match state_guard.archive_edit_tokens.remove(token) {
+            Some(ctx) => ctx.staging_root().to_path_buf(),
+            None => return bridge_error(400, "Bad Request", "invalid or expired token"),
+        }
+    };
+
+    let _ = fs::remove_dir_all(&staging_root);
+    let body = serde_json::json!({"ok": true}).to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
 }
 
 fn sessions_recent_bridge_response(paths: &AppPaths) -> Vec<u8> {

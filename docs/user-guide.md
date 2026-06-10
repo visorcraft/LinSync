@@ -386,10 +386,18 @@ cargo run -p linsync-cli -- archive left.tar.zst right.tar.zst
 ```
 
 The `archive` command can route each archive through a folder-virtualizer
-/ unpacker plugin (`--unpacker PLUGIN_ID`), which handles nested-archive
+/unpacker plugin (`--unpacker PLUGIN_ID`), which handles nested-archive
 recursion and member extraction into a virtual folder before the folder
 compare. Without a plugin it falls back to extracting via `unzip`/`tar`
 subprocesses for the built-in archive formats.
+
+**Editing zip archive members (GUI only):** when comparing two zip archives,
+right-click any member row and choose "Edit member in left archive" or
+"Edit member in right archive". The member is extracted to a staging file
+and opened in your external editor. Save the file, then click **Commit** in
+LinSync to repack the archive atomically, or **Discard** to cancel. The
+original archive is preserved as a `.bak` until the commit succeeds.
+Tar and 7z archives remain read-only.
 
 Self-compare:
 

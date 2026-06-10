@@ -87,6 +87,12 @@ Kirigami.ApplicationWindow {
     property string folderTypeFilter: ""
     // folderTypeFilter split once per change, not once per entry / per binding.
     readonly property var folderTypeList: folderTypeFilter === "" ? [] : folderTypeFilter.split(",")
+    // Archive member editing state
+    property string archiveEditToken: ""
+    property string archiveEditStagedPath: ""
+    property string archiveEditMember: ""
+    property bool archiveEditInProgress: false
+    property string archiveEditSide: ""  // "left" or "right"
     property var unfilteredLeftRows: []
     property var unfilteredRightRows: []
     // Lazy text windowing. When a text diff is larger than the server's window
@@ -1248,6 +1254,74 @@ Kirigami.ApplicationWindow {
             qs += "&confirm_permanent=1"
         bridgeGet(qs, function (ok, payload) {
             if (callback) callback(ok, payload)
+        })
+    }
+
+    function startArchiveMemberEdit(side) {
+        const entry = root.currentFolderEntryPath()
+        if (entry === "") {
+            root.statusText = "Select an archive member first"
+            return
+        }
+        const archivePath = side === "left" ? root.leftPath : root.rightPath
+        if (!archivePath.endsWith(".zip")) {
+            root.statusText = "Editing is only supported for zip archives"
+            return
+        }
+        const qs = "/archive/member/edit?archive=" + encodeURIComponent(archivePath)
+                 + "&member=" + encodeURIComponent(entry)
+        bridgeGet(qs, function (ok, payload) {
+            if (!ok || !payload || !payload.ok) {
+                root.statusText = payload && payload.error ? payload.error : "Failed to extract archive member for editing"
+                return
+            }
+            root.archiveEditToken = payload.token || ""
+            root.archiveEditStagedPath = payload.staged_path || ""
+            root.archiveEditMember = entry
+            root.archiveEditSide = side
+            root.archiveEditInProgress = true
+            // Open in external editor
+            root.bridgeGet("/open-external?path=" + encodeURIComponent(payload.staged_path), function (ok2) {
+                root.statusText = ok2 ? "Editing " + entry + " in external editor" : "Could not open external editor"
+            })
+        })
+    }
+
+    function commitArchiveMemberEdit() {
+        if (!root.archiveEditInProgress || root.archiveEditToken === "") {
+            root.statusText = "No active archive edit to commit"
+            return
+        }
+        const qs = "/archive/member/commit?token=" + encodeURIComponent(root.archiveEditToken)
+        bridgeGet(qs, function (ok, payload) {
+            if (ok && payload && payload.ok) {
+                root.statusText = "Archive member updated successfully"
+                root.archiveEditInProgress = false
+                root.archiveEditToken = ""
+                root.archiveEditStagedPath = ""
+                root.archiveEditMember = ""
+                root.archiveEditSide = ""
+                // Refresh the compare to show updated content
+                root.requestCompare(false)
+            } else {
+                root.statusText = payload && payload.error ? payload.error : "Failed to commit archive edit"
+            }
+        })
+    }
+
+    function discardArchiveMemberEdit() {
+        if (!root.archiveEditInProgress || root.archiveEditToken === "") {
+            root.archiveEditInProgress = false
+            return
+        }
+        const qs = "/archive/member/discard?token=" + encodeURIComponent(root.archiveEditToken)
+        bridgeGet(qs, function (ok) {
+            root.archiveEditInProgress = false
+            root.archiveEditToken = ""
+            root.archiveEditStagedPath = ""
+            root.archiveEditMember = ""
+            root.archiveEditSide = ""
+            root.statusText = ok ? "Archive edit discarded" : "Archive edit discarded (cleanup may have failed)"
         })
     }
 
@@ -4733,6 +4807,44 @@ Kirigami.ApplicationWindow {
                         }
                     }
 
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: visible ? 40 : 0
+                        visible: root.archiveEditInProgress
+                        color: Kirigami.ColorUtils.tintWithAlpha(root.activeBg, Kirigami.Theme.positiveTextColor, 0.12)
+                        border.color: root.separatorColor
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 12
+
+                            Controls.Label {
+                                Layout.fillWidth: true
+                                text: root.archiveEditInProgress
+                                    ? qsTr("Editing %1 in %2 archive — save in your external editor, then commit or discard")
+                                        .arg(root.archiveEditMember)
+                                        .arg(root.archiveEditSide)
+                                    : ""
+                                color: root.activeText
+                                elide: Text.ElideMiddle
+                            }
+                            AppButton {
+                                text: qsTr("Commit")
+                                enabled: root.archiveEditInProgress
+                                onClicked: root.commitArchiveMemberEdit()
+                                Accessible.name: qsTr("Commit archive member edit")
+                            }
+                            AppButton {
+                                text: qsTr("Discard")
+                                enabled: root.archiveEditInProgress
+                                onClicked: root.discardArchiveMemberEdit()
+                                Accessible.name: qsTr("Discard archive member edit")
+                            }
+                        }
+                    }
+
                     ListView {
                         id: folderTable
                         Layout.fillWidth: true
@@ -4800,9 +4912,32 @@ Kirigami.ApplicationWindow {
 
                             MouseArea {
                                 anchors.fill: parent
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
                                 onClicked: {
                                     root.currentDiffRow = index
                                     root.currentDiffPosition = root.diffRowIndexes.indexOf(index)
+                                    if (mouse.button === Qt.RightButton) {
+                                        archiveEntryContextMenu.popup()
+                                    }
+                                }
+
+                                Controls.Menu {
+                                    id: archiveEntryContextMenu
+
+                                    Controls.MenuItem {
+                                        text: qsTr("Edit member in left archive")
+                                        visible: root.validationPathKind === "Archives" && !modelData.isDir
+                                        enabled: !root.archiveEditInProgress
+                                        onTriggered: root.startArchiveMemberEdit("left")
+                                        Accessible.name: text
+                                    }
+                                    Controls.MenuItem {
+                                        text: qsTr("Edit member in right archive")
+                                        visible: root.validationPathKind === "Archives" && !modelData.isDir
+                                        enabled: !root.archiveEditInProgress
+                                        onTriggered: root.startArchiveMemberEdit("right")
+                                        Accessible.name: text
+                                    }
                                 }
                             }
                         }

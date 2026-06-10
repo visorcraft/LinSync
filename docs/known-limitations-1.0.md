@@ -152,9 +152,10 @@ The only remaining gaps are noted below.
 
 ## Editing
 
-- **Writable archive-member editing** is deliberately deferred until a
-  separate helper plus Flatpak-portal safety design exists. Archive
-  contents are read-only in this release.
+- **Writable archive-member editing** is implemented for **zip archives**
+  (v1.10.0) via the GUI context menu or the
+  `/archive/member/edit` and `/archive/member/commit` bridge endpoints.
+  Tar and 7z remain read-only.
 - **Freeform binary / hex editing** is out of scope. The hex view is
   read-only.
 
