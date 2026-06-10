@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Last regenerated: 2026-06-03
+Last regenerated: 2026-06-10
 
 This notice file covers the current LinSync source tree and Cargo dependency
 set. It must be regenerated or reviewed before every public binary release.
@@ -40,6 +40,7 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `arrayref` | 0.3.9 | BSD-2-Clause |
 | `arrayvec` | 0.7.6 | MIT OR Apache-2.0 |
 | `autocfg` | 1.5.1 | Apache-2.0 OR MIT |
+| `bincode` | 1.3.3 | MIT |
 | `bit_field` | 0.10.3 | Apache-2.0/MIT |
 | `bitflags` | 2.11.1 | MIT OR Apache-2.0 |
 | `blake3` | 1.8.5 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
@@ -76,6 +77,7 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `fdeflate` | 0.3.7 | MIT OR Apache-2.0 |
 | `find-msvc-tools` | 0.1.9 | MIT OR Apache-2.0 |
 | `flate2` | 1.1.9 | MIT OR Apache-2.0 |
+| `fnv` | 1.0.7 | Apache-2.0 / MIT |
 | `foldhash` | 0.2.0 | Zlib |
 | `generic-array` | 0.14.7 | MIT |
 | `gif` | 0.14.2 | MIT OR Apache-2.0 |
@@ -100,7 +102,10 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `nu-ansi-term` | 0.50.3 | MIT |
 | `num-traits` | 0.2.19 | MIT OR Apache-2.0 |
 | `once_cell` | 1.21.4 | MIT OR Apache-2.0 |
+| `onig` | 6.5.3 | MIT |
+| `onig_sys` | 69.9.3 | MIT |
 | `pin-project-lite` | 0.2.17 | Apache-2.0 OR MIT |
+| `pkg-config` | 0.3.33 | MIT OR Apache-2.0 |
 | `png` | 0.18.1 | MIT OR Apache-2.0 |
 | `proc-macro2` | 1.0.106 | MIT OR Apache-2.0 |
 | `pxfm` | 0.1.29 | BSD-3-Clause OR Apache-2.0 |
@@ -111,6 +116,7 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `regex-automata` | 0.4.14 | MIT OR Apache-2.0 |
 | `regex-syntax` | 0.8.10 | MIT OR Apache-2.0 |
 | `rustversion` | 1.0.22 | MIT OR Apache-2.0 |
+| `same-file` | 1.0.6 | Unlicense/MIT |
 | `seccompiler` | 0.4.0 | Apache-2.0 OR BSD-3-Clause |
 | `semver` | 1.0.28 | MIT OR Apache-2.0 |
 | `serde` | 1.0.228 | MIT OR Apache-2.0 |
@@ -125,6 +131,7 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `smallvec` | 1.15.1 | MIT OR Apache-2.0 |
 | `static_assertions` | 1.1.0 | MIT OR Apache-2.0 |
 | `syn` | 2.0.117 | MIT OR Apache-2.0 |
+| `syntect` | 5.3.0 | MIT |
 | `termcolor` | 1.4.1 | Unlicense OR MIT |
 | `thiserror` | 1.0.69 | MIT OR Apache-2.0 |
 | `thiserror` | 2.0.18 | MIT OR Apache-2.0 |
@@ -145,6 +152,7 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `unicode-width` | 0.2.2 | MIT OR Apache-2.0 |
 | `urlencoding` | 2.1.3 | MIT |
 | `version_check` | 0.9.5 | MIT/Apache-2.0 |
+| `walkdir` | 2.5.0 | Unlicense/MIT |
 | `weezl` | 0.1.12 | MIT OR Apache-2.0 |
 | `zerocopy` | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | `zerocopy-derive` | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |

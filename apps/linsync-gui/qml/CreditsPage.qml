@@ -42,6 +42,7 @@ Kirigami.ScrollablePage {
         { name: "arrayref",                  version: "0.3.9",     license: "BSD-2-Clause" },
         { name: "arrayvec",                  version: "0.7.6",     license: "MIT OR Apache-2.0" },
         { name: "autocfg",                  version: "1.5.1",     license: "Apache-2.0 OR MIT" },
+        { name: "bincode",                  version: "1.3.3",     license: "MIT" },
         { name: "bit_field",                  version: "0.10.3",     license: "Apache-2.0/MIT" },
         { name: "bitflags",                  version: "2.11.1",     license: "MIT OR Apache-2.0" },
         { name: "blake3",                  version: "1.8.5",     license: "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception" },
@@ -78,6 +79,7 @@ Kirigami.ScrollablePage {
         { name: "fdeflate",                  version: "0.3.7",     license: "MIT OR Apache-2.0" },
         { name: "find-msvc-tools",                  version: "0.1.9",     license: "MIT OR Apache-2.0" },
         { name: "flate2",                  version: "1.1.9",     license: "MIT OR Apache-2.0" },
+        { name: "fnv",                  version: "1.0.7",     license: "Apache-2.0 / MIT" },
         { name: "foldhash",                  version: "0.2.0",     license: "Zlib" },
         { name: "generic-array",                  version: "0.14.7",     license: "MIT" },
         { name: "gif",                  version: "0.14.2",     license: "MIT OR Apache-2.0" },
@@ -102,7 +104,10 @@ Kirigami.ScrollablePage {
         { name: "nu-ansi-term",                  version: "0.50.3",     license: "MIT" },
         { name: "num-traits",                  version: "0.2.19",     license: "MIT OR Apache-2.0" },
         { name: "once_cell",                  version: "1.21.4",     license: "MIT OR Apache-2.0" },
+        { name: "onig",                  version: "6.5.3",     license: "MIT" },
+        { name: "onig_sys",                  version: "69.9.3",     license: "MIT" },
         { name: "pin-project-lite",                  version: "0.2.17",     license: "Apache-2.0 OR MIT" },
+        { name: "pkg-config",                  version: "0.3.33",     license: "MIT OR Apache-2.0" },
         { name: "png",                  version: "0.18.1",     license: "MIT OR Apache-2.0" },
         { name: "proc-macro2",                  version: "1.0.106",     license: "MIT OR Apache-2.0" },
         { name: "pxfm",                  version: "0.1.29",     license: "BSD-3-Clause OR Apache-2.0" },
@@ -113,6 +118,7 @@ Kirigami.ScrollablePage {
         { name: "regex-automata",                  version: "0.4.14",     license: "MIT OR Apache-2.0" },
         { name: "regex-syntax",                  version: "0.8.10",     license: "MIT OR Apache-2.0" },
         { name: "rustversion",                  version: "1.0.22",     license: "MIT OR Apache-2.0" },
+        { name: "same-file",                  version: "1.0.6",     license: "Unlicense/MIT" },
         { name: "seccompiler",                  version: "0.4.0",     license: "Apache-2.0 OR BSD-3-Clause" },
         { name: "semver",                  version: "1.0.28",     license: "MIT OR Apache-2.0" },
         { name: "serde",                  version: "1.0.228",     license: "MIT OR Apache-2.0" },
@@ -127,6 +133,7 @@ Kirigami.ScrollablePage {
         { name: "smallvec",                  version: "1.15.1",     license: "MIT OR Apache-2.0" },
         { name: "static_assertions",                  version: "1.1.0",     license: "MIT OR Apache-2.0" },
         { name: "syn",                  version: "2.0.117",     license: "MIT OR Apache-2.0" },
+        { name: "syntect",                  version: "5.3.0",     license: "MIT" },
         { name: "termcolor",                  version: "1.4.1",     license: "Unlicense OR MIT" },
         { name: "thiserror",                  version: "1.0.69",     license: "MIT OR Apache-2.0" },
         { name: "thiserror",                  version: "2.0.18",     license: "MIT OR Apache-2.0" },
@@ -147,6 +154,7 @@ Kirigami.ScrollablePage {
         { name: "unicode-width",                  version: "0.2.2",     license: "MIT OR Apache-2.0" },
         { name: "urlencoding",                  version: "2.1.3",     license: "MIT" },
         { name: "version_check",                  version: "0.9.5",     license: "MIT/Apache-2.0" },
+        { name: "walkdir",                  version: "2.5.0",     license: "Unlicense/MIT" },
         { name: "weezl",                  version: "0.1.12",     license: "MIT OR Apache-2.0" },
         { name: "zerocopy",                  version: "0.8.48",     license: "BSD-2-Clause OR Apache-2.0 OR MIT" },
         { name: "zerocopy-derive",                  version: "0.8.48",     license: "BSD-2-Clause OR Apache-2.0 OR MIT" },
@@ -154,7 +162,7 @@ Kirigami.ScrollablePage {
         { name: "zune-core",                  version: "0.5.1",     license: "MIT OR Apache-2.0 OR Zlib" },
         { name: "zune-inflate",                  version: "0.2.54",     license: "MIT OR Apache-2.0 OR Zlib" },
         { name: "zune-jpeg",                  version: "0.5.15",     license: "MIT OR Apache-2.0 OR Zlib" },
-    // END GENERATED CREDITS
+// END GENERATED CREDITS
     ]
 
     property string filterText: ""

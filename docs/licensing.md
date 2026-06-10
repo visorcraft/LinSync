@@ -105,6 +105,10 @@ Recorded fallback if that provenance were ever judged unacceptable: build
 syntect with its default-syntaxes feature disabled and load definitions from
 the `two-face` crate (MIT OR Apache-2.0) instead.
 
+The bincode advisory RUSTSEC-2025-0141 (bincode 1.x unmaintained, pulled in via
+syntect's `dump-load`) is ignored in `deny.toml` because bincode only
+deserializes syntect's bundled, trusted syntax dump — never untrusted input.
+
 ## Release Materials
 
 The current source tree ships `docs/third-party-notices.md` with the Cargo

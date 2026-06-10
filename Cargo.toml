@@ -40,6 +40,11 @@ regex = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_repr = "0.1"
+syntect = { version = "5", default-features = false, features = [
+    "default-syntaxes",
+    "regex-onig",
+    "parsing",
+] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "json"] }
 unicode-segmentation = "1.13"
