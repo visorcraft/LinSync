@@ -1,9 +1,9 @@
 # Writable Archive-Member Editing — Safety Design
 
-> Status: design only. Nothing in this document is implemented. It is the
-> "separate safety design" that `docs/archive-support.md` and
-> `docs/known-limitations-1.0.md` §Editing require before any writable archive
-> work may start. Reviewer sign-off on this document is the gate.
+> Status: **IMPLEMENTED** (v1, zip only). This document was the safety-design
+> gate for writable archive-member editing; all sections through §7 are now
+> shipped in `linsync-core/src/archive_write.rs` and the GUI bridge. The design
+> remains the authoritative contract for the repack path.
 
 LinSync's archive support is read-only: archives appear as virtual folders,
 members are extracted to secure temp locations for compare, and nothing is ever

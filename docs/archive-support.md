@@ -2,7 +2,7 @@
 
 > Status: the read-only archive-as-virtual-folder pipeline (nested-archive
 > recursion + member extraction) has shipped. Writable archive-member editing
-> for **zip archives** shipped in v1.10.0; tar and 7z remain read-only. The rest
+> for **zip archives** shipped in the current release; tar and 7z remain read-only. The rest
 > of this document records the design constraints and the bar future formats
 > would have to clear.
 

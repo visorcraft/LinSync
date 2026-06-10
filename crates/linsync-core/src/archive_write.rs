@@ -1461,5 +1461,4 @@ mod tests {
             other => panic!("expected PortalReadOnly, got {other:?}"),
         }
     }
-
 }

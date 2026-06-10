@@ -4841,15 +4841,28 @@ Kirigami.ApplicationWindow {
                             anchors.rightMargin: 10
                             spacing: 12
 
-                            Controls.Label {
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                text: root.archiveEditInProgress
-                                    ? qsTr("Editing %1 in %2 archive — save in your external editor, then commit or discard")
-                                        .arg(root.archiveEditMember)
-                                        .arg(root.archiveEditSide)
-                                    : ""
-                                color: root.activeText
-                                elide: Text.ElideMiddle
+                                spacing: 2
+
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    text: root.archiveEditInProgress
+                                        ? qsTr("Editing %1 in %2 archive — save in your external editor, then commit or discard")
+                                            .arg(root.archiveEditMember)
+                                            .arg(root.archiveEditSide)
+                                        : ""
+                                    color: root.activeText
+                                    elide: Text.ElideMiddle
+                                }
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    visible: root.archiveEditPortalWarning !== ""
+                                    text: root.archiveEditPortalWarning
+                                    color: Kirigami.Theme.negativeTextColor
+                                    font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                    elide: Text.ElideMiddle
+                                }
                             }
                             AppButton {
                                 text: qsTr("Commit")
