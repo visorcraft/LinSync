@@ -255,8 +255,9 @@ write affordance.
 - Flow, per member:
   1. Context action **"Edit a copy and repack…"** on a zip member row.
   2. `POST /archive/member/edit` extracts the member (caps from §2) into
-     app-private staging under `AppPaths::cache_dir()/archive-edit/<token>/`
-     and returns the token.
+     app-private staging under `AppPaths::cache_dir()/archive-edits/<token>/`
+     (portal backups under `state_dir/archive-edit/<token>.bak`) and returns
+     the token.
   3. The GUI opens the staged file with the existing `/open-external` route
      (`xdg-open`). The member row shows an "editing" badge with the staging
      path, making explicit that the user is editing a copy.
@@ -268,22 +269,28 @@ write affordance.
      destructive trigger — the user may save several drafts before intending
      to commit. The explicit button matches the staged-plan-before-write rule
      in `docs/SECURITY.md`.
-  5. A confirm dialog states the archive path, the member path, that the
-     original will be replaced atomically, and the `.bak` behavior. Confirming
-     sends `POST /archive/member/commit?token=…&confirm_repack=1`.
+  5. *(As built — amends the original `confirm_repack` dialog design.)* The
+     edit banner carries explicit **Commit** and **Discard** buttons naming
+     the member and side; commit sends `GET /archive/member/commit?token=…`
+     directly. The separate confirm dialog (and the 409-without-
+     `confirm_repack=1` gate it implied) was dropped: the banner is already a
+     persistent, explicit, member-named affordance, and the destructive
+     trigger remains a deliberate click distinct from saving in the editor.
   6. On success the compare refreshes (re-runs the virtual-folder compare so
      the new member content/hash shows immediately).
-- Confirmation reuses the Phase 2 permanent-delete pattern: the commit
-  endpoint returns **409 with a human-readable warning body** when
-  `confirm_repack=1` is absent, and the GUI resends with the parameter only
-  after the dialog — identical to `confirm_permanent` on the folder-operation
-  route in `apps/linsync-gui/src/main.rs`.
-- Failure surface: any commit failure reports "original archive untouched" in
-  the error body, names the retained `.bak`/staging paths when they exist, and
-  keeps the token valid for retry **unless** the failure was a freshness
-  mismatch (then the token is invalidated and the user must re-extract).
-  A "Discard" action on the badge abandons the edit and deletes the staging
-  dir.
+- Failure surface *(as built — amends the original token-invalidation rule)*:
+  any commit failure reports "original archive untouched" in the error body
+  and names the retained `.bak`/staging paths when they exist. The staging
+  dir — the user's only copy of their edit — is **never deleted on failure**,
+  and the token stays registered (`token_retained` in the error body) so the
+  edit remains owned: retry is meaningful after `RenameFailed`
+  (`retryable: true`), while a freshness mismatch keeps failing with 409
+  until the user discards (the stale fingerprint can never publish, so
+  re-extraction is still required to commit — but the staged bytes stay
+  recoverable instead of being destroyed with the token). A "Discard" action
+  on the banner abandons the edit and deletes the staging dir and any portal
+  backup. Staging dirs and portal backups orphaned by a crash are reclaimed
+  by an age-gated sweep at GUI startup.
 
 ## 7. Flatpak
 
