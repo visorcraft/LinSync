@@ -2548,9 +2548,16 @@ fn text_rows_for_gui_with_options(
         return (rows, right_rows);
     }
 
-    result
-        .view_rows(options)
-        .into_iter()
+    gui_rows_from_view_rows(result.view_rows(options))
+}
+
+/// Map core side-by-side view rows onto the bridge's `GuiLineRow` pairs.
+/// Shared by the full `/compare` build and the `/compare/text/window` page
+/// path so both produce byte-identical rows.
+fn gui_rows_from_view_rows(
+    rows: Vec<linsync_core::TextViewRow>,
+) -> (Vec<GuiLineRow>, Vec<GuiLineRow>) {
+    rows.into_iter()
         .map(|row| {
             let row_id = if row.folded_count.is_some() {
                 format!("text-fold:{}", row.index)
@@ -3398,6 +3405,12 @@ fn start_bridge_server(
     // request.
     cleanup_stale_active_pointer(&paths);
 
+    // Reclaim archive-edit staging dirs and portal backups orphaned by a
+    // crash or kill mid-edit (edit tokens live only in process memory, so
+    // nothing else ever references them again). Age-gated so a concurrent
+    // LinSync instance's live edit is never swept.
+    sweep_orphaned_archive_edits(&paths);
+
     thread::spawn(move || {
         for stream in listener.incoming() {
             match stream {
@@ -4118,6 +4131,44 @@ fn cleanup_stale_active_pointer(paths: &AppPaths) -> bool {
     }
 }
 
+/// Minimum age before an unreferenced archive-edit staging dir or portal
+/// backup is considered orphaned. Generous so an edit left open across a
+/// long external-editor session (or owned by a concurrently running
+/// instance) is never reclaimed out from under the user.
+const ARCHIVE_EDIT_ORPHAN_MAX_AGE: std::time::Duration =
+    std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Remove archive-edit staging dirs (`cache_dir/archive-edits/<token>`) and
+/// portal backups (`state_dir/archive-edit/<token>.bak`) older than
+/// [`ARCHIVE_EDIT_ORPHAN_MAX_AGE`]. Edit tokens live only in process memory,
+/// so entries from previous runs can never be committed or discarded again —
+/// without this sweep a crash mid-edit leaks them forever.
+fn sweep_orphaned_archive_edits(paths: &AppPaths) {
+    let is_orphaned = |path: &Path| {
+        fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|mtime| mtime.elapsed().ok())
+            .is_some_and(|age| age > ARCHIVE_EDIT_ORPHAN_MAX_AGE)
+    };
+    if let Ok(entries) = fs::read_dir(paths.cache_dir.join("archive-edits")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && is_orphaned(&path) {
+                let _ = fs::remove_dir_all(&path);
+            }
+        }
+    }
+    if let Ok(entries) = fs::read_dir(paths.state_dir.join("archive-edit")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "bak") && is_orphaned(&path) {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+}
+
 /// Build the `TextCompareOptions` for a single bridge request. Starts
 /// from the resolved profile's text options, then applies per-request
 /// query overrides (`ignore_case`, `ignore_whitespace`,
@@ -4250,26 +4301,9 @@ fn parse_text_render_mode_query(value: &str) -> Result<TextRenderMode, String> {
 }
 
 fn parse_text_syntax_mode_query(value: &str) -> Result<TextSyntaxMode, String> {
-    match value {
-        "plain" | "none" => Ok(TextSyntaxMode::Plain),
-        "auto" => Ok(TextSyntaxMode::Auto),
-        "rust" | "rs" => Ok(TextSyntaxMode::Rust),
-        "json" => Ok(TextSyntaxMode::Json),
-        "html" | "xml" => Ok(TextSyntaxMode::Html),
-        "markdown" | "md" => Ok(TextSyntaxMode::Markdown),
-        "shell" | "sh" | "bash" => Ok(TextSyntaxMode::Shell),
-        "toml" => Ok(TextSyntaxMode::Toml),
-        "yaml" | "yml" => Ok(TextSyntaxMode::Yaml),
-        "c" => Ok(TextSyntaxMode::C),
-        "cpp" => Ok(TextSyntaxMode::Cpp),
-        "python" => Ok(TextSyntaxMode::Python),
-        "javascript" => Ok(TextSyntaxMode::JavaScript),
-        "typescript" => Ok(TextSyntaxMode::TypeScript),
-        "go" => Ok(TextSyntaxMode::Go),
-        "java" => Ok(TextSyntaxMode::Java),
-        "css" => Ok(TextSyntaxMode::Css),
-        _ => Err(format!("unknown syntax '{value}'")),
-    }
+    // Token set lives in core (`TextSyntaxMode: FromStr`), shared with the
+    // CLI's `--syntax` — same precedent as `FolderGrouping` / `group_by=`.
+    value.parse()
 }
 
 fn parse_text_encoding_query(value: &str) -> Result<TextInputEncoding, String> {
@@ -5043,18 +5077,30 @@ fn text_window_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
         Ok(result) => result,
         Err(err) => return bridge_error(500, "Internal Server Error", &err.to_string()),
     };
-    let (left_rows, right_rows) = text_rows_for_gui_with_options(&result, &options);
-    let total_rows = left_rows.len().max(right_rows.len());
-    let end = offset.saturating_add(limit).min(total_rows);
-    let window = |rows: Vec<GuiLineRow>| -> Vec<GuiLineRow> {
-        if offset >= rows.len() {
-            Vec::new()
+    let (total_rows, left_window, right_window) =
+        if options.render_mode == linsync_core::TextRenderMode::SideBySide {
+            // Windowed core build: expensive per-row work (syntax highlighting,
+            // find-match marking) runs only for the requested rows instead of
+            // the whole file on every scroll fetch.
+            let page = result.view_rows_window(&options, offset, limit);
+            let (left, right) = gui_rows_from_view_rows(page.rows);
+            (page.total_rows, left, right)
         } else {
-            rows[offset..end.min(rows.len())].to_vec()
-        }
-    };
-    let left_window = window(left_rows);
-    let right_window = window(right_rows);
+            // Rendered (unified/context/normal) modes have no windowed core
+            // equivalent; they do no per-row syntax work, so full-build-then-
+            // slice stays cheap.
+            let (left_rows, right_rows) = text_rows_for_gui_with_options(&result, &options);
+            let total_rows = left_rows.len().max(right_rows.len());
+            let end = offset.saturating_add(limit).min(total_rows);
+            let window = |rows: Vec<GuiLineRow>| -> Vec<GuiLineRow> {
+                if offset >= rows.len() {
+                    Vec::new()
+                } else {
+                    rows[offset..end.min(rows.len())].to_vec()
+                }
+            };
+            (total_rows, window(left_rows), window(right_rows))
+        };
     let returned = left_window.len().max(right_window.len());
     let body = serde_json::json!({
         "totalRows": total_rows,
@@ -5314,19 +5360,10 @@ fn archive_member_edit_bridge_response(
         Ok(ctx) => ctx,
         Err(e) => {
             let _ = fs::remove_dir_all(&staging_root);
-            let status = match e {
-                linsync_core::ArchiveWriteError::InvalidMemberName { .. }
-                | linsync_core::ArchiveWriteError::MemberNameEncoding { .. }
-                | linsync_core::ArchiveWriteError::NonRegularMember { .. }
-                | linsync_core::ArchiveWriteError::CapsExceeded { .. }
-                | linsync_core::ArchiveWriteError::UnsupportedArchive { .. } => 400,
-                linsync_core::ArchiveWriteError::ArchiveNotFound { .. }
-                | linsync_core::ArchiveWriteError::MemberNotFound { .. } => 404,
-                linsync_core::ArchiveWriteError::StaleArchive { .. }
-                | linsync_core::ArchiveWriteError::LockContention { .. } => 409,
-                _ => 500,
-            };
-            return bridge_error(status, "Error", &e.to_string());
+            // Extraction may have written the portal backup (possibly
+            // partially) before failing — reclaim it too.
+            let _ = fs::remove_file(&portal_bak);
+            return bridge_error(archive_write_error_status(&e), "Error", &e.to_string());
         }
     };
 
@@ -5336,6 +5373,7 @@ fn archive_member_edit_bridge_response(
             Ok(g) => g,
             Err(_) => {
                 let _ = fs::remove_dir_all(&staging_root);
+                let _ = fs::remove_file(&portal_bak);
                 return bridge_error(500, "Internal Server Error", "state lock poisoned");
             }
         };
@@ -5345,6 +5383,7 @@ fn archive_member_edit_bridge_response(
             .any(|ctx| ctx.archive() == canonical)
         {
             let _ = fs::remove_dir_all(&staging_root);
+            let _ = fs::remove_file(&portal_bak);
             return bridge_error(
                 409,
                 "Conflict",
@@ -5362,6 +5401,25 @@ fn archive_member_edit_bridge_response(
         })
         .to_string();
         http_response(200, "OK", "application/json", body.into_bytes())
+    }
+}
+
+/// Single source for the `ArchiveWriteError` → HTTP status contract
+/// (documented on the error type in `linsync-core::archive_write`). Both the
+/// edit and commit endpoints must serve the same status for the same failure.
+fn archive_write_error_status(e: &linsync_core::ArchiveWriteError) -> u16 {
+    match e {
+        linsync_core::ArchiveWriteError::InvalidMemberName { .. }
+        | linsync_core::ArchiveWriteError::MemberNameEncoding { .. }
+        | linsync_core::ArchiveWriteError::NonRegularMember { .. }
+        | linsync_core::ArchiveWriteError::NonRegularStagedFile { .. }
+        | linsync_core::ArchiveWriteError::CapsExceeded { .. }
+        | linsync_core::ArchiveWriteError::UnsupportedArchive { .. } => 400,
+        linsync_core::ArchiveWriteError::ArchiveNotFound { .. }
+        | linsync_core::ArchiveWriteError::MemberNotFound { .. } => 404,
+        linsync_core::ArchiveWriteError::StaleArchive { .. }
+        | linsync_core::ArchiveWriteError::LockContention { .. } => 409,
+        _ => 500,
     }
 }
 
@@ -5388,13 +5446,9 @@ fn archive_member_commit_bridge_response(
 
     let options = linsync_core::CommitOptions { keep_backup };
     match linsync_core::commit_member_edit(&ctx, &options) {
-        Ok(mut outcome) => {
+        Ok(outcome) => {
             let _ = fs::remove_dir_all(ctx.staging_root());
             let mut response = serde_json::json!({"ok": true});
-            // Portal commits always retain the backup regardless of keep_backup.
-            if !ctx.atomic() {
-                outcome.bak_path = ctx.portal_backup().map(|p| p.to_path_buf());
-            }
             if let Some(bak) = &outcome.bak_path {
                 response["bak_path"] = serde_json::json!(bak);
             }
@@ -5409,70 +5463,43 @@ fn archive_member_commit_bridge_response(
             )
         }
         Err(e) => {
-            // Preserve the token and staging on RenameFailed so the user can
-            // retry the atomic publish without re-extracting.
+            // Staging holds the user's only copy of their edit — never delete
+            // it on failure. Re-register the token so the edit stays owned:
+            // the user can retry (meaningful for RenameFailed) or discard,
+            // which cleans staging and the portal backup. The only case the
+            // token is not re-registered is the rare race where another edit
+            // for the same archive started during the unlocked commit; the
+            // staged file is then orphaned but its path is reported below
+            // (and the startup sweep eventually reclaims it).
             let is_retryable = matches!(e, linsync_core::ArchiveWriteError::RenameFailed { .. });
-            // PortalReadOnly keeps staging so the edited bytes remain recoverable.
-            let preserve_staging =
-                is_retryable || matches!(e, linsync_core::ArchiveWriteError::PortalReadOnly { .. });
-            if is_retryable {
-                let mut state_guard = match state.lock() {
-                    Ok(g) => g,
-                    Err(_) => {
-                        let _ = fs::remove_dir_all(ctx.staging_root());
-                        return bridge_error(500, "Internal Server Error", "state lock poisoned");
-                    }
-                };
-                // Another edit may have started while we were committing
-                // without the state lock. Reject the race: keep the other
-                // token and clean up our staging.
+            let mut token_retained = false;
+            if let Ok(mut state_guard) = state.lock() {
                 let canonical = ctx.archive();
-                if state_guard
+                if !state_guard
                     .archive_edit_tokens
                     .values()
                     .any(|c| c.archive() == canonical)
                 {
-                    let _ = fs::remove_dir_all(ctx.staging_root());
-                    return bridge_error(
-                        409,
-                        "Conflict",
-                        "another edit was started for this archive during commit; retry aborted",
-                    );
+                    state_guard
+                        .archive_edit_tokens
+                        .insert(token.to_owned(), ctx.clone());
+                    token_retained = true;
                 }
-                state_guard
-                    .archive_edit_tokens
-                    .insert(token.to_owned(), ctx.clone());
-            } else if !preserve_staging {
-                let _ = fs::remove_dir_all(ctx.staging_root());
             }
-            let status = match e {
-                linsync_core::ArchiveWriteError::InvalidMemberName { .. }
-                | linsync_core::ArchiveWriteError::MemberNameEncoding { .. }
-                | linsync_core::ArchiveWriteError::NonRegularMember { .. }
-                | linsync_core::ArchiveWriteError::NonRegularStagedFile { .. }
-                | linsync_core::ArchiveWriteError::CapsExceeded { .. }
-                | linsync_core::ArchiveWriteError::UnsupportedArchive { .. } => 400,
-                linsync_core::ArchiveWriteError::ArchiveNotFound { .. }
-                | linsync_core::ArchiveWriteError::MemberNotFound { .. } => 404,
-                linsync_core::ArchiveWriteError::StaleArchive { .. }
-                | linsync_core::ArchiveWriteError::LockContention { .. } => 409,
-                linsync_core::ArchiveWriteError::PortalReadOnly { .. } => 500,
-                _ => 500,
-            };
-            let error_body =
-                if let linsync_core::ArchiveWriteError::PortalReadOnly { backup, .. } = &e {
-                    serde_json::json!({
-                        "error": e.to_string(),
-                        "retryable": is_retryable,
-                        "backup_path": backup,
-                    })
-                } else {
-                    serde_json::json!({
-                        "error": e.to_string(),
-                        "retryable": is_retryable,
-                    })
-                };
-            bridge_error_json(status, "Error", error_body)
+            let mut error_body = serde_json::json!({
+                "error": e.to_string(),
+                "retryable": is_retryable,
+                "staged_path": ctx.staged_path(),
+                "token_retained": token_retained,
+            });
+            if let linsync_core::ArchiveWriteError::PortalReadOnly {
+                backup: Some(backup),
+                ..
+            } = &e
+            {
+                error_body["backup_path"] = serde_json::json!(backup);
+            }
+            bridge_error_json(archive_write_error_status(&e), "Error", error_body)
         }
     }
 }
@@ -13023,5 +13050,74 @@ mod tests {
             second.contains("HTTP/1.1 409"),
             "second edit for same archive should be rejected: {second}"
         );
+    }
+
+    #[test]
+    fn bridge_archive_member_commit_failure_preserves_staged_edit_and_token() {
+        if !command_available("zip") || !command_available("unzip") {
+            return;
+        }
+        let root = test_file_root("archive-edit-stale");
+        let zip = make_test_zip(&root, &[("file.txt".to_owned(), "original".to_owned())]);
+        let paths = test_app_paths("archive-edit-stale");
+        let state = test_bridge_state(None);
+        let zip_str = zip.to_string_lossy().to_string();
+        let enc = urlencoding::encode(&zip_str);
+        let edit = String::from_utf8(bridge_response(
+            &format!(
+                "GET /archive/member/edit?archive={}&member=file.txt HTTP/1.1\r\n",
+                enc
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(edit.contains("HTTP/1.1 200"), "edit should succeed: {edit}");
+        let edit_body = json_response_body(&edit);
+        let token = edit_body["token"].as_str().unwrap().to_owned();
+        let staged = PathBuf::from(edit_body["staged_path"].as_str().unwrap());
+        fs::write(&staged, "user's edited bytes").unwrap();
+
+        // Make the archive stale (external modification between edit and commit).
+        let mut bytes = fs::read(&zip).unwrap();
+        bytes.push(0);
+        fs::write(&zip, bytes).unwrap();
+
+        let commit = String::from_utf8(bridge_response(
+            &format!("GET /archive/member/commit?token={token} HTTP/1.1\r\n"),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(
+            commit.contains("HTTP/1.1 409"),
+            "stale commit should 409: {commit}"
+        );
+        let body = json_response_body(&commit);
+        assert_eq!(body["retryable"].as_bool(), Some(false));
+        assert_eq!(body["token_retained"].as_bool(), Some(true));
+        // The user's edit must survive the failed commit.
+        assert_eq!(
+            body["staged_path"].as_str(),
+            Some(staged.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            fs::read_to_string(&staged).unwrap(),
+            "user's edited bytes",
+            "failed commit must not destroy the staged edit"
+        );
+
+        // The retained token still owns the edit: discard cleans up staging.
+        let discard = String::from_utf8(bridge_response(
+            &format!("GET /archive/member/discard?token={token} HTTP/1.1\r\n"),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(
+            discard.contains("HTTP/1.1 200"),
+            "discard with retained token should succeed: {discard}"
+        );
+        assert!(!staged.exists(), "discard should clean up staging");
     }
 }

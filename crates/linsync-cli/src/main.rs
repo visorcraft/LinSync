@@ -5389,26 +5389,9 @@ fn parse_text_render_mode(value: &str) -> Result<TextRenderMode, String> {
 }
 
 fn parse_text_syntax_mode(value: &str) -> Result<TextSyntaxMode, String> {
-    match value {
-        "plain" | "none" => Ok(TextSyntaxMode::Plain),
-        "auto" => Ok(TextSyntaxMode::Auto),
-        "rust" | "rs" => Ok(TextSyntaxMode::Rust),
-        "json" => Ok(TextSyntaxMode::Json),
-        "html" | "xml" => Ok(TextSyntaxMode::Html),
-        "markdown" | "md" => Ok(TextSyntaxMode::Markdown),
-        "shell" | "sh" | "bash" => Ok(TextSyntaxMode::Shell),
-        "toml" => Ok(TextSyntaxMode::Toml),
-        "yaml" | "yml" => Ok(TextSyntaxMode::Yaml),
-        "c" => Ok(TextSyntaxMode::C),
-        "cpp" => Ok(TextSyntaxMode::Cpp),
-        "python" => Ok(TextSyntaxMode::Python),
-        "javascript" => Ok(TextSyntaxMode::JavaScript),
-        "typescript" => Ok(TextSyntaxMode::TypeScript),
-        "go" => Ok(TextSyntaxMode::Go),
-        "java" => Ok(TextSyntaxMode::Java),
-        "css" => Ok(TextSyntaxMode::Css),
-        other => Err(format!("unknown --syntax '{other}'")),
-    }
+    // Token set lives in core (`TextSyntaxMode: FromStr`), shared with the
+    // GUI bridge — same precedent as `FolderGrouping` / `--group-by`.
+    value.parse().map_err(|e| format!("{e} (for --syntax)"))
 }
 
 fn parse_text_input_encoding(value: &str) -> Result<TextInputEncoding, String> {

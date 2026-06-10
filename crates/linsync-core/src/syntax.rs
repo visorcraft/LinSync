@@ -47,6 +47,37 @@ pub enum TextSyntaxMode {
     Css,
 }
 
+impl std::str::FromStr for TextSyntaxMode {
+    type Err = String;
+
+    /// Parse the user-facing syntax-mode token shared by the CLI (`--syntax`)
+    /// and the GUI bridge (`syntax=`), mirroring the `FolderGrouping` /
+    /// `--group-by` precedent. Canonical names are the serde kebab-case
+    /// variants; a few common aliases are accepted.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "plain" | "none" => Ok(Self::Plain),
+            "auto" => Ok(Self::Auto),
+            "rust" | "rs" => Ok(Self::Rust),
+            "json" => Ok(Self::Json),
+            "html" | "xml" => Ok(Self::Html),
+            "markdown" | "md" => Ok(Self::Markdown),
+            "shell" | "sh" | "bash" => Ok(Self::Shell),
+            "toml" => Ok(Self::Toml),
+            "yaml" | "yml" => Ok(Self::Yaml),
+            "c" => Ok(Self::C),
+            "cpp" => Ok(Self::Cpp),
+            "python" => Ok(Self::Python),
+            "javascript" => Ok(Self::JavaScript),
+            "typescript" => Ok(Self::TypeScript),
+            "go" => Ok(Self::Go),
+            "java" => Ok(Self::Java),
+            "css" => Ok(Self::Css),
+            other => Err(format!("unknown syntax '{other}'")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyntaxSpan {
     pub start: usize,
@@ -278,7 +309,29 @@ fn keyword_end(chars: &[char], start: usize) -> usize {
 }
 
 fn comment_start(chars: &[char], mode: TextSyntaxMode) -> Option<usize> {
-    for i in 0..chars.len() {
+    // Track quoting the same way the string lexer does (both quote kinds,
+    // backslash escapes) so a comment marker inside a string literal — e.g.
+    // TOML `url = "http://host/path#frag"` — is not taken as a comment.
+    let mut in_quote: Option<char> = None;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        if let Some(quote) = in_quote {
+            if ch == '\\' {
+                i += 2;
+                continue;
+            }
+            if ch == quote {
+                in_quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            in_quote = Some(ch);
+            i += 1;
+            continue;
+        }
         match mode {
             TextSyntaxMode::Rust
             | TextSyntaxMode::C
@@ -287,7 +340,7 @@ fn comment_start(chars: &[char], mode: TextSyntaxMode) -> Option<usize> {
             | TextSyntaxMode::Java
             | TextSyntaxMode::JavaScript
             | TextSyntaxMode::TypeScript
-                if i + 1 < chars.len() && chars[i] == '/' && chars[i + 1] == '/' =>
+                if i + 1 < chars.len() && ch == '/' && chars[i + 1] == '/' =>
             {
                 return Some(i);
             }
@@ -296,13 +349,14 @@ fn comment_start(chars: &[char], mode: TextSyntaxMode) -> Option<usize> {
             | TextSyntaxMode::Yaml
             | TextSyntaxMode::Markdown
             | TextSyntaxMode::Python
-                if chars[i] == '#' =>
+                if ch == '#' =>
             {
                 return Some(i);
             }
             // CSS only has /* */ block comments — no line-comment marker.
             _ => {}
         }
+        i += 1;
     }
     None
 }
@@ -692,6 +746,56 @@ mod fallback_lexer_tests {
     }
 
     #[test]
+    fn comment_marker_inside_string_is_not_a_comment() {
+        // TOML always uses this fallback (syntect ships no TOML grammar), so
+        // a '#' inside a quoted value used to truncate the string span and
+        // emit a phantom comment span in every build.
+        let line = "url = \"http://host/path#frag\"  # real comment";
+        let spans = generic_syntax_spans(line, TextSyntaxMode::Toml);
+        let chars: Vec<char> = line.chars().collect();
+        let string_span = spans
+            .iter()
+            .find(|s| s.class == "string")
+            .expect("string span");
+        let string_text: String = chars[string_span.start..string_span.end].iter().collect();
+        assert_eq!(string_text, "\"http://host/path#frag\"");
+        let comment = spans
+            .iter()
+            .find(|s| s.class == "comment")
+            .expect("comment span");
+        let real_marker = line
+            .rfind('#')
+            .map(|byte| line[..byte].chars().count())
+            .unwrap();
+        assert_eq!(comment.start, real_marker, "comment starts at the real #");
+    }
+
+    #[test]
+    fn string_with_comment_marker_and_no_comment_emits_no_comment_span() {
+        for (line, mode) in [
+            ("url = \"http://x#y\"", TextSyntaxMode::Toml),
+            ("echo \"a#b\"", TextSyntaxMode::Shell),
+            ("let s = \"a//b\";", TextSyntaxMode::Rust),
+        ] {
+            let spans = generic_syntax_spans(line, mode);
+            assert!(
+                spans.iter().all(|s| s.class != "comment"),
+                "{mode:?}: phantom comment in {line:?}: {spans:?}"
+            );
+            let chars: Vec<char> = line.chars().collect();
+            let string_span = spans
+                .iter()
+                .find(|s| s.class == "string")
+                .unwrap_or_else(|| panic!("{mode:?}: no string span in {line:?}"));
+            let string_text: String = chars[string_span.start..string_span.end].iter().collect();
+            assert!(
+                string_text.starts_with('"') && string_text.ends_with('"'),
+                "{mode:?}: string span clipped in {line:?}: {string_text:?}"
+            );
+        }
+    }
+
+    #[test]
     fn line_comment_markers_cover_new_modes() {
         let slash: Vec<char> = "a + b // tail".chars().collect();
         for mode in [
@@ -878,16 +982,40 @@ mod rich {
         None
     }
 
+    /// Resolve the grammar for a mode once; `find_syntax_by_token` is a linear
+    /// scan over every bundled grammar's name/extension lists and this runs
+    /// per line per side on the windowed-compare hot path.
+    fn syntax_for(mode: TextSyntaxMode) -> Option<&'static syntect::parsing::SyntaxReference> {
+        use std::collections::HashMap;
+        static MAP: OnceLock<HashMap<&'static str, &'static syntect::parsing::SyntaxReference>> =
+            OnceLock::new();
+        let token = token_for(mode)?;
+        MAP.get_or_init(|| {
+            let set = syntax_set();
+            [
+                "rs", "json", "html", "md", "sh", "yaml", "c", "cpp", "py", "js", "go", "java",
+                "css",
+            ]
+            .iter()
+            .filter_map(|t| set.find_syntax_by_token(t).map(|s| (*t, s)))
+            .collect()
+        })
+        .get(token)
+        .copied()
+    }
+
     pub(super) fn spans(text: &str, mode: TextSyntaxMode) -> Option<Vec<SyntaxSpan>> {
+        // Modes syntect cannot handle (Plain/Auto/Toml) fall back to the
+        // hand-rolled lexers unconditionally — they are cheap single-pass
+        // scans, so the size guard below must not suppress them.
+        let syntax = syntax_for(mode)?;
         // Oversized lines return Some(empty) rather than None: this
         // deliberately suppresses the hand-rolled fallback lexers too, so a
         // pathological line gets no highlighting at all instead of a slow scan.
         if text.len() > MAX_LINE_BYTES {
             return Some(Vec::new());
         }
-        let token = token_for(mode)?;
         let set = syntax_set();
-        let syntax = set.find_syntax_by_token(token)?;
         let mut state = ParseState::new(syntax);
         // The "newlines" grammar set requires every parsed line to end with a
         // trailing '\n', so append one when the caller's line lacks it.
@@ -1061,5 +1189,20 @@ mod syntect_tests {
         let big = "let x = 1; ".repeat(2_000);
         assert!(big.len() > 20_000);
         assert!(syntax_spans(&big, TextSyntaxMode::Rust).is_empty());
+    }
+
+    #[test]
+    fn perf_guard_does_not_suppress_fallback_modes() {
+        // TOML never routes through syntect; the size guard is a syntect
+        // parse-cost bound and must not strip the cheap hand-rolled lexer
+        // from modes syntect cannot handle.
+        let big = format!("flag = true # {}", "x".repeat(25_000));
+        assert!(big.len() > 20_000);
+        assert!(
+            syntax_spans(&big, TextSyntaxMode::Toml)
+                .iter()
+                .any(|s| s.class == "comment"),
+            "oversized TOML line must keep fallback highlighting"
+        );
     }
 }

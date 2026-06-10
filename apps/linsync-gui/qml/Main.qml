@@ -89,7 +89,6 @@ Kirigami.ApplicationWindow {
     readonly property var folderTypeList: folderTypeFilter === "" ? [] : folderTypeFilter.split(",")
     // Archive member editing state
     property string archiveEditToken: ""
-    property string archiveEditStagedPath: ""
     property string archiveEditMember: ""
     property bool archiveEditInProgress: false
     property string archiveEditSide: ""  // "left" or "right"
@@ -1034,13 +1033,13 @@ Kirigami.ApplicationWindow {
         const request = new XMLHttpRequest()
         request.onreadystatechange = function () {
             if (request.readyState === XMLHttpRequest.DONE) {
-                if (request.status >= 200 && request.status < 300) {
-                    let payload = null
-                    try { payload = JSON.parse(request.responseText) } catch (_e) {}
-                    if (onJson) onJson(true, payload, request.status)
-                } else {
-                    if (onJson) onJson(false, null, request.status)
-                }
+                // Parse the body for error responses too: the bridge returns
+                // structured JSON ({error, retryable, ...}) on failure, and
+                // callbacks need it to surface the message and react.
+                let payload = null
+                try { payload = JSON.parse(request.responseText) } catch (_e) {}
+                const ok = request.status >= 200 && request.status < 300
+                if (onJson) onJson(ok, payload, request.status)
             }
         }
         request.open("GET", root.bridgeUrl + path)
@@ -1258,21 +1257,23 @@ Kirigami.ApplicationWindow {
         })
     }
 
+    function clearArchiveEditState() {
+        root.archiveEditInProgress = false
+        root.archiveEditToken = ""
+        root.archiveEditMember = ""
+        root.archiveEditSide = ""
+        root.archiveEditPortalWarning = ""
+    }
+
     function startArchiveMemberEdit(side) {
         const entry = root.currentFolderEntryPath()
         if (entry === "") {
             root.statusText = "Select an archive member first"
             return
         }
+        // Editability (zip-only, member rules) is core's decision: the bridge
+        // returns a precise 400 for anything unsupported, surfaced below.
         const archivePath = side === "left" ? root.leftPath : root.rightPath
-        const lower = archivePath.toLowerCase()
-        const isZip = lower.endsWith(".zip") || lower.endsWith(".jar")
-                     || lower.endsWith(".war") || lower.endsWith(".apk")
-                     || lower.endsWith(".ipa")
-        if (!isZip) {
-            root.statusText = "Editing is only supported for zip archives"
-            return
-        }
         const qs = "/archive/member/edit?archive=" + encodeURIComponent(archivePath)
                  + "&member=" + encodeURIComponent(entry)
         bridgeGet(qs, function (ok, payload) {
@@ -1281,7 +1282,6 @@ Kirigami.ApplicationWindow {
                 return
             }
             root.archiveEditToken = payload.token || ""
-            root.archiveEditStagedPath = payload.staged_path || ""
             root.archiveEditMember = entry
             root.archiveEditSide = side
             root.archiveEditInProgress = true
@@ -1304,27 +1304,19 @@ Kirigami.ApplicationWindow {
         bridgeGet(qs, function (ok, payload) {
             if (ok && payload && payload.ok) {
                 root.statusText = "Archive member updated successfully"
-                root.archiveEditInProgress = false
-                root.archiveEditToken = ""
-                root.archiveEditStagedPath = ""
-                root.archiveEditMember = ""
-                root.archiveEditSide = ""
-                root.archiveEditPortalWarning = ""
+                root.clearArchiveEditState()
                 // Refresh the compare to show updated content
                 root.requestCompare(false)
             } else {
-                root.statusText = payload && payload.error ? payload.error : "Failed to commit archive edit"
-                // The bridge has already removed/invalidated the token on a
-                // non-retryable failure. Clear local state so the user cannot
-                // retry with a stale token.
-                if (payload && payload.retryable !== true) {
-                    root.archiveEditInProgress = false
-                    root.archiveEditToken = ""
-                    root.archiveEditStagedPath = ""
-                    root.archiveEditMember = ""
-                    root.archiveEditSide = ""
-                    root.archiveEditPortalWarning = ""
-                }
+                let message = payload && payload.error ? payload.error : "Failed to commit archive edit"
+                if (payload && payload.backup_path)
+                    message += " — original archive backup: " + payload.backup_path
+                root.statusText = message
+                // The bridge keeps the token (and the staged edit) registered
+                // on failure so the user can retry or discard; only drop local
+                // state when it reports the token was not retained.
+                if (!payload || payload.token_retained !== true)
+                    root.clearArchiveEditState()
             }
         })
     }
@@ -1336,12 +1328,7 @@ Kirigami.ApplicationWindow {
         }
         const qs = "/archive/member/discard?token=" + encodeURIComponent(root.archiveEditToken)
         bridgeGet(qs, function (ok) {
-            root.archiveEditInProgress = false
-            root.archiveEditToken = ""
-            root.archiveEditStagedPath = ""
-            root.archiveEditMember = ""
-            root.archiveEditSide = ""
-            root.archiveEditPortalWarning = ""
+            root.clearArchiveEditState()
             root.statusText = ok ? "Archive edit discarded" : "Archive edit discarded (cleanup may have failed)"
         })
     }
@@ -3319,7 +3306,10 @@ Kirigami.ApplicationWindow {
                                 .arg(summary.total || 0)
                             root.requestCompare(false)
                         } else {
-                            root.statusText = "Folder op execute failed"
+                            // Surface the bridge's reason (e.g. the 409
+                            // permanent-delete confirmation message).
+                            root.statusText = payload && payload.error
+                                ? payload.error : "Folder op execute failed"
                         }
                     })
                 }
@@ -4879,6 +4869,27 @@ Kirigami.ApplicationWindow {
                         }
                     }
 
+                    // One shared context menu for every folder row (declaring
+                    // it per delegate would build a Menu per visible row in a
+                    // perf-sensitive list). Only popped for archive-compare
+                    // file rows, so it is never shown empty.
+                    Controls.Menu {
+                        id: archiveEntryContextMenu
+
+                        Controls.MenuItem {
+                            text: qsTr("Edit member in left archive")
+                            enabled: !root.archiveEditInProgress
+                            onTriggered: root.startArchiveMemberEdit("left")
+                            Accessible.name: text
+                        }
+                        Controls.MenuItem {
+                            text: qsTr("Edit member in right archive")
+                            enabled: !root.archiveEditInProgress
+                            onTriggered: root.startArchiveMemberEdit("right")
+                            Accessible.name: text
+                        }
+                    }
+
                     ListView {
                         id: folderTable
                         Layout.fillWidth: true
@@ -4947,30 +4958,13 @@ Kirigami.ApplicationWindow {
                             MouseArea {
                                 anchors.fill: parent
                                 acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                onClicked: {
+                                onClicked: function (mouse) {
                                     root.currentDiffRow = index
                                     root.currentDiffPosition = root.diffRowIndexes.indexOf(index)
-                                    if (mouse.button === Qt.RightButton) {
+                                    if (mouse.button === Qt.RightButton
+                                            && root.validationPathKind === "Archives"
+                                            && !modelData.isDir) {
                                         archiveEntryContextMenu.popup()
-                                    }
-                                }
-
-                                Controls.Menu {
-                                    id: archiveEntryContextMenu
-
-                                    Controls.MenuItem {
-                                        text: qsTr("Edit member in left archive")
-                                        visible: root.validationPathKind === "Archives" && !modelData.isDir
-                                        enabled: !root.archiveEditInProgress
-                                        onTriggered: root.startArchiveMemberEdit("left")
-                                        Accessible.name: text
-                                    }
-                                    Controls.MenuItem {
-                                        text: qsTr("Edit member in right archive")
-                                        visible: root.validationPathKind === "Archives" && !modelData.isDir
-                                        enabled: !root.archiveEditInProgress
-                                        onTriggered: root.startArchiveMemberEdit("right")
-                                        Accessible.name: text
                                     }
                                 }
                             }

@@ -146,9 +146,14 @@ pub enum ArchiveWriteError {
         bak: PathBuf,
         detail: String,
     },
-    /// Portal-granted archive is read-only; the original is untouched and the
-    /// edited copy is retained at the backup path.
-    PortalReadOnly { archive: PathBuf, backup: PathBuf },
+    /// Portal-granted archive is read-only; the original is untouched. The
+    /// user's edited member is retained at `staged`; `backup` (when present)
+    /// is the app-private copy of the *original, unedited* archive.
+    PortalReadOnly {
+        archive: PathBuf,
+        backup: Option<PathBuf>,
+        staged: PathBuf,
+    },
     /// An I/O step failed; the original archive is untouched.
     Io { context: String, source: io::Error },
 }
@@ -212,12 +217,26 @@ impl std::fmt::Display for ArchiveWriteError {
                 tmp.display(),
                 bak.display()
             ),
-            Self::PortalReadOnly { archive, backup } => write!(
-                f,
-                "portal-granted archive '{}' is read-only; original untouched, edited copy retained at '{}'",
-                archive.display(),
-                backup.display()
-            ),
+            Self::PortalReadOnly {
+                archive,
+                backup,
+                staged,
+            } => {
+                write!(
+                    f,
+                    "portal-granted archive '{}' is read-only; original untouched, edited member retained at '{}'",
+                    archive.display(),
+                    staged.display()
+                )?;
+                if let Some(backup) = backup {
+                    write!(
+                        f,
+                        " (backup of the original archive at '{}')",
+                        backup.display()
+                    )?;
+                }
+                Ok(())
+            }
             Self::Io { context, source } => write!(f, "{context}: {source}"),
         }
     }
@@ -654,29 +673,40 @@ fn run_helper(
     let mut child =
         spawn_confined(cmd, grants).map_err(|e| io_err(format!("spawning {what} failed"), e))?;
 
+    // Drain both pipes on background threads while polling for exit. A child
+    // whose output exceeds the kernel pipe buffer (e.g. `unzip -Z` listing a
+    // many-member archive) blocks on write(2) until someone reads; draining
+    // only after exit would deadlock against that write until the timeout.
+    let drain = |pipe: Option<Box<dyn io::Read + Send>>| {
+        pipe.map(|mut r| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = io::copy(&mut r, &mut buf);
+                buf
+            })
+        })
+    };
+    let stdout_reader = drain(
+        child
+            .stdout
+            .take()
+            .map(|r| Box::new(r) as Box<dyn io::Read + Send>),
+    );
+    let stderr_reader = drain(
+        child
+            .stderr
+            .take()
+            .map(|r| Box::new(r) as Box<dyn io::Read + Send>),
+    );
+
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_millis(HELPER_TIMEOUT_MS);
-    let output = loop {
+    let status = loop {
         match child
             .try_wait()
             .map_err(|e| io_err(format!("waiting for {what} failed"), e))?
         {
-            Some(status) => {
-                let mut stdout = Vec::new();
-                if let Some(mut r) = child.stdout.take() {
-                    let _ = io::copy(&mut r, &mut stdout);
-                }
-                let mut stderr = Vec::new();
-                if let Some(mut r) = child.stderr.take() {
-                    let _ = io::copy(&mut r, &mut stderr);
-                }
-                stderr.truncate(STDERR_CAP);
-                break std::process::Output {
-                    status,
-                    stdout,
-                    stderr,
-                };
-            }
+            Some(status) => break status,
             None => {
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
@@ -690,10 +720,16 @@ fn run_helper(
             }
         }
     };
+    let collect = |handle: Option<std::thread::JoinHandle<Vec<u8>>>| {
+        handle.and_then(|h| h.join().ok()).unwrap_or_default()
+    };
+    let stdout = collect(stdout_reader);
+    let mut stderr = collect(stderr_reader);
+    stderr.truncate(STDERR_CAP);
     Ok((
-        output.status.success(),
-        output.stdout,
-        String::from_utf8_lossy(&output.stderr).into_owned(),
+        status.success(),
+        stdout,
+        String::from_utf8_lossy(&stderr).into_owned(),
     ))
 }
 
@@ -741,6 +777,18 @@ pub fn extract_member_for_edit_with_caps(
     let portal_backup = if atomic {
         None
     } else {
+        // Portal commits degrade to a non-atomic O_TRUNC write; the backup is
+        // the only recovery path from a partial write (design §7), so refuse
+        // to start an edit without one rather than discover it at commit.
+        if portal_backup.is_none() {
+            return Err(io_err(
+                format!(
+                    "portal-granted archive '{}' requires a portal backup path",
+                    archive.display()
+                ),
+                io::Error::new(io::ErrorKind::InvalidInput, "missing portal_backup"),
+            ));
+        }
         portal_backup.map(|p| p.to_path_buf())
     };
     let metadata =
@@ -1245,13 +1293,10 @@ pub fn commit_member_edit(
             .open(archive)
             .map_err(|e| {
                 if e.kind() == io::ErrorKind::PermissionDenied {
-                    let backup = ctx
-                        .portal_backup
-                        .clone()
-                        .expect("portal_backup must be set for portal paths");
                     ArchiveWriteError::PortalReadOnly {
                         archive: archive.clone(),
-                        backup,
+                        backup: ctx.portal_backup.clone(),
+                        staged: ctx.staged_path.clone(),
                     }
                 } else {
                     io_err(
@@ -1454,9 +1499,24 @@ mod tests {
         let err = commit_member_edit(&ctx, &CommitOptions::default())
             .expect_err("commit on read-only portal path must fail");
         match err {
-            ArchiveWriteError::PortalReadOnly { archive: a, backup } => {
+            ArchiveWriteError::PortalReadOnly {
+                archive: a,
+                backup,
+                staged,
+            } => {
                 assert_eq!(a, archive);
-                assert_eq!(backup, portal_bak);
+                assert_eq!(backup.as_deref(), Some(portal_bak.as_path()));
+                assert_eq!(staged, ctx.staged_path);
+                // The message must direct the user at the edited member, not
+                // present the pristine original backup as their edit.
+                let msg = ArchiveWriteError::PortalReadOnly {
+                    archive: a,
+                    backup,
+                    staged,
+                }
+                .to_string();
+                assert!(msg.contains("edited member retained"), "got: {msg}");
+                assert!(msg.contains("backup of the original archive"), "got: {msg}");
             }
             other => panic!("expected PortalReadOnly, got {other:?}"),
         }

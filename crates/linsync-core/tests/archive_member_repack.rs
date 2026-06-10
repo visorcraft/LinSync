@@ -568,3 +568,40 @@ fn archive_edit_member_not_found() {
         "expected MemberNotFound, got {err:?}"
     );
 }
+
+#[test]
+fn archive_edit_commit_handles_listing_larger_than_pipe_buffer() {
+    if !common::tools_available(TOOLS) {
+        eprintln!("SKIP: zip or unzip not on PATH");
+        return;
+    }
+    // Regression: `run_helper` used to drain helper stdout only after exit, so
+    // the post-repack `unzip -Z -1 -UU` listing deadlocked against the kernel
+    // pipe buffer (~64 KiB) on archives with enough members, failing every
+    // commit after the 60 s timeout. Build a zip whose member listing alone
+    // exceeds the pipe buffer and prove a commit still succeeds.
+    let dir = TempDir::new().unwrap();
+    let pad = "x".repeat(48);
+    let names: Vec<String> = (0..1200)
+        .map(|i| format!("bulk/member-{i:04}-{pad}.txt"))
+        .collect();
+    let mut entries: Vec<(&str, &[u8], u32)> = names
+        .iter()
+        .map(|n| (n.as_str(), b"line\n" as &[u8], 0o644))
+        .collect();
+    entries.push(("target.txt", b"before\n", 0o644));
+    let listing_bytes: usize = names.iter().map(|n| n.len() + 1).sum();
+    assert!(
+        listing_bytes > 64 * 1024,
+        "fixture listing must exceed the pipe buffer (got {listing_bytes} bytes)"
+    );
+    let archive = make_zip(dir.path(), &entries);
+
+    let staging = dir.path().join("staging");
+    let ctx = extract_member_for_edit(&archive, "target.txt", &staging, None)
+        .expect("extract_member_for_edit failed");
+    fs::write(ctx.staged_path(), b"after\n").unwrap();
+    commit_member_edit(&ctx, &CommitOptions::default())
+        .expect("commit must not deadlock on a large member listing");
+    assert_eq!(member_bytes(&archive, "target.txt"), b"after\n");
+}
