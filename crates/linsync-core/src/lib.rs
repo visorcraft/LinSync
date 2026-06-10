@@ -110,7 +110,7 @@ pub use text::{
 pub use trash::{
     DeleteBackend, DeleteError, DeleteOutcome, DeletePlan, DeletePreference, DeleteRestoreGuidance,
     PermanentDeleteConfirmation, TrashedEntry, delete_restore_guidance, execute_delete_plan,
-    move_to_freedesktop_trash, permanently_delete, plan_delete,
+    move_to_freedesktop_trash, permanent_delete_warning, permanently_delete, plan_delete,
 };
 pub use webpage::{
     WebpageCompareError, WebpageCompareMode, WebpageCompareOptions, WebpageCompareResult,

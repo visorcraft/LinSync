@@ -28,7 +28,7 @@ use linsync_core::{
     compare_documents_cancellable, compare_folders, compare_folders_with_progress, compare_images,
     compare_table_files, compare_text, compare_text_files_with_prediffer, create_save_plan,
     discover_installed_plugins, execute_folder_operation_plan, find_builtin, is_likely_binary,
-    plan_folder_operation, save_artifact, write_encoded_text_with_plan,
+    permanent_delete_warning, plan_folder_operation, save_artifact, write_encoded_text_with_plan,
 };
 use serde::{Deserialize, Serialize};
 
@@ -6490,6 +6490,7 @@ fn folder_op_plan_bridge_response(
     let Some(op_kind) = parse_folder_op_kind(kind, &params) else {
         return bridge_error(400, "Bad Request", "unsupported op kind");
     };
+    let delete_side = folder_op_delete_side(&op_kind);
     let mut plan = plan_folder_operation(&compare, op_kind, &entries);
     let left_base = Path::new(&tab.left_path);
     let right_base = Path::new(&tab.right_path);
@@ -6500,8 +6501,33 @@ fn folder_op_plan_bridge_response(
             &format!("risk assessment failed: {err}"),
         );
     }
-    let body = folder_plan_to_json(&plan).to_string();
-    http_response(200, "OK", "application/json", body.into_bytes())
+    let permanent_delete = plan.contains_deletes && !use_trash_for_deletes(paths);
+    let mut body = folder_plan_to_json(&plan);
+    body["permanent_delete"] = serde_json::Value::Bool(permanent_delete);
+    if permanent_delete {
+        body["permanent_warning"] = serde_json::Value::String(permanent_delete_warning(
+            delete_side,
+            plan.counts.delete_count,
+        ));
+    }
+    http_response(200, "OK", "application/json", body.to_string().into_bytes())
+}
+
+/// True when the user's settings route deletes to the freedesktop trash;
+/// false means folder-op deletes are permanent and require confirmation.
+fn use_trash_for_deletes(paths: &AppPaths) -> bool {
+    SettingsStore::new(paths.settings_file())
+        .load_or_default()
+        .map(|settings| settings.delete_preference == DeletePreference::MoveToTrash)
+        .unwrap_or(true)
+}
+
+fn folder_op_delete_side(kind: &FolderOperationKind) -> Option<CompareSide> {
+    match kind {
+        FolderOperationKind::DeleteLeft => Some(CompareSide::Left),
+        FolderOperationKind::DeleteRight => Some(CompareSide::Right),
+        _ => None,
+    }
 }
 
 fn folder_op_execute_bridge_response(
@@ -6558,22 +6584,26 @@ fn folder_op_execute_bridge_response(
     let Some(op_kind) = parse_folder_op_kind(kind, &params) else {
         return bridge_error(400, "Bad Request", "unsupported op kind");
     };
+    let delete_side = folder_op_delete_side(&op_kind);
     let plan = plan_folder_operation(&compare, op_kind, &entries);
 
-    let use_trash = SettingsStore::new(paths.settings_file())
-        .load_or_default()
-        .map(|settings| settings.delete_preference == DeletePreference::MoveToTrash)
-        .unwrap_or(true);
-
-    // TODO(Task 2.2): parse confirm_permanent from the request instead of
-    // hardcoding Confirmed (which preserves the bridge's historical behavior
-    // of executing permanent deletes without an explicit confirmation step).
-    let outcomes = execute_folder_operation_plan(
-        &plan,
-        &paths.data_dir,
-        use_trash,
-        linsync_core::PermanentDeleteConfirmation::Confirmed,
-    );
+    let use_trash = use_trash_for_deletes(paths);
+    let confirm_permanent = query_bool(&params, "confirm_permanent");
+    if plan.contains_deletes && !use_trash && !confirm_permanent {
+        // Refuse before touching the filesystem: permanent deletes are
+        // unrecoverable, so the caller must resend with confirm_permanent=1.
+        return bridge_error(
+            409,
+            "Conflict",
+            &permanent_delete_warning(delete_side, plan.counts.delete_count),
+        );
+    }
+    let confirmation = if confirm_permanent {
+        linsync_core::PermanentDeleteConfirmation::Confirmed
+    } else {
+        linsync_core::PermanentDeleteConfirmation::NotConfirmed
+    };
+    let outcomes = execute_folder_operation_plan(&plan, &paths.data_dir, use_trash, confirmation);
     let body = folder_outcomes_to_json(&plan, &outcomes).to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
 }
@@ -11906,6 +11936,125 @@ mod tests {
         ))
         .expect("utf-8 response");
         assert!(resp.contains("400") || resp.contains("error"));
+    }
+
+    /// Builds a Folder compare tab over a temp left/right pair where only the
+    /// right side holds `victim.txt`, so `kind=delete_right` plans one delete.
+    fn folder_delete_fixture(name: &str) -> (AppPaths, Arc<Mutex<GuiBridgeState>>, PathBuf) {
+        let root = test_file_root(name);
+        let left = root.join("left");
+        let right = root.join("right");
+        fs::create_dir_all(&left).unwrap();
+        fs::create_dir_all(&right).unwrap();
+        let victim = right.join("victim.txt");
+        fs::write(&victim, "doomed").unwrap();
+        let paths = test_app_paths(&format!("{name}-paths"));
+        let state = test_bridge_state(None);
+        let resp = String::from_utf8(bridge_response(
+            &format!(
+                "GET /compare?left={}&right={} HTTP/1.1\r\n",
+                left.display(),
+                right.display()
+            ),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.starts_with("HTTP/1.1 200"), "compare failed: {resp}");
+        (paths, state, victim)
+    }
+
+    fn set_delete_preference(paths: &AppPaths, preference: DeletePreference) {
+        let store = SettingsStore::new(paths.settings_file());
+        let mut settings = store.load_or_default().expect("settings load");
+        settings.delete_preference = preference;
+        store.save(&settings).expect("settings save");
+    }
+
+    #[test]
+    fn folder_op_plan_reports_permanent_delete_when_trash_disabled() {
+        let (paths, state, _victim) = folder_delete_fixture("folder-op-plan-permanent");
+        set_delete_preference(&paths, DeletePreference::Permanent);
+        let resp = String::from_utf8(bridge_response(
+            "GET /folder/op/plan?kind=delete_right HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.starts_with("HTTP/1.1 200"), "plan failed: {resp}");
+        let body = json_response_body(&resp);
+        assert_eq!(body["permanent_delete"], serde_json::json!(true));
+        let warning = body["permanent_warning"]
+            .as_str()
+            .expect("permanent_warning should be a string");
+        assert!(
+            warning.contains("Permanently deleting"),
+            "unexpected warning wording: {warning}"
+        );
+    }
+
+    #[test]
+    fn folder_op_plan_reports_trash_delete_as_non_permanent() {
+        let (paths, state, _victim) = folder_delete_fixture("folder-op-plan-trash");
+        // Default settings keep delete_preference == MoveToTrash.
+        let resp = String::from_utf8(bridge_response(
+            "GET /folder/op/plan?kind=delete_right HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.starts_with("HTTP/1.1 200"), "plan failed: {resp}");
+        let body = json_response_body(&resp);
+        assert_eq!(body["permanent_delete"], serde_json::json!(false));
+        assert!(body["permanent_warning"].is_null());
+    }
+
+    #[test]
+    fn folder_op_execute_permanent_delete_without_confirmation_is_409() {
+        let (paths, state, victim) = folder_delete_fixture("folder-op-exec-perm-noconfirm");
+        set_delete_preference(&paths, DeletePreference::Permanent);
+        let resp = String::from_utf8(bridge_response(
+            "GET /folder/op/execute?kind=delete_right HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.starts_with("HTTP/1.1 409"), "expected 409: {resp}");
+        let body = json_response_body(&resp);
+        let message = body["error"].as_str().expect("error message");
+        assert!(
+            message.contains("confirmation"),
+            "unexpected error wording: {message}"
+        );
+        assert!(victim.exists(), "file must survive an unconfirmed delete");
+    }
+
+    #[test]
+    fn folder_op_execute_permanent_delete_with_confirmation_deletes() {
+        let (paths, state, victim) = folder_delete_fixture("folder-op-exec-perm-confirmed");
+        set_delete_preference(&paths, DeletePreference::Permanent);
+        let resp = String::from_utf8(bridge_response(
+            "GET /folder/op/execute?kind=delete_right&confirm_permanent=1 HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.starts_with("HTTP/1.1 200"), "execute failed: {resp}");
+        assert!(!victim.exists(), "confirmed delete must remove the file");
+    }
+
+    #[test]
+    fn folder_op_execute_trash_delete_needs_no_confirmation() {
+        let (paths, state, victim) = folder_delete_fixture("folder-op-exec-trash");
+        // Default settings keep delete_preference == MoveToTrash.
+        let resp = String::from_utf8(bridge_response(
+            "GET /folder/op/execute?kind=delete_right HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.starts_with("HTTP/1.1 200"), "execute failed: {resp}");
+        assert!(!victim.exists(), "trash delete should move the file away");
     }
 
     #[test]

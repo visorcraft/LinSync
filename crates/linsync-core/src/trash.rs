@@ -129,10 +129,7 @@ pub fn plan_delete(
                 side_item_label(side, item_count)
             )
         } else {
-            format!(
-                "Permanently deleting {item_count} {} requires confirmation.",
-                side_item_label(side, item_count)
-            )
+            permanent_delete_warning(side, item_count)
         }
     });
 
@@ -449,6 +446,16 @@ fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
     let month = month_prime + if month_prime < 10 { 3 } else { -9 };
     let year = year + i64::from(month <= 2);
     (year as i32, month as u32, day as u32)
+}
+
+/// Human-readable warning shown before a permanent (non-trash) delete.
+/// Single source of the wording, shared by `plan_delete` and the GUI bridge's
+/// folder-operation plan/execute endpoints.
+pub fn permanent_delete_warning(side: Option<CompareSide>, item_count: usize) -> String {
+    format!(
+        "Permanently deleting {item_count} {} requires confirmation.",
+        side_item_label(side, item_count)
+    )
 }
 
 fn side_item_label(side: Option<CompareSide>, item_count: usize) -> String {
