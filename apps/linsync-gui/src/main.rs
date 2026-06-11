@@ -3589,6 +3589,8 @@ fn bridge_response_with_token(
         "/settings" => settings_bridge_response(paths),
         "/settings/set" => settings_set_bridge_response(query, paths),
         "/settings/reset" => settings_reset_bridge_response(paths),
+        "/file/read" => file_read_bridge_response(query),
+        "/file/write" => file_write_bridge_response(query),
         "/compare" => compare_bridge_response(query, paths, state),
         "/cancel" => cancel_bridge_response(query, state),
         "/progress" => progress_bridge_response(query, state),
@@ -4892,6 +4894,36 @@ fn save_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<
     match context_to_json(&context) {
         Ok(body) => http_response(200, "OK", "application/json", body.into_bytes()),
         Err(err) => bridge_error(500, "Internal Server Error", &err.to_string()),
+    }
+}
+
+/// Read raw text content from a file path. Used by the GUI inline editor.
+fn file_read_bridge_response(query: &str) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(path) = query_value(&params, "path") else {
+        return bridge_error(400, "Bad Request", "missing path");
+    };
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            let body = serde_json::json!({ "ok": true, "content": content }).to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
+        }
+        Err(err) => bridge_error(500, "Internal Server Error", &format!("read failed: {err}")),
+    }
+}
+
+/// Write raw text content to a file path. Used by the GUI inline editor.
+fn file_write_bridge_response(query: &str) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(path) = query_value(&params, "path") else {
+        return bridge_error(400, "Bad Request", "missing path");
+    };
+    let Some(content) = query_value(&params, "content") else {
+        return bridge_error(400, "Bad Request", "missing content");
+    };
+    match std::fs::write(path, content) {
+        Ok(()) => http_response(200, "OK", "application/json", br#"{"ok":true}"#.to_vec()),
+        Err(err) => bridge_error(500, "Internal Server Error", &format!("write failed: {err}")),
     }
 }
 

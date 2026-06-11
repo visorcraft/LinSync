@@ -26,6 +26,11 @@ Kirigami.ApplicationWindow {
     property string rightPath: ""
     property string basePath: ""
     property bool threeWayMode: root.compareMode === "Three-way"
+    // Inline editing state. When true, the corresponding text pane is editable.
+    property bool editLeftMode: false
+    property bool editRightMode: false
+    property string editLeftDirtyText: ""
+    property string editRightDirtyText: ""
     property string compareMode: "Text"
     property string differenceText: "0 differences"
     property var summaryItems: []
@@ -647,6 +652,47 @@ Kirigami.ApplicationWindow {
         root.findVisible = true
         searchField.forceActiveFocus()
         searchField.selectAll()
+    }
+
+    function toggleEditMode(side) {
+        if (side === "left") {
+            root.editLeftMode = !root.editLeftMode
+            if (!root.editLeftMode)
+                root.editLeftDirtyText = ""
+        } else {
+            root.editRightMode = !root.editRightMode
+            if (!root.editRightMode)
+                root.editRightDirtyText = ""
+        }
+    }
+
+    function saveEdit(side) {
+        const path = side === "left" ? root.leftPath : root.rightPath
+        const content = side === "left" ? root.editLeftDirtyText : root.editRightDirtyText
+        if (path === "" || content === "")
+            return
+        const request = new XMLHttpRequest()
+        const url = root.bridgeUrl + "/file/write?path=" + encodeURIComponent(path)
+            + "&content=" + encodeURIComponent(content)
+        request.onreadystatechange = function () {
+            if (request.readyState === XMLHttpRequest.DONE) {
+                if (request.status === 200) {
+                    root.statusText = qsTr("Saved ") + side
+                    if (side === "left") {
+                        root.editLeftDirtyText = ""
+                        root.editLeftMode = false
+                    } else {
+                        root.editRightDirtyText = ""
+                        root.editRightMode = false
+                    }
+                    root.requestCompare(false)
+                } else {
+                    root.statusText = qsTr("Save failed")
+                }
+            }
+        }
+        request.open("POST", url)
+        request.send()
     }
 
     // `searchRe` is the regex compiled once per rebuild (or null for literal
@@ -4307,6 +4353,50 @@ Kirigami.ApplicationWindow {
                         Accessible.name: qsTr("Open three-way merge")
                         onClicked: openMergeDialog.startFlow()
                     }
+
+                    Kirigami.Separator { Layout.fillHeight: true }
+
+                    Controls.ToolButton {
+                        icon.name: "document-edit"
+                        icon.color: root.activeText
+                        checkable: true
+                        checked: root.editLeftMode
+                        Controls.ToolTip.text: qsTr("Edit left file inline")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Edit left file")
+                        onClicked: root.toggleEditMode("left")
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "document-save"
+                        icon.color: root.activeText
+                        enabled: root.editLeftMode && root.editLeftDirtyText !== ""
+                        Controls.ToolTip.text: qsTr("Save left file")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Save left file")
+                        onClicked: root.saveEdit("left")
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "document-edit"
+                        icon.color: root.activeText
+                        checkable: true
+                        checked: root.editRightMode
+                        Controls.ToolTip.text: qsTr("Edit right file inline")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Edit right file")
+                        onClicked: root.toggleEditMode("right")
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "document-save"
+                        icon.color: root.activeText
+                        enabled: root.editRightMode && root.editRightDirtyText !== ""
+                        Controls.ToolTip.text: qsTr("Save right file")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Save right file")
+                        onClicked: root.saveEdit("right")
+                    }
                 }
             }
 
@@ -5243,6 +5333,7 @@ Kirigami.ApplicationWindow {
                     rows: root.compareMode === "Folder" ? [] : root.leftRows
                     useBridgeModel: root.hasSessionBridge()
                     modelRevision: root.bridgeModelRevision
+                    editMode: root.editLeftMode
                 }
 
                 PaneColumn {
@@ -5257,6 +5348,8 @@ Kirigami.ApplicationWindow {
                     rows: root.compareMode === "Folder" ? [] : root.rightRows
                     useBridgeModel: root.hasSessionBridge()
                     modelRevision: root.bridgeModelRevision
+                    editMode: root.editRightMode
+                }
                 }
 
                 Rectangle {
@@ -5870,6 +5963,7 @@ Kirigami.ApplicationWindow {
         property bool useBridgeModel: false
         property int modelRevision: 0
         property bool syntaxOverlayActive: root.compareMode === "Text" && root.syntaxMode !== "plain"
+        property bool editMode: false
 
         // External code (sibling pane sync) sets pane.contentY to mirror
         // scroll position. Internally we proxy to the ScrollView's inner
@@ -5922,18 +6016,39 @@ Kirigami.ApplicationWindow {
             inner.contentY = Math.max(0, Math.min(maxY, y - (inner.height - lh) / 2))
         }
 
+        function loadRawContent() {
+            if (pane.pathText === "") return
+            const request = new XMLHttpRequest()
+            request.onreadystatechange = function () {
+                if (request.readyState === XMLHttpRequest.DONE && request.status === 200) {
+                    var data = JSON.parse(request.responseText)
+                    if (data && data.content !== undefined) {
+                        contentArea.text = data.content
+                    }
+                }
+            }
+            request.open("GET", root.bridgeUrl + "/file/read?path=" + encodeURIComponent(pane.pathText))
+            request.send()
+        }
+
         function resetRowsModel() {
-            contentArea.text = computeJoinedText()
+            if (pane.editMode) {
+                loadRawContent()
+            } else {
+                contentArea.text = computeJoinedText()
+            }
         }
 
         onRowsChanged: {
-            resetRowsModel()
+            if (!pane.editMode)
+                resetRowsModel()
             // Appending a fetched window must not yank the viewport to the top.
             if (!root.suppressTextScrollReset)
                 scrollToTopTimer.restart()
         }
-        onUseBridgeModelChanged: resetRowsModel()
-        onModelRevisionChanged: resetRowsModel()
+        onUseBridgeModelChanged: { if (!pane.editMode) resetRowsModel() }
+        onModelRevisionChanged: { if (!pane.editMode) resetRowsModel() }
+        onEditModeChanged: resetRowsModel()
         Component.onCompleted: resetRowsModel()
 
         Timer {
@@ -6052,6 +6167,7 @@ Kirigami.ApplicationWindow {
                     anchors.fill: parent
                     clip: true
                     z: 0
+                    visible: !pane.editMode
 
                     Column {
                         id: rowBackgrounds
@@ -6122,18 +6238,27 @@ Kirigami.ApplicationWindow {
                         font.family: root.paneFontFamily
                         font.pixelSize: root.paneFontSize
                         textFormat: Controls.TextArea.PlainText
-                        color: pane.syntaxOverlayActive ? "transparent" : root.activeText
+                        color: pane.syntaxOverlayActive && !pane.editMode ? "transparent" : root.activeText
                         wrapMode: Controls.TextArea.NoWrap
                         selectByMouse: true
                         selectByKeyboard: true
                         persistentSelection: true
-                        leftPadding: paneStack.textLeftPadding
+                        leftPadding: pane.editMode ? 8 : paneStack.textLeftPadding
                         rightPadding: 4
                         topPadding: 0
                         bottomPadding: 0
                         verticalAlignment: Controls.TextArea.AlignTop
 
                         background: Rectangle { color: "transparent" }
+
+                        onTextChanged: {
+                            if (pane.editMode) {
+                                if (pane.sideKey === "left")
+                                    root.editLeftDirtyText = text
+                                else
+                                    root.editRightDirtyText = text
+                            }
+                        }
 
                         // Qt TextArea inside ScrollView doesn't translate
                         // PageUp/PageDown into view scrolling on its own.
@@ -6164,7 +6289,7 @@ Kirigami.ApplicationWindow {
                     anchors.fill: parent
                     clip: true
                     z: 1.5
-                    visible: pane.syntaxOverlayActive
+                    visible: pane.syntaxOverlayActive && !pane.editMode
 
                     Column {
                         id: syntaxColumn
@@ -6197,7 +6322,7 @@ Kirigami.ApplicationWindow {
                     anchors.fill: parent
                     clip: true
                     z: 2
-                    visible: root.showLineNumbers
+                    visible: root.showLineNumbers && !pane.editMode
 
                     Column {
                         id: gutterColumn
