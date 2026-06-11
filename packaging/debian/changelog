@@ -1,3 +1,9 @@
+linsync (1.12.0-1) unstable; urgency=medium
+
+  * Version bump to 1.12.0.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Thu, 11 Jun 2026 15:37:36 -0500
+
 linsync (1.11.0-1) unstable; urgency=medium
 
   * CI hardening: self-skip Chromium headless screenshot test when sandbox

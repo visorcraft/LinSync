@@ -5993,7 +5993,6 @@ Kirigami.ApplicationWindow {
                 onSessionUpdated: context => root.applyLaunchContext(context, false)
             }
         }
-    }
 
     component PaneColumn: Rectangle {
         id: pane
