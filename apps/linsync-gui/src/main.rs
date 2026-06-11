@@ -1350,6 +1350,7 @@ fn context_to_value(context: &GuiLaunchContext) -> Result<serde_json::Value, ser
         for tab in &mut windowed.session.tabs {
             apply_text_windowing(tab);
             apply_folder_windowing(tab);
+            apply_binary_windowing(tab);
         }
         serde_json::to_value(&windowed)
     } else {
@@ -3277,13 +3278,19 @@ const TEXT_WINDOW_THRESHOLD: usize = 2000;
 /// common small/medium folder loads whole (client-side sort/filter, unchanged).
 const FOLDER_WINDOW_THRESHOLD: usize = 5000;
 
+/// Binary/hex comparisons with more than this many rows are served windowed:
+/// the compare response embeds only the first page, and the GUI pages the rest
+/// through `/binary/window`. Same rationale as text windowing.
+const BINARY_WINDOW_THRESHOLD: usize = 2000;
+
 /// Whether `tab` is a comparison large enough to serve windowed — a text diff
-/// over [`TEXT_WINDOW_THRESHOLD`] rows or a folder over
-/// [`FOLDER_WINDOW_THRESHOLD`] entries. Table/hex/image tabs are never windowed
-/// (they carry their own metadata and the GUI has no window-fetch wiring).
+/// over [`TEXT_WINDOW_THRESHOLD`] rows, a folder over
+/// [`FOLDER_WINDOW_THRESHOLD`] entries, or a hex diff over
+/// [`BINARY_WINDOW_THRESHOLD`] rows.
 fn tab_needs_windowing(tab: &GuiCompareTab) -> bool {
     (tab.mode == "Text" && tab.left_rows.len().max(tab.right_rows.len()) > TEXT_WINDOW_THRESHOLD)
         || (tab.mode == "Folder" && tab.folder_entries.len() > FOLDER_WINDOW_THRESHOLD)
+        || (tab.mode == "Hex" && tab.left_rows.len().max(tab.right_rows.len()) > BINARY_WINDOW_THRESHOLD)
 }
 
 /// Window a large folder `tab` for transmission: record the full entry count and
@@ -3331,6 +3338,33 @@ fn apply_text_windowing(tab: &mut GuiCompareTab) {
     tab.search_row_indexes = search_row_indexes;
     tab.left_rows.truncate(TEXT_WINDOW_THRESHOLD);
     tab.right_rows.truncate(TEXT_WINDOW_THRESHOLD);
+}
+
+/// Window a large binary/hex `tab` *for transmission to the GUI*: record the
+/// total row count and truncate the embedded rows to the first window. The
+/// GUI then pages the rest through `/binary/window`. A no-op for tabs below
+/// the threshold.
+fn apply_binary_windowing(tab: &mut GuiCompareTab) {
+    if tab.mode != "Hex" || tab.left_rows.len().max(tab.right_rows.len()) <= BINARY_WINDOW_THRESHOLD {
+        return;
+    }
+    let total = tab.left_rows.len().max(tab.right_rows.len());
+    let mut diff_row_indexes = Vec::new();
+    for index in 0..total {
+        let left = tab.left_rows.get(index);
+        let right = tab.right_rows.get(index);
+        let left_state = left.map(|row| row.state.as_str());
+        let right_state = right.map(|row| row.state.as_str());
+        if left_state.is_some_and(is_gui_difference_state)
+            || right_state.is_some_and(is_gui_difference_state)
+        {
+            diff_row_indexes.push(index);
+        }
+    }
+    tab.total_rows = Some(total);
+    tab.diff_row_indexes = diff_row_indexes;
+    tab.left_rows.truncate(BINARY_WINDOW_THRESHOLD);
+    tab.right_rows.truncate(BINARY_WINDOW_THRESHOLD);
 }
 
 fn compare_tab_title(mode: &str, left_path: &str, right_path: &str) -> String {

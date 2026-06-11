@@ -110,6 +110,10 @@ Kirigami.ApplicationWindow {
     property var serverDiffRowIndexes: []
     property var serverSearchRowIndexes: []
     property bool textWindowLoading: false
+    // Hex navigation. Jump-to-offset stores the user-entered offset string;
+    // hexWindowLoading mirrors textWindowLoading for the /binary/window path.
+    property string hexJumpOffset: ""
+    property bool hexWindowLoading: false
     // Lazy folder paging. When a folder comparison exceeds the server window
     // threshold the compare response embeds only the first page plus the full
     // entry count (folderTotalEntries); further pages — and all sort / filter /
@@ -558,6 +562,50 @@ Kirigami.ApplicationWindow {
         selectDifference(root.diffRowIndexes.length - 1)
     }
 
+    // Jump to a specific hex offset. Parses the offset string as hex and
+    // scrolls the diff pane to the row containing that offset.
+    function jumpToHexOffset(offsetStr) {
+        const parsed = parseInt(offsetStr, 16)
+        if (isNaN(parsed) || parsed < 0) {
+            root.statusText = qsTr("Invalid hex offset")
+            return
+        }
+        // Find the row containing this offset (each row shows bytes_per_row).
+        // Default to 16 bytes per row if we can't determine the actual value.
+        const bytesPerRow = 16
+        const targetRow = Math.floor(parsed / bytesPerRow)
+        if (targetRow < 0 || targetRow >= root.leftRows.length) {
+            root.statusText = qsTr("Offset out of range")
+            return
+        }
+        root.currentDiffRow = targetRow
+        root.scrollToCurrentDifference()
+        root.statusText = qsTr("Jumped to offset 0x") + parsed.toString(16)
+    }
+
+    // Search for a sequence of hex bytes in the loaded rows.
+    // The query is a space-separated hex string like "48 65 6c 6c 6f".
+    function searchHexBytes(query) {
+        const bytes = query.trim().split(/\s+/).map(function (s) { return parseInt(s, 16) }).filter(function (b) { return !isNaN(b) })
+        if (bytes.length === 0) {
+            root.statusText = qsTr("Invalid byte sequence")
+            return
+        }
+        // Build a string from the bytes and search in the hex pane text.
+        // This is a client-side search over loaded rows only.
+        const needle = String.fromCharCode.apply(null, bytes)
+        for (let i = 0; i < root.leftRows.length; i++) {
+            const text = root.leftRows[i] ? (root.leftRows[i].text || "") : ""
+            if (text.indexOf(needle) >= 0) {
+                root.currentDiffRow = i
+                root.scrollToCurrentDifference()
+                root.statusText = qsTr("Found at row ") + (i + 1)
+                return
+            }
+        }
+        root.statusText = qsTr("Byte sequence not found in loaded rows")
+    }
+
     // Scroll to the current-diff row.  Suppress scroll-sync during
     // programmatic positioning so the user's free-scroll isn't fought.
     function scrollToCurrentDifference() {
@@ -572,9 +620,17 @@ Kirigami.ApplicationWindow {
         // intervening windows first, then position once it is in view.
         if (root.textTotalRows > 0 && root.currentDiffRow >= root.unfilteredLeftRows.length
                 && root.unfilteredLeftRows.length < root.textTotalRows) {
-            root.loadTextWindowsUntil(root.currentDiffRow, function () {
-                root.scrollToCurrentDifference()
-            })
+            if (root.compareMode === "Hex") {
+                root.loadNextHexWindow(function (loadedMore) {
+                    if (loadedMore && root.unfilteredLeftRows.length <= root.currentDiffRow
+                            && root.unfilteredLeftRows.length < root.textTotalRows)
+                        root.scrollToCurrentDifference()
+                })
+            } else {
+                root.loadTextWindowsUntil(root.currentDiffRow, function () {
+                    root.scrollToCurrentDifference()
+                })
+            }
             return
         }
         root.syncingScroll = true
@@ -1990,6 +2046,60 @@ Kirigami.ApplicationWindow {
         const remaining = inner.contentHeight - (inner.contentY + inner.height)
         if (remaining < inner.height * 2)
             root.loadNextTextWindow()
+    }
+
+    // Fetch the next window of a windowed hex diff and append it.
+    function loadNextHexWindow(onDone) {
+        const finish = function (loaded) { if (onDone) onDone(loaded) }
+        if (root.textTotalRows <= 0 || root.bridgeUrl === "" || root.hexWindowLoading) {
+            finish(false)
+            return
+        }
+        const offset = root.unfilteredLeftRows.length
+        if (offset >= root.textTotalRows) {
+            finish(false)
+            return
+        }
+        root.hexWindowLoading = true
+        const request = new XMLHttpRequest()
+        const url = root.bridgeUrl + "/binary/window?offset=" + offset + "&limit=2000"
+        request.onreadystatechange = function () {
+            if (request.readyState !== XMLHttpRequest.DONE)
+                return
+            root.hexWindowLoading = false
+            if (request.status !== 200) {
+                root.statusText = qsTr("Failed to load more hex rows")
+                finish(false)
+                return
+            }
+            const payload = JSON.parse(request.responseText)
+            const lw = payload.left_rows || []
+            const rw = payload.right_rows || []
+            if (lw.length === 0 && rw.length === 0) {
+                finish(false)
+                return
+            }
+            root.suppressTextScrollReset = true
+            root.unfilteredLeftRows = root.unfilteredLeftRows.concat(lw)
+            root.unfilteredRightRows = root.unfilteredRightRows.concat(rw)
+            root.leftRows = root.unfilteredLeftRows
+            root.rightRows = root.unfilteredRightRows
+            root.suppressTextScrollReset = false
+            finish(true)
+        }
+        request.open("GET", url)
+        request.send()
+    }
+
+    // Prefetch the next window of a large hex diff as the user nears the bottom.
+    function maybeLoadMoreHexRows(inner) {
+        if (root.textTotalRows <= 0 || root.hexWindowLoading || !inner)
+            return
+        if (root.unfilteredLeftRows.length >= root.textTotalRows)
+            return
+        const remaining = inner.contentHeight - (inner.contentY + inner.height)
+        if (remaining < inner.height * 2)
+            root.loadNextHexWindow()
     }
 
     function requestCompare(newTab) {
@@ -4402,6 +4512,74 @@ Kirigami.ApplicationWindow {
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: visible ? 40 : 0
+                visible: root.compareMode === "Hex"
+                color: root.activeBgAlt
+                border.color: root.separatorColor
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    spacing: 8
+
+                    Controls.Label {
+                        text: qsTr("Offset:")
+                        color: root.activeText
+                        opacity: 0.7
+                    }
+
+                    AppTextField {
+                        id: hexOffsetField
+                        implicitHeight: 30
+                        Layout.preferredWidth: 120
+                        text: root.hexJumpOffset
+                        placeholderText: qsTr("hex (e.g. 1a3f)")
+                        Accessible.name: qsTr("Jump to hex offset")
+                        onAccepted: root.jumpToHexOffset(text)
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "go-jump"
+                        icon.color: root.activeText
+                        Controls.ToolTip.text: qsTr("Jump to offset")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Jump to offset")
+                        onClicked: root.jumpToHexOffset(hexOffsetField.text)
+                    }
+
+                    Kirigami.Separator { Layout.fillHeight: true }
+
+                    Controls.Label {
+                        text: qsTr("Search bytes:")
+                        color: root.activeText
+                        opacity: 0.7
+                    }
+
+                    AppTextField {
+                        id: hexSearchField
+                        implicitHeight: 30
+                        Layout.preferredWidth: 160
+                        placeholderText: qsTr("hex (e.g. 48 65 6c)")
+                        Accessible.name: qsTr("Search bytes in hex")
+                        onAccepted: root.searchHexBytes(text)
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "edit-find"
+                        icon.color: root.activeText
+                        Controls.ToolTip.text: qsTr("Search bytes")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Search bytes")
+                        onClicked: root.searchHexBytes(hexSearchField.text)
+                    }
+
+                    Item { Layout.fillWidth: true }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: visible ? 40 : 0
                 visible: root.compareMode === "Folder"
                 color: root.activeBgAlt
                 border.color: root.separatorColor
@@ -5734,8 +5912,12 @@ Kirigami.ApplicationWindow {
                 pane.contentY = cy
                 // Prefetch the next window of a large diff as we near the bottom
                 // (left pane only, so a single fetch is issued per scroll).
-                if (pane.sideKey === "left")
-                    root.maybeLoadMoreTextRows(lineScroll.contentItem)
+                if (pane.sideKey === "left") {
+                    if (root.compareMode === "Hex")
+                        root.maybeLoadMoreHexRows(lineScroll.contentItem)
+                    else
+                        root.maybeLoadMoreTextRows(lineScroll.contentItem)
+                }
                 if (root.syncingScroll) return
                 root.syncingScroll = true
                 if (pane.sideKey === "left" && rightPane)
