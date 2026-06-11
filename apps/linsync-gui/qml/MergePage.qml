@@ -35,6 +35,9 @@ Item {
     // Predetermined output path (Git mergetool). When non-empty, a one-click
     // "Save merge" writes straight here instead of prompting.
     property string outputPath: ""
+    // When true, hide conflict resolution UI and show only the three source
+    // panes (used by the "Three-way" compare mode in the main Compare page).
+    property bool compareOnly: false
 
     // ── Internal state ────────────────────────────────────────────────────────
 
@@ -192,7 +195,8 @@ Item {
         // ── Top toolbar ───────────────────────────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 40
+            Layout.preferredHeight: visible ? 40 : 0
+            visible: !root.compareOnly
             color: root.activeBgAlt
 
             Rectangle {
@@ -293,8 +297,8 @@ Item {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 60
-            visible: root.currentConflict >= 0
+            Layout.preferredHeight: visible ? 60 : 0
+            visible: !root.compareOnly && root.currentConflict >= 0
             color: root.activeBg
             border.color: root.separatorColor
             border.width: 1
@@ -443,7 +447,8 @@ Item {
         // ── Output preview ────────────────────────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 20
+            Layout.preferredHeight: visible ? 20 : 0
+            visible: !root.compareOnly
             color: root.activeBgAlt
 
             Controls.Label {
@@ -460,6 +465,7 @@ Item {
         Controls.ScrollView {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            visible: !root.compareOnly
 
             Controls.TextArea {
                 id: outputArea

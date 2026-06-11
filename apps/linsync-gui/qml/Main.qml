@@ -24,6 +24,8 @@ Kirigami.ApplicationWindow {
     }
     property string leftPath: ""
     property string rightPath: ""
+    property string basePath: ""
+    property bool threeWayMode: root.compareMode === "Three-way"
     property string compareMode: "Text"
     property string differenceText: "0 differences"
     property var summaryItems: []
@@ -2103,6 +2105,20 @@ Kirigami.ApplicationWindow {
     }
 
     function requestCompare(newTab) {
+        if (root.compareMode === "Three-way") {
+            if (root.basePath === "" || root.leftPath === "" || root.rightPath === "") {
+                root.statusText = "Select base, left, and right paths"
+                return
+            }
+            root.activeSection = 8
+            mergePage.basePath = root.basePath
+            mergePage.leftPath = root.leftPath
+            mergePage.rightPath = root.rightPath
+            mergePage.compareOnly = true
+            mergePage.start()
+            return
+        }
+
         if (root.leftPath === "" || root.rightPath === "") {
             root.statusText = "Select two paths"
             return
@@ -2473,6 +2489,8 @@ Kirigami.ApplicationWindow {
     function setBrowsedPath(path) {
         if (root.pendingBrowseSide === "left")
             root.leftPath = path
+        else if (root.pendingBrowseSide === "base")
+            root.basePath = path
         else
             root.rightPath = path
         updateActiveTabSnapshot()
@@ -3047,7 +3065,7 @@ Kirigami.ApplicationWindow {
 
                     AppComboBox {
                         id: newCompareModeCombo
-                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document", "Webpage"]
+                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document", "Webpage", "Three-way"]
                         Accessible.name: "Compare mode"
                         implicitWidth: 140
                         implicitHeight: 30
@@ -4051,7 +4069,7 @@ Kirigami.ApplicationWindow {
                         implicitHeight: 36
                         Layout.preferredWidth: 140
                         implicitWidth: 140
-                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document", "Webpage"]
+                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document", "Webpage", "Three-way"]
                         Accessible.name: "Compare mode"
                         palette.button: root.activeBgAlt
                         palette.buttonText: root.activeText
@@ -4079,10 +4097,42 @@ Kirigami.ApplicationWindow {
                     }
 
                     AppTextField {
+                        id: basePathField
+                        implicitHeight: 36
+                        Layout.fillWidth: true
+                        visible: root.threeWayMode
+                        text: root.basePath
+                        placeholderText: "Base path"
+                        Accessible.name: "Base path"
+                        color: root.activeText
+                        placeholderTextColor: root.activeDisabledText
+                        background: Rectangle {
+                            color: root.activeBg
+                            border.color: root.separatorColor
+                            border.width: 1
+                            radius: 4
+                        }
+                        onEditingFinished: {
+                            root.basePath = text
+                            root.updateActiveTabSnapshot()
+                        }
+                    }
+
+                    Controls.ToolButton {
+                        icon.name: "document-open-folder"
+                        icon.color: root.activeText
+                        visible: root.threeWayMode
+                        Controls.ToolTip.text: "Browse base"
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: "Browse base"
+                        onClicked: root.browseSide("base")
+                    }
+
+                    AppTextField {
                         implicitHeight: 36
                         Layout.fillWidth: true
                         text: root.leftPath
-                        placeholderText: "Left path"
+                        placeholderText: root.threeWayMode ? "Left path" : "Left path"
                         Accessible.name: "Left path"
                         color: root.activeText
                         placeholderTextColor: root.activeDisabledText
