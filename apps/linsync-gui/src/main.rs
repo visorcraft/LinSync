@@ -3293,7 +3293,8 @@ const BINARY_WINDOW_THRESHOLD: usize = 2000;
 fn tab_needs_windowing(tab: &GuiCompareTab) -> bool {
     (tab.mode == "Text" && tab.left_rows.len().max(tab.right_rows.len()) > TEXT_WINDOW_THRESHOLD)
         || (tab.mode == "Folder" && tab.folder_entries.len() > FOLDER_WINDOW_THRESHOLD)
-        || (tab.mode == "Hex" && tab.left_rows.len().max(tab.right_rows.len()) > BINARY_WINDOW_THRESHOLD)
+        || (tab.mode == "Hex"
+            && tab.left_rows.len().max(tab.right_rows.len()) > BINARY_WINDOW_THRESHOLD)
 }
 
 /// Window a large folder `tab` for transmission: record the full entry count and
@@ -3348,7 +3349,8 @@ fn apply_text_windowing(tab: &mut GuiCompareTab) {
 /// GUI then pages the rest through `/binary/window`. A no-op for tabs below
 /// the threshold.
 fn apply_binary_windowing(tab: &mut GuiCompareTab) {
-    if tab.mode != "Hex" || tab.left_rows.len().max(tab.right_rows.len()) <= BINARY_WINDOW_THRESHOLD {
+    if tab.mode != "Hex" || tab.left_rows.len().max(tab.right_rows.len()) <= BINARY_WINDOW_THRESHOLD
+    {
         return;
     }
     let total = tab.left_rows.len().max(tab.right_rows.len());
@@ -4907,7 +4909,12 @@ fn path_is_active_tab_path(path: &str, state: &Arc<Mutex<GuiBridgeState>>) -> bo
     let Ok(s) = state.lock() else {
         return false;
     };
-    let Some(tab) = s.session.tabs.iter().find(|t| t.id == s.session.active_tab_id) else {
+    let Some(tab) = s
+        .session
+        .tabs
+        .iter()
+        .find(|t| t.id == s.session.active_tab_id)
+    else {
         return false;
     };
     tab.left_path == path || tab.right_path == path || tab.base_path.as_deref() == Some(path)
@@ -4945,7 +4952,11 @@ fn file_write_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -
     };
     match std::fs::write(path, content) {
         Ok(()) => http_response(200, "OK", "application/json", br#"{"ok":true}"#.to_vec()),
-        Err(err) => bridge_error(500, "Internal Server Error", &format!("write failed: {err}")),
+        Err(err) => bridge_error(
+            500,
+            "Internal Server Error",
+            &format!("write failed: {err}"),
+        ),
     }
 }
 
