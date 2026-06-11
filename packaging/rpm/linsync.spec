@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.10.0
+Version:        1.11.0
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -122,6 +122,10 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Wed Jun 10 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.11.0-1
+- CI hardening: self-skip Chromium headless screenshot test when sandbox
+  cannot initialise in containerised environments.
+
 * Wed Jun 10 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.10.0-1
 - Rich syntax highlighting for text diff (syntect-backed, 13 languages).
 - Permanent-delete confirmation in folder operations GUI.

@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.11.0" date="2026-06-10">
+      <description>
+        <p>CI hardening: self-skip Chromium headless screenshot test when sandbox cannot initialise in containerised environments. Includes all 1.10.0 features: rich syntax highlighting for text diff (13 languages via syntect), permanent-delete confirmation dialog for folder operations, Chromium headless fallback renderer for webpage compare, and writable zip archive-member editing with sandboxed repack.</p>
+      </description>
+    </release>
     <release version="1.10.0" date="2026-06-10">
       <description>
         <p>Add rich syntax highlighting for text diff (13 languages via syntect). Add permanent-delete confirmation dialog for folder operations. Add Chromium headless fallback renderer for webpage compare. Add writable zip archive-member editing with sandboxed repack, TOCTOU fingerprinting, and Flatpak portal-path degradation.</p>
