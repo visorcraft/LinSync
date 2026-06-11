@@ -125,3 +125,16 @@ modules:
       # crate from the vendored tree.
       - type: dir
         path: ../..
+        skip:
+          - .git
+          - .flatpak-builder
+          - dist
+          - target
+          - tests/fixtures/permissions
+          - tests/fixtures/symlink
+          - tests/fixtures/archive/zi*
+      # Re-add only the vendored crates after skipping the whole target/
+      # tree above; cargo --offline needs this directory.
+      - type: dir
+        path: ../../target/flatpak/vendor
+        dest: target/flatpak/vendor
