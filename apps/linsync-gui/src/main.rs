@@ -223,6 +223,8 @@ struct GuiCompareTab {
     mode: String,
     left_path: String,
     right_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_path: Option<String>,
     status: String,
     difference_count: usize,
     left_dirty: bool,
@@ -3243,6 +3245,7 @@ fn compare_tab(
         mode: mode.to_owned(),
         left_path,
         right_path,
+        base_path: None,
         status,
         difference_count,
         left_dirty: false,
@@ -3589,8 +3592,8 @@ fn bridge_response_with_token(
         "/settings" => settings_bridge_response(paths),
         "/settings/set" => settings_set_bridge_response(query, paths),
         "/settings/reset" => settings_reset_bridge_response(paths),
-        "/file/read" => file_read_bridge_response(query),
-        "/file/write" => file_write_bridge_response(query),
+        "/file/read" => file_read_bridge_response(query, state),
+        "/file/write" => file_write_bridge_response(query, state),
         "/compare" => compare_bridge_response(query, paths, state),
         "/cancel" => cancel_bridge_response(query, state),
         "/progress" => progress_bridge_response(query, state),
@@ -4764,6 +4767,7 @@ fn raw_compare_bridge_response(
         mode: "Text".to_owned(),
         left_path: format!("📄 {left_name}"),
         right_path: format!("📄 {right_name}"),
+        base_path: None,
         status: "Text compare complete".to_owned(),
         difference_count: result.summary.differences,
         left_dirty: false,
@@ -4897,12 +4901,27 @@ fn save_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<
     }
 }
 
+/// Validate that `path` is one of the active tab's compare paths (left, right,
+/// or base). Prevents arbitrary file access via the inline editor endpoints.
+fn path_is_active_tab_path(path: &str, state: &Arc<Mutex<GuiBridgeState>>) -> bool {
+    let Ok(s) = state.lock() else {
+        return false;
+    };
+    let Some(tab) = s.session.tabs.iter().find(|t| t.id == s.session.active_tab_id) else {
+        return false;
+    };
+    tab.left_path == path || tab.right_path == path || tab.base_path.as_deref() == Some(path)
+}
+
 /// Read raw text content from a file path. Used by the GUI inline editor.
-fn file_read_bridge_response(query: &str) -> Vec<u8> {
+fn file_read_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
     let params = query_params(query);
     let Some(path) = query_value(&params, "path") else {
         return bridge_error(400, "Bad Request", "missing path");
     };
+    if !path_is_active_tab_path(path, state) {
+        return bridge_error(403, "Forbidden", "path is not an active compare path");
+    }
     match std::fs::read_to_string(path) {
         Ok(content) => {
             let body = serde_json::json!({ "ok": true, "content": content }).to_string();
@@ -4913,11 +4932,14 @@ fn file_read_bridge_response(query: &str) -> Vec<u8> {
 }
 
 /// Write raw text content to a file path. Used by the GUI inline editor.
-fn file_write_bridge_response(query: &str) -> Vec<u8> {
+fn file_write_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
     let params = query_params(query);
     let Some(path) = query_value(&params, "path") else {
         return bridge_error(400, "Bad Request", "missing path");
     };
+    if !path_is_active_tab_path(path, state) {
+        return bridge_error(403, "Forbidden", "path is not an active compare path");
+    }
     let Some(content) = query_value(&params, "content") else {
         return bridge_error(400, "Bad Request", "missing content");
     };

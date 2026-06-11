@@ -577,11 +577,25 @@ Kirigami.ApplicationWindow {
             root.statusText = qsTr("Invalid hex offset")
             return
         }
-        // Find the row containing this offset (each row shows bytes_per_row).
-        // Default to 16 bytes per row if we can't determine the actual value.
+        // Find the row containing this offset. The default bytes_per_row is 16
+        // (BinaryCompareOptions::default().bytes_per_row); profile overrides are
+        // not exposed to QML yet, so this is accurate for the common case.
         const bytesPerRow = 16
         const targetRow = Math.floor(parsed / bytesPerRow)
-        if (targetRow < 0 || targetRow >= root.leftRows.length) {
+        if (targetRow < 0) {
+            root.statusText = qsTr("Offset out of range")
+            return
+        }
+        // For windowed hex files, load rows until the target is available.
+        if (targetRow >= root.leftRows.length && root.textTotalRows > 0
+                && root.unfilteredLeftRows.length < root.textTotalRows) {
+            root.loadNextHexWindow(function (loadedMore) {
+                if (loadedMore)
+                    root.jumpToHexOffset(offsetStr)
+            })
+            return
+        }
+        if (targetRow >= root.leftRows.length) {
             root.statusText = qsTr("Offset out of range")
             return
         }
@@ -592,18 +606,22 @@ Kirigami.ApplicationWindow {
 
     // Search for a sequence of hex bytes in the loaded rows.
     // The query is a space-separated hex string like "48 65 6c 6c 6f".
+    // Searches the formatted hex dump text (e.g. "00000000  48 65 6c 6c 6f  ...Hello").
     function searchHexBytes(query) {
         const bytes = query.trim().split(/\s+/).map(function (s) { return parseInt(s, 16) }).filter(function (b) { return !isNaN(b) })
         if (bytes.length === 0) {
             root.statusText = qsTr("Invalid byte sequence")
             return
         }
-        // Build a string from the bytes and search in the hex pane text.
-        // This is a client-side search over loaded rows only.
-        const needle = String.fromCharCode.apply(null, bytes)
+        // Build a two-char uppercase hex needle and search in the hex portion.
+        const needle = bytes.map(function (b) {
+            return (b < 16 ? "0" : "") + b.toString(16).toUpperCase()
+        }).join(" ")
         for (let i = 0; i < root.leftRows.length; i++) {
             const text = root.leftRows[i] ? (root.leftRows[i].text || "") : ""
-            if (text.indexOf(needle) >= 0) {
+            // The hex portion is between the offset (8 chars + 2 spaces) and the ASCII.
+            const hexPart = text.substring(10, 10 + bytesPerRow * 3)
+            if (hexPart.indexOf(needle) >= 0) {
                 root.currentDiffRow = i
                 root.scrollToCurrentDifference()
                 root.statusText = qsTr("Found at row ") + (i + 1)
@@ -628,10 +646,8 @@ Kirigami.ApplicationWindow {
         if (root.textTotalRows > 0 && root.currentDiffRow >= root.unfilteredLeftRows.length
                 && root.unfilteredLeftRows.length < root.textTotalRows) {
             if (root.compareMode === "Hex") {
-                root.loadNextHexWindow(function (loadedMore) {
-                    if (loadedMore && root.unfilteredLeftRows.length <= root.currentDiffRow
-                            && root.unfilteredLeftRows.length < root.textTotalRows)
-                        root.scrollToCurrentDifference()
+                root.loadHexWindowsUntil(root.currentDiffRow, function () {
+                    root.scrollToCurrentDifference()
                 })
             } else {
                 root.loadTextWindowsUntil(root.currentDiffRow, function () {
@@ -669,7 +685,7 @@ Kirigami.ApplicationWindow {
     function saveEdit(side) {
         const path = side === "left" ? root.leftPath : root.rightPath
         const content = side === "left" ? root.editLeftDirtyText : root.editRightDirtyText
-        if (path === "" || content === "")
+        if (path === "")
             return
         const request = new XMLHttpRequest()
         const url = root.bridgeUrl + "/file/write?path=" + encodeURIComponent(path)
@@ -681,9 +697,11 @@ Kirigami.ApplicationWindow {
                     if (side === "left") {
                         root.editLeftDirtyText = ""
                         root.editLeftMode = false
+                        root.leftDirty = false
                     } else {
                         root.editRightDirtyText = ""
                         root.editRightMode = false
+                        root.rightDirty = false
                     }
                     root.requestCompare(false)
                 } else {
@@ -691,7 +709,7 @@ Kirigami.ApplicationWindow {
                 }
             }
         }
-        request.open("POST", url)
+        request.open("GET", url)
         request.send()
     }
 
@@ -1622,6 +1640,7 @@ Kirigami.ApplicationWindow {
         root.activeTabId = sessionBridgeValue("activeTabId", tab.id || 0, preferBridge)
         root.leftPath = sessionBridgeValue("leftPath", tab.left_path || "", preferBridge)
         root.rightPath = sessionBridgeValue("rightPath", tab.right_path || "", preferBridge)
+        root.basePath = sessionBridgeValue("basePath", tab.base_path || "", preferBridge)
         root.compareMode = sessionBridgeValue("compareMode", tab.mode || "Text", preferBridge)
         root.statusText = sessionBridgeValue("status", tab.status || "Ready", preferBridge)
         root.summaryItems = summaryItemsFromBridge(tab.summary || [], preferBridge)
@@ -1730,6 +1749,7 @@ Kirigami.ApplicationWindow {
                 tab.mode = root.compareMode
                 tab.left_path = root.leftPath
                 tab.right_path = root.rightPath
+                tab.base_path = root.basePath || undefined
                 tab.status = root.statusText
                 tab.difference_count = currentDifferenceCount()
                 tab.left_dirty = root.leftDirty
@@ -2065,6 +2085,24 @@ Kirigami.ApplicationWindow {
         request.send()
     }
 
+    // Keep fetching hex windows until row `targetRow` is loaded (or no more remain),
+    // then invoke `onDone`.
+    function loadHexWindowsUntil(targetRow, onDone) {
+        if (root.textTotalRows <= 0
+                || root.unfilteredLeftRows.length > targetRow
+                || root.unfilteredLeftRows.length >= root.textTotalRows) {
+            if (onDone) onDone()
+            return
+        }
+        root.loadNextHexWindow(function (loadedMore) {
+            if (loadedMore && root.unfilteredLeftRows.length <= targetRow
+                    && root.unfilteredLeftRows.length < root.textTotalRows)
+                root.loadHexWindowsUntil(targetRow, onDone)
+            else if (onDone)
+                onDone()
+        })
+    }
+
     // Keep fetching windows until row `targetRow` is loaded (or no more remain),
     // then invoke `onDone`. Used when navigation jumps to a change/match that
     // lives outside the currently loaded window.
@@ -2153,13 +2191,13 @@ Kirigami.ApplicationWindow {
     function requestCompare(newTab) {
         if (root.compareMode === "Three-way") {
             if (root.basePath === "" || root.leftPath === "" || root.rightPath === "") {
-                root.statusText = "Select base, left, and right paths"
+                root.statusText = qsTr("Select base, left, and right paths")
                 return
             }
             root.activeSection = 8
-            mergePage.basePath = root.basePath
-            mergePage.leftPath = root.leftPath
-            mergePage.rightPath = root.rightPath
+            root.mergeBasePath = root.basePath
+            root.mergeLeftPath = root.leftPath
+            root.mergeRightPath = root.rightPath
             mergePage.compareOnly = true
             mergePage.start()
             return
@@ -2952,6 +2990,7 @@ Kirigami.ApplicationWindow {
         onAccepted: {
             root.mergeRightPath = root.urlToLocalPath(selectedFile)
             openMergeDialog.stage = "idle"
+            mergePage.compareOnly = false
             // Switch to the merge page (index 8) and start the session.
             root.activeSection = 8
             mergePage.start()
@@ -4148,8 +4187,8 @@ Kirigami.ApplicationWindow {
                         Layout.fillWidth: true
                         visible: root.threeWayMode
                         text: root.basePath
-                        placeholderText: "Base path"
-                        Accessible.name: "Base path"
+                        placeholderText: qsTr("Base path")
+                        Accessible.name: qsTr("Base path")
                         color: root.activeText
                         placeholderTextColor: root.activeDisabledText
                         background: Rectangle {
@@ -4168,9 +4207,9 @@ Kirigami.ApplicationWindow {
                         icon.name: "document-open-folder"
                         icon.color: root.activeText
                         visible: root.threeWayMode
-                        Controls.ToolTip.text: "Browse base"
+                        Controls.ToolTip.text: qsTr("Browse base")
                         Controls.ToolTip.visible: hovered
-                        Accessible.name: "Browse base"
+                        Accessible.name: qsTr("Browse base")
                         onClicked: root.browseSide("base")
                     }
 
@@ -4178,7 +4217,7 @@ Kirigami.ApplicationWindow {
                         implicitHeight: 36
                         Layout.fillWidth: true
                         text: root.leftPath
-                        placeholderText: root.threeWayMode ? "Left path" : "Left path"
+                        placeholderText: qsTr("Left path")
                         Accessible.name: "Left path"
                         color: root.activeText
                         placeholderTextColor: root.activeDisabledText
@@ -4359,6 +4398,7 @@ Kirigami.ApplicationWindow {
                     Controls.ToolButton {
                         icon.name: "document-edit"
                         icon.color: root.activeText
+                        visible: root.compareMode === "Text"
                         checkable: true
                         checked: root.editLeftMode
                         Controls.ToolTip.text: qsTr("Edit left file inline")
@@ -4370,6 +4410,7 @@ Kirigami.ApplicationWindow {
                     Controls.ToolButton {
                         icon.name: "document-save"
                         icon.color: root.activeText
+                        visible: root.compareMode === "Text"
                         enabled: root.editLeftMode && root.editLeftDirtyText !== ""
                         Controls.ToolTip.text: qsTr("Save left file")
                         Controls.ToolTip.visible: hovered
@@ -4380,6 +4421,7 @@ Kirigami.ApplicationWindow {
                     Controls.ToolButton {
                         icon.name: "document-edit"
                         icon.color: root.activeText
+                        visible: root.compareMode === "Text"
                         checkable: true
                         checked: root.editRightMode
                         Controls.ToolTip.text: qsTr("Edit right file inline")
@@ -4391,6 +4433,7 @@ Kirigami.ApplicationWindow {
                     Controls.ToolButton {
                         icon.name: "document-save"
                         icon.color: root.activeText
+                        visible: root.compareMode === "Text"
                         enabled: root.editRightMode && root.editRightDirtyText !== ""
                         Controls.ToolTip.text: qsTr("Save right file")
                         Controls.ToolTip.visible: hovered
@@ -6253,10 +6296,13 @@ Kirigami.ApplicationWindow {
 
                         onTextChanged: {
                             if (pane.editMode) {
-                                if (pane.sideKey === "left")
+                                if (pane.sideKey === "left") {
                                     root.editLeftDirtyText = text
-                                else
+                                    root.leftDirty = true
+                                } else {
                                     root.editRightDirtyText = text
+                                    root.rightDirty = true
+                                }
                             }
                         }
 
