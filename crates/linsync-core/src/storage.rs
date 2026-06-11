@@ -59,6 +59,10 @@ pub struct Settings {
     pub session_includes: Vec<String>,
     #[serde(default)]
     pub session_excludes: Vec<String>,
+    /// Keep the `<archive>.bak` sibling after a successful archive-member
+    /// repack (portal commits always retain their app-private backup).
+    #[serde(default)]
+    pub keep_archive_backup: bool,
     /// Unknown keys from a richer/newer build, preserved verbatim across a
     /// load→save round-trip so an older build never silently drops settings it
     /// does not understand.
@@ -102,6 +106,7 @@ impl Default for Settings {
             max_walk_depth: 0,
             session_includes: Vec::new(),
             session_excludes: Vec::new(),
+            keep_archive_backup: false,
             extra: serde_json::Map::new(),
         }
     }

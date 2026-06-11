@@ -1009,11 +1009,11 @@ mod rich {
         // hand-rolled lexers unconditionally — they are cheap single-pass
         // scans, so the size guard below must not suppress them.
         let syntax = syntax_for(mode)?;
-        // Oversized lines return Some(empty) rather than None: this
-        // deliberately suppresses the hand-rolled fallback lexers too, so a
-        // pathological line gets no highlighting at all instead of a slow scan.
+        // The size guard bounds syntect's parse cost only: oversized lines
+        // return None so the cheap hand-rolled lexer still highlights them
+        // (pre-syntect behavior) instead of dropping all spans.
         if text.len() > MAX_LINE_BYTES {
-            return Some(Vec::new());
+            return None;
         }
         let set = syntax_set();
         let mut state = ParseState::new(syntax);
@@ -1185,10 +1185,16 @@ mod syntect_tests {
     }
 
     #[test]
-    fn syntect_perf_guard_skips_oversized_lines() {
+    fn syntect_perf_guard_falls_back_on_oversized_lines() {
+        // The 20k guard bounds syntect parse cost; the cheap hand-rolled
+        // lexer must still cover such lines rather than dropping highlight.
         let big = "let x = 1; ".repeat(2_000);
         assert!(big.len() > 20_000);
-        assert!(syntax_spans(&big, TextSyntaxMode::Rust).is_empty());
+        let spans = syntax_spans(&big, TextSyntaxMode::Rust);
+        assert!(
+            spans.iter().any(|s| s.class == "keyword"),
+            "oversized line must keep fallback highlighting"
+        );
     }
 
     #[test]

@@ -89,6 +89,10 @@ Kirigami.ApplicationWindow {
     readonly property var folderTypeList: folderTypeFilter === "" ? [] : folderTypeFilter.split(",")
     // Archive member editing state
     property string archiveEditToken: ""
+    // Tab that owns the active archive edit; the banner and commit/discard are
+    // scoped to it so switching tabs never shows or commits the edit against an
+    // unrelated comparison. -1 == no edit in progress.
+    property int    archiveEditTabId:   -1
     property string archiveEditMember: ""
     property bool archiveEditInProgress: false
     property string archiveEditSide: ""  // "left" or "right"
@@ -178,6 +182,8 @@ Kirigami.ApplicationWindow {
     property bool   confirmOnClose:     true
     property bool   persistRecentPaths: true
     property bool   reduceMotion:       false
+    property bool   detectMoves:        false
+    property bool   keepArchiveBackup:  false
     property int    maxRecentPaths:     20
     readonly property string appIconSource: Qt.resolvedUrl("assets/com.visorcraft.LinSync.png")
 
@@ -926,6 +932,8 @@ Kirigami.ApplicationWindow {
             "confirmOnClose": true,
             "persistRecentPaths": true,
             "reduceMotion": false,
+            "detectMoves": false,
+            "keepArchiveBackup": false,
             "maxRecentPaths": 20
         }
     }
@@ -950,6 +958,8 @@ Kirigami.ApplicationWindow {
         root.confirmOnClose     = merged.confirmOnClose
         root.persistRecentPaths = merged.persistRecentPaths
         root.reduceMotion       = merged.reduceMotion
+        root.detectMoves        = merged.detectMoves
+        root.keepArchiveBackup  = merged.keepArchiveBackup
         root.maxRecentPaths     = merged.maxRecentPaths
         root.compareMode        = root.defaultCompareMode
         root._settingsReady = true
@@ -973,6 +983,8 @@ Kirigami.ApplicationWindow {
         else if (key === "confirmOnClose")     root.confirmOnClose     = value
         else if (key === "persistRecentPaths") root.persistRecentPaths = value
         else if (key === "reduceMotion")       root.reduceMotion       = value
+        else if (key === "detectMoves")        root.detectMoves        = value
+        else if (key === "keepArchiveBackup")  root.keepArchiveBackup  = value
         else if (key === "maxRecentPaths")     root.maxRecentPaths     = value
     }
 
@@ -1260,6 +1272,7 @@ Kirigami.ApplicationWindow {
     function clearArchiveEditState() {
         root.archiveEditInProgress = false
         root.archiveEditToken = ""
+        root.archiveEditTabId = -1
         root.archiveEditMember = ""
         root.archiveEditSide = ""
         root.archiveEditPortalWarning = ""
@@ -1282,6 +1295,7 @@ Kirigami.ApplicationWindow {
                 return
             }
             root.archiveEditToken = payload.token || ""
+            root.archiveEditTabId = root.activeTabId
             root.archiveEditMember = entry
             root.archiveEditSide = side
             root.archiveEditInProgress = true
@@ -1301,6 +1315,7 @@ Kirigami.ApplicationWindow {
             return
         }
         const qs = "/archive/member/commit?token=" + encodeURIComponent(root.archiveEditToken)
+                 + (root.keepArchiveBackup ? "&keep_backup=1" : "")
         bridgeGet(qs, function (ok, payload) {
             if (ok && payload && payload.ok) {
                 root.statusText = "Archive member updated successfully"
@@ -1645,6 +1660,12 @@ Kirigami.ApplicationWindow {
     function performCloseTab(tabId) {
         if (tabId === 0)
             return
+
+        // Closing the tab that owns an in-flight archive edit would strand it
+        // (no banner to reach commit/discard). Discard it first so its staging
+        // and token are released rather than leaked to the startup sweep.
+        if (root.archiveEditInProgress && root.archiveEditTabId === tabId)
+            root.discardArchiveMemberEdit()
 
         if (hasSessionBridge()) {
             applySessionContextJson(sessionBridgeCall("closeTab", [tabId]))
@@ -4821,7 +4842,10 @@ Kirigami.ApplicationWindow {
                     Rectangle {
                         Layout.fillWidth: true
                         Layout.preferredHeight: visible ? 40 : 0
+                        // Scoped to the tab that started the edit so switching
+                        // tabs never overlays an unrelated comparison.
                         visible: root.archiveEditInProgress
+                                 && root.archiveEditTabId === root.activeTabId
                         color: Kirigami.ColorUtils.tintWithAlpha(root.activeBg, Kirigami.Theme.positiveTextColor, 0.12)
                         border.color: root.separatorColor
 
@@ -5471,6 +5495,8 @@ Kirigami.ApplicationWindow {
                 confirmOnClose:     root.confirmOnClose
                 persistRecentPaths: root.persistRecentPaths
                 reduceMotion:       root.reduceMotion
+                detectMoves:        root.detectMoves
+                keepArchiveBackup:  root.keepArchiveBackup
                 maxRecentPaths:     root.maxRecentPaths
                 bridgeConnected:    root.bridgeAvailable()
                 onSettingChanged: (key, value) => {

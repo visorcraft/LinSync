@@ -981,21 +981,11 @@ pub fn extract_member_for_edit_with_caps(
         });
     }
 
-    if !atomic && let Some(ref bak) = portal_backup {
-        if let Some(parent) = bak.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| io_err("creating portal backup parent dir failed", e))?;
-        }
-        let mut src = File::open(&archive)
-            .map_err(|e| io_err("opening archive for portal backup copy failed", e))?;
-        let mut dst = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(bak)
-            .map_err(|e| io_err("creating portal backup file failed", e))?;
-        io::copy(&mut src, &mut dst)
-            .map_err(|e| io_err("copying archive to portal backup failed", e))?;
-    }
+    // Portal backup is only *recorded* here; the full-archive copy is made by
+    // `commit_member_edit` immediately before the destructive O_TRUNC write,
+    // so an edit that is browsed/discarded without committing never pays a
+    // whole-archive copy (the commit-time fingerprint re-check proves the
+    // copied bytes equal the ones fingerprinted now).
 
     Ok(MemberEditContext {
         archive,
@@ -1284,30 +1274,74 @@ pub fn commit_member_edit(
         // the archive may be left corrupted. This is an inherent limitation of
         // portal-granted files (the parent directory is a FUSE mount, so
         // atomic rename is impossible). The app-private backup is the recovery
-        // path (design §7).
+        // path (design §7): created here, right before the only destructive
+        // step, from the flocked and fingerprint-verified original — an edit
+        // that never commits never pays the whole-archive copy.
+        let bak = ctx.portal_backup.clone().ok_or_else(|| {
+            io_err(
+                "portal commit requires a backup path",
+                io::Error::new(io::ErrorKind::InvalidInput, "missing portal_backup"),
+            )
+        })?;
+        // Probe writability with a non-truncating open BEFORE making the
+        // backup, so a read-only portal grant is detected without first
+        // copying (and then stranding) a whole-archive backup. The original
+        // is not modified by this open — truncation happens via `set_len`
+        // below, only after the backup exists.
+        let mut portal_file = OpenOptions::new().write(true).open(archive).map_err(|e| {
+            if e.kind() == io::ErrorKind::PermissionDenied {
+                ArchiveWriteError::PortalReadOnly {
+                    archive: archive.clone(),
+                    backup: None,
+                    staged: ctx.staged_path.clone(),
+                }
+            } else {
+                io_err(
+                    format!(
+                        "opening portal path '{}' for write failed",
+                        archive.display()
+                    ),
+                    e,
+                )
+            }
+        })?;
+
+        // Writable: create the recovery backup before the destructive
+        // truncation. A previous failed attempt with this token may have left
+        // a backup; the fingerprint re-check above proves the original is
+        // unchanged, so re-creating it is safe. `create_new` never follows
+        // symlinks.
+        if let Some(parent) = bak.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| io_err("creating portal backup parent dir failed", e))?;
+        }
+        let _ = fs::remove_file(&bak);
+        {
+            let mut dst = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&bak)
+                .map_err(|e| io_err("creating portal backup file failed", e))?;
+            original
+                .seek(SeekFrom::Start(0))
+                .map_err(|e| io_err("seek of original for portal backup failed", e))?;
+            io::copy(&mut original, &mut dst)
+                .map_err(|e| io_err("copying archive to portal backup failed", e))?;
+            dst.sync_all()
+                .map_err(|e| io_err("fsync of portal backup failed", e))?;
+        }
+
+        // Destructive step: truncate the now-open portal file and overwrite it
+        // from the verified working copy. The backup created above is the
+        // recovery path if this fails partway.
         let mut work_file = File::open(&work_copy)
             .map_err(|e| io_err("reopening working copy for portal publish failed", e))?;
-        let mut portal_file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(archive)
-            .map_err(|e| {
-                if e.kind() == io::ErrorKind::PermissionDenied {
-                    ArchiveWriteError::PortalReadOnly {
-                        archive: archive.clone(),
-                        backup: ctx.portal_backup.clone(),
-                        staged: ctx.staged_path.clone(),
-                    }
-                } else {
-                    io_err(
-                        format!(
-                            "opening portal path '{}' for write failed",
-                            archive.display()
-                        ),
-                        e,
-                    )
-                }
-            })?;
+        portal_file
+            .set_len(0)
+            .map_err(|e| io_err("truncating portal path failed", e))?;
+        portal_file
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| io_err("seek of portal path failed", e))?;
         io::copy(&mut work_file, &mut portal_file)
             .map_err(|e| io_err("copying working copy to portal path failed", e))?;
         portal_file
@@ -1422,20 +1456,30 @@ mod tests {
             .unwrap();
         assert!(status.success());
 
+        let original_bytes = std::fs::read(&archive).unwrap();
         let staging = dir.path().join("staging");
         let mut ctx =
             extract_member_for_edit(&archive, "a.txt", &staging, None).expect("extract failed");
 
         // Force portal path by mutating the context directly.
         let portal_bak = dir.path().join("portal.bak");
-        std::fs::copy(&archive, &portal_bak).unwrap();
         ctx.atomic = false;
         ctx.portal_backup = Some(portal_bak.clone());
 
         std::fs::write(ctx.staged_path(), b"edited\n").unwrap();
 
+        // Lazy backup contract: nothing is copied until commit's destructive
+        // step is imminent.
+        assert!(
+            !portal_bak.exists(),
+            "portal backup must not exist before commit"
+        );
+
         let outcome =
             commit_member_edit(&ctx, &CommitOptions::default()).expect("portal commit failed");
+
+        // The backup holds the pre-commit original bytes.
+        assert_eq!(std::fs::read(&portal_bak).unwrap(), original_bytes);
 
         // O_TRUNC write should have updated the archive.
         let output = std::process::Command::new("unzip")
@@ -1492,7 +1536,6 @@ mod tests {
             extract_member_for_edit(&archive, "a.txt", &staging, None).expect("extract failed");
 
         let portal_bak = dir.path().join("portal.bak");
-        std::fs::copy(&archive, &portal_bak).unwrap();
         ctx.atomic = false;
         ctx.portal_backup = Some(portal_bak.clone());
 
@@ -1505,10 +1548,16 @@ mod tests {
                 staged,
             } => {
                 assert_eq!(a, archive);
-                assert_eq!(backup.as_deref(), Some(portal_bak.as_path()));
+                // The writability probe fails before any backup is made, so no
+                // whole-archive copy is stranded on the read-only path.
+                assert_eq!(backup, None);
+                assert!(
+                    !portal_bak.exists(),
+                    "no backup should be created when the portal is read-only"
+                );
                 assert_eq!(staged, ctx.staged_path);
-                // The message must direct the user at the edited member, not
-                // present the pristine original backup as their edit.
+                // The message directs the user at the edited member, which is
+                // where their work lives (the original was never touched).
                 let msg = ArchiveWriteError::PortalReadOnly {
                     archive: a,
                     backup,
@@ -1516,7 +1565,10 @@ mod tests {
                 }
                 .to_string();
                 assert!(msg.contains("edited member retained"), "got: {msg}");
-                assert!(msg.contains("backup of the original archive"), "got: {msg}");
+                assert!(
+                    !msg.contains("backup of the original archive"),
+                    "got: {msg}"
+                );
             }
             other => panic!("expected PortalReadOnly, got {other:?}"),
         }

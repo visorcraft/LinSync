@@ -396,8 +396,11 @@ right-click any member row and choose "Edit member in left archive" or
 "Edit member in right archive". The member is extracted to a staging file
 and opened in your external editor. Save the file, then click **Commit** in
 LinSync to repack the archive atomically, or **Discard** to cancel. The
-original archive is preserved as a `.bak` until the commit succeeds.
-Tar and 7z archives remain read-only.
+original archive is preserved as a `.bak` during the commit; by default it
+is removed on success, but enabling **Keep a .bak of the archive after
+repack** (Settings → Comparison behavior) retains it as a one-edit undo. A
+commit that fails never deletes your staged edit — retry or discard from the
+banner. Tar and 7z archives remain read-only.
 
 Self-compare:
 

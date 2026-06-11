@@ -35,6 +35,7 @@ Kirigami.ScrollablePage {
     property bool confirmOnClose: true
     property bool persistRecentPaths: true
     property bool reduceMotion: false
+    property bool keepArchiveBackup: false
     property int maxRecentPaths: 20
     property bool bridgeConnected: false
 
@@ -735,6 +736,42 @@ up.indicator: Rectangle {
                         onToggled: {
                             page.detectMoves = checked
                             page.emit("detectMoves", checked)
+                        }
+                    }
+
+                    AppCheckBox {
+                        indicator: Rectangle {
+                            implicitWidth: 18
+                            implicitHeight: 18
+                            x: parent.leftPadding
+                            y: (parent.height - height) / 2
+                            radius: 3
+                            color: parent.checked ? page.themeHighlight : page.themeBg
+                            border.color: parent.checked ? page.themeHighlight : page.separator
+                            border.width: 1
+                            Controls.Label {
+                                anchors.centerIn: parent
+                                visible: parent.parent.checked
+                                text: "✓"
+                                font.pixelSize: 14
+                                font.bold: true
+                                color: page.themeHighlightedText
+                            }
+                        }
+                        contentItem: Controls.Label {
+                            text: parent.text
+                            leftPadding: parent.indicator.width + 8
+                            verticalAlignment: Text.AlignVCenter
+                            color: page.themeText
+                        }
+                        palette.windowText: page.themeText
+                        Kirigami.FormData.label: qsTr("Archive edits")
+                        text: qsTr("Keep a .bak of the archive after repack")
+                        Accessible.name: text
+                        checked: page.keepArchiveBackup
+                        onToggled: {
+                            page.keepArchiveBackup = checked
+                            page.emit("keepArchiveBackup", checked)
                         }
                     }
 

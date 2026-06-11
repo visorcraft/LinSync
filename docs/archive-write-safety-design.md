@@ -317,7 +317,12 @@ mount. Consequences:
   the original via `O_TRUNC` + write + fsync. Because no sibling `.bak` can
   exist, the backup copy is kept in app-private XDG state
   (`AppPaths::state_dir()/archive-edit/<token>.bak`) and is **always retained**
-  for portal commits regardless of `keepArchiveBackup`. The confirm dialog for
+  for portal commits regardless of `keepArchiveBackup`. *(As built)* the
+  backup is created **at commit time**, immediately before the destructive
+  `O_TRUNC` open, from the flocked and fingerprint-verified original — not at
+  extract time. The recovery guarantee is identical (the fingerprint re-check
+  proves the bytes match the extract-time archive), and an edit that is
+  browsed or discarded without committing never pays a whole-archive copy. The confirm dialog for
   this path carries distinct wording: atomic replace is unavailable, a crash
   mid-write can corrupt the archive, and the backup's exact path. The 409
   warning body differs accordingly so the GUI cannot show the atomic-path text

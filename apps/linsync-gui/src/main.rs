@@ -364,6 +364,7 @@ struct GuiSettings {
     persist_recent_paths: bool,
     max_recent_paths: usize,
     reduce_motion: bool,
+    keep_archive_backup: bool,
 }
 
 impl From<&Settings> for GuiSettings {
@@ -388,6 +389,7 @@ impl From<&Settings> for GuiSettings {
             persist_recent_paths: settings.persist_recent_paths,
             max_recent_paths: settings.recent_limit,
             reduce_motion: settings.reduce_motion,
+            keep_archive_backup: settings.keep_archive_backup,
         }
     }
 }
@@ -9755,6 +9757,22 @@ mod tests {
         assert_eq!(body["themePreference"], 0);
         assert_eq!(body["maxRecentPaths"], 20);
         assert_eq!(body["reduceMotion"], false);
+        assert_eq!(body["keepArchiveBackup"], false);
+
+        let response = String::from_utf8(bridge_response(
+            "GET /settings/set?key=keepArchiveBackup&value=true HTTP/1.1\r\n",
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+
+        assert!(response.contains("HTTP/1.1 200 OK"));
+        let body = json_response_body(&response);
+        assert_eq!(body["keepArchiveBackup"], true);
+        let settings = SettingsStore::new(paths.settings_file())
+            .load_or_default()
+            .expect("settings should load");
+        assert!(settings.keep_archive_backup);
 
         let response = String::from_utf8(bridge_response(
             "GET /settings/set?key=reduceMotion&value=true HTTP/1.1\r\n",

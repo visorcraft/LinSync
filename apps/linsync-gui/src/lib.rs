@@ -489,6 +489,7 @@ pub fn apply_gui_setting(
         "confirmOnClose" => settings.confirm_on_close = parse_bool_setting(key, value)?,
         "persistRecentPaths" => settings.persist_recent_paths = parse_bool_setting(key, value)?,
         "reduceMotion" => settings.reduce_motion = parse_bool_setting(key, value)?,
+        "keepArchiveBackup" => settings.keep_archive_backup = parse_bool_setting(key, value)?,
         "maxRecentPaths" => {
             settings.recent_limit = value
                 .parse::<usize>()

@@ -88,6 +88,7 @@ impl Default for WebEngineOptions {
 }
 
 /// The renderer backend used to rasterize a page.
+#[derive(Clone)]
 enum RenderBackend {
     /// Qt WebEngine via a `qml6`/`qml` runner subprocess — the current path.
     QtQml(PathBuf),
@@ -138,7 +139,38 @@ fn resolve_chromium_binary() -> Option<PathBuf> {
 ///    falls through to auto-detection).
 /// 2. A QML runner (`qml6`/`qml`, honoring `LINSYNC_QML_RUNNER`).
 /// 3. A Chromium binary on `PATH`.
+///
+/// The result is cached per `(LINSYNC_WEB_RENDERER, LINSYNC_QML_RUNNER)` pair:
+/// auto-detection spawns up to five probe subprocesses, and both `/capabilities`
+/// and every rendered/screenshot compare resolve a backend. Keying by the env
+/// values (rather than an unconditional cache) keeps in-process overrides — the
+/// forcing vars, chiefly in tests — honest while still caching the expensive
+/// PATH probes within one configuration.
 fn resolve_backend() -> Option<RenderBackend> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Cache of resolved backends keyed by the two forcing env vars.
+    type BackendCache = Mutex<HashMap<(String, String), Option<RenderBackend>>>;
+    static CACHE: OnceLock<BackendCache> = OnceLock::new();
+    let key = (
+        std::env::var("LINSYNC_WEB_RENDERER").unwrap_or_default(),
+        std::env::var("LINSYNC_QML_RUNNER").unwrap_or_default(),
+    );
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock()
+        && let Some(cached) = guard.get(&key)
+    {
+        return cached.clone();
+    }
+    let resolved = resolve_backend_uncached();
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(key, resolved.clone());
+    }
+    resolved
+}
+
+fn resolve_backend_uncached() -> Option<RenderBackend> {
     match std::env::var("LINSYNC_WEB_RENDERER").as_deref() {
         Ok("qml") => return resolve_qml_runner().map(RenderBackend::QtQml),
         Ok("chromium") => return resolve_chromium_binary().map(RenderBackend::ChromiumHeadless),
@@ -522,6 +554,8 @@ mod tests {
             ["qml", "chromium", "none"].contains(&kind),
             "active_renderer_kind must be qml | chromium | none, got: {kind}"
         );
+        // Repeated resolution is cached and stable for a fixed environment.
+        assert_eq!(kind, active_renderer_kind());
     }
 
     #[test]
