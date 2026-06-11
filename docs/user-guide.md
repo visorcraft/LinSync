@@ -1,7 +1,7 @@
 # User Guide
 
 This guide describes the workflows LinSync currently documents for
-users (release 1.9.5). The CLI ships the full subcommand surface; the
+users (release 1.11.0). The CLI ships the full subcommand surface; the
 Rust core covers text, folder, binary, table, image, document,
 webpage, merge, filter, plugin, storage, paths, trash, sandbox, and
 logging behavior; and the GUI exposes a nine-section QML / Kirigami
