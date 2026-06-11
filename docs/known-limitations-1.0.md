@@ -131,7 +131,7 @@ The only remaining gaps are noted below.
   satisfy this on Arch, Fedora, and Debian, but the helpers are not
   bundled inside the LinSync package.
 
-## Accessibility
+## Accessibility and Localization
 
 - The automated a11y CI gate (focus order grep, `Accessible.name`
   presence) passes, and the shipped a11y work includes screen-reader
@@ -141,6 +141,9 @@ The only remaining gaps are noted below.
   captures offscreen screenshots of every sidebar section for regression
   visibility. A formal **Orca screen reader walkthrough** of every sidebar
   section is not yet logged as a release artifact.
+- Translation catalogs ship for German (`de`), French (`fr`), Spanish
+  (`es`), Japanese (`ja`), and Simplified Chinese (`zh_CN`). The active
+  locale is auto-detected; untranslated strings fall back to English.
 
 ## Filters
 

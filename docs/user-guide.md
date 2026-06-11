@@ -499,6 +499,19 @@ keeps the last. Prediffers that declare no categories never conflict.
 
 See `docs/plugin-protocol.md` for the helper protocol.
 
+## Localization
+
+The GUI ships with translation catalogs for English, German, French,
+Spanish, Japanese, and Simplified Chinese. The active locale is detected
+automatically from the system `LC_*` / `LANG` environment variables; if
+no matching catalog is found the UI falls back to English source strings.
+
+Translators can add a new language by copying the baseline
+`apps/linsync-gui/i18n/linsync_en.ts` to `linsync_<locale>.ts`, filling
+in the `<translation>` entries, and running `just l10n-release` to
+produce the runtime `.qm` file. The packaging recipes (Arch, AppImage,
+etc.) compile and install all `.ts` catalogs automatically.
+
 ## Git Integration
 
 Generate shell completion or a man page:
