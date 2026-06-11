@@ -83,7 +83,7 @@ Kirigami.ApplicationWindow {
     property bool validationCompatible: false
     property string validationMessage: ""
     property string validationPathKind: ""
-    property string appVersion: "1.11.0"
+    property string appVersion: "1.12.1"
     property int bridgeModelRevision: 0
     property bool canUndo: false
     property bool canRedo: false
@@ -4110,12 +4110,15 @@ Kirigami.ApplicationWindow {
             }
         }
 
-        StackLayout {
+        Item {
             id: sectionStack
             anchors.fill: parent
-            currentIndex: root.activeSection
+            clip: true
 
             ColumnLayout {
+                anchors.fill: parent
+                anchors.bottomMargin: 28
+                visible: root.activeSection === 0
                 spacing: 0
 
                 // Force descendant Quick Controls (ComboBox, TextField,
@@ -5525,6 +5528,11 @@ Kirigami.ApplicationWindow {
             }
 
             Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 28
+                visible: root.activeSection === 0
                 Layout.fillWidth: true
                 Layout.preferredHeight: 28
                 color: root.activeBgAlt
@@ -5589,6 +5597,8 @@ Kirigami.ApplicationWindow {
 
             SessionsPage {
                 id: sessionsPage
+                anchors.fill: parent
+                visible: root.activeSection === 1
                 Kirigami.Theme.backgroundColor:          root.activeBg
                 Kirigami.Theme.alternateBackgroundColor: root.activeBgAlt
                 Kirigami.Theme.textColor:                root.activeText
@@ -5632,6 +5642,8 @@ Kirigami.ApplicationWindow {
 
             FiltersPage {
                 id: filtersPage
+                anchors.fill: parent
+                visible: root.activeSection === 2
                 Kirigami.Theme.backgroundColor:          root.activeBg
                 Kirigami.Theme.alternateBackgroundColor: root.activeBgAlt
                 Kirigami.Theme.textColor:                root.activeText
@@ -5698,6 +5710,8 @@ Kirigami.ApplicationWindow {
 
             PluginsPage {
                 id: pluginsPage
+                anchors.fill: parent
+                visible: root.activeSection === 3
                 Kirigami.Theme.backgroundColor:          root.activeBg
                 Kirigami.Theme.alternateBackgroundColor: root.activeBgAlt
                 Kirigami.Theme.textColor:                root.activeText
@@ -5832,6 +5846,8 @@ Kirigami.ApplicationWindow {
 
             SettingsPage {
                 id: settingsPage
+                anchors.fill: parent
+                visible: root.activeSection === 4
                 Kirigami.Theme.backgroundColor:          root.activeBg
                 Kirigami.Theme.alternateBackgroundColor: root.activeBgAlt
                 Kirigami.Theme.textColor:                root.activeText
@@ -5874,6 +5890,8 @@ Kirigami.ApplicationWindow {
 
             AboutPage {
                 id: aboutPage
+                anchors.fill: parent
+                visible: root.activeSection === 5
                 Kirigami.Theme.backgroundColor:          root.activeBg
                 Kirigami.Theme.alternateBackgroundColor: root.activeBgAlt
                 Kirigami.Theme.textColor:                root.activeText
@@ -5894,14 +5912,20 @@ Kirigami.ApplicationWindow {
 
             CreditsPage {
                 id: creditsPage
+                anchors.fill: parent
+                visible: root.activeSection === 6
             }
 
             LicensesPage {
                 id: licensesPage
+                anchors.fill: parent
+                visible: root.activeSection === 7
             }
 
             MergePage {
                 id: mergePage
+                anchors.fill: parent
+                visible: root.activeSection === 8
                 bridgeUrl:      root.bridgeUrl
                 basePath:       root.mergeBasePath
                 leftPath:       root.mergeLeftPath
@@ -5920,6 +5944,8 @@ Kirigami.ApplicationWindow {
 
             ImageComparePage {
                 id: imageComparePage
+                anchors.fill: parent
+                visible: root.activeSection === 9
                 Kirigami.Theme.backgroundColor:          root.activeBg
                 Kirigami.Theme.alternateBackgroundColor: root.activeBgAlt
                 Kirigami.Theme.textColor:                root.activeText
@@ -5943,6 +5969,8 @@ Kirigami.ApplicationWindow {
 
             WebpageComparePage {
                 id: webpageComparePage
+                anchors.fill: parent
+                visible: root.activeSection === 10
                 Kirigami.Theme.backgroundColor:          root.activeBg
                 Kirigami.Theme.alternateBackgroundColor: root.activeBgAlt
                 Kirigami.Theme.textColor:                root.activeText
@@ -5972,6 +6000,8 @@ Kirigami.ApplicationWindow {
 
             DocumentComparePage {
                 id: documentComparePage
+                anchors.fill: parent
+                visible: root.activeSection === 11
                 Kirigami.Theme.backgroundColor:          root.activeBg
                 Kirigami.Theme.alternateBackgroundColor: root.activeBgAlt
                 Kirigami.Theme.textColor:                root.activeText

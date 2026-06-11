@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.12.0
+Version:        1.12.1
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -122,6 +122,9 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Thu Jun 11 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.12.1-1
+- Fix QML section layout so sidebar pages no longer overlap.
+
 * Thu Jun 11 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.12.0-1
 - Version bump to 1.12.0.
 

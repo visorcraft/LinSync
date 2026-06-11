@@ -10,7 +10,7 @@ LinSync ships first-class packaging recipes for the following targets:
 | Debian / Ubuntu   | `packaging/debian/`                   | `dpkg-buildpackage`, `debhelper`|
 | Fedora / RHEL     | `packaging/rpm/linsync.spec`          | `rpmbuild`                      |
 
-Every recipe targets the workspace at version **1.12.0** and builds with the
+Every recipe targets the workspace at version **1.12.1** and builds with the
 `cxxqt` + `cxxqt-app` features so the Qt 6 / Kirigami UI is included.
 
 These same recipes are driven automatically by
