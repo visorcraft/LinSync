@@ -251,11 +251,7 @@ impl CompareProfile {
     /// schema versions to the current one. Returns an error if the JSON is
     /// malformed or if the profile declares a future schema version.
     pub fn migrate_from_legacy(raw: serde_json::Value) -> Result<Self, ProfileMigrationError> {
-        let version = raw
-            .get("schema_version")
-            .and_then(|value| value.as_u64())
-            .map(|value| value as u32)
-            .unwrap_or(0);
+        let version = parse_schema_version(&raw)?;
 
         if version > CURRENT_PROFILE_SCHEMA_VERSION {
             return Err(ProfileMigrationError::Parse {
@@ -284,6 +280,23 @@ impl CompareProfile {
             .map_err(ProfileMigrationError::Validation)?;
         Ok(profile)
     }
+}
+
+fn parse_schema_version(raw: &serde_json::Value) -> Result<u32, ProfileMigrationError> {
+    let Some(value) = raw.get("schema_version") else {
+        return Ok(0);
+    };
+    let Some(version) = value.as_u64() else {
+        return Err(ProfileMigrationError::Parse {
+            message: "profile schema_version must be a non-negative integer".to_owned(),
+        });
+    };
+    if version > u64::from(u32::MAX) {
+        return Err(ProfileMigrationError::Parse {
+            message: format!("profile schema_version {version} is too large to read"),
+        });
+    }
+    Ok(version as u32)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -921,6 +934,54 @@ mod tests {
         assert!(
             matches!(err, ProfileStoreError::Parse { .. }),
             "expected parse error for future schema, got {err:?}"
+        );
+        drop(dir);
+    }
+
+    #[test]
+    fn malformed_schema_version_is_rejected() {
+        for (file, raw) in [
+            (
+                "schema-string.json",
+                br#"{"schema_version": "1", "id": "schema-string", "name": "Bad"}"# as &[u8],
+            ),
+            (
+                "schema-negative.json",
+                br#"{"schema_version": -1, "id": "schema-negative", "name": "Bad"}"#,
+            ),
+            (
+                "schema-null.json",
+                br#"{"schema_version": null, "id": "schema-null", "name": "Bad"}"#,
+            ),
+        ] {
+            let (dir, store) = temp_store();
+            fs::create_dir_all(&store.profiles_dir).unwrap();
+            fs::write(store.profiles_dir.join(file), raw).unwrap();
+            let id = ProfileId::new(file.trim_end_matches(".json")).unwrap();
+            let err = store.load(&id).unwrap_err();
+            assert!(
+                matches!(err, ProfileStoreError::Parse { .. }),
+                "expected parse error for malformed schema_version in {file}, got {err:?}"
+            );
+            drop(dir);
+        }
+    }
+
+    #[test]
+    fn oversized_schema_version_is_rejected() {
+        let (dir, store) = temp_store();
+        fs::create_dir_all(&store.profiles_dir).unwrap();
+        fs::write(
+            store.profiles_dir.join("schema-huge.json"),
+            br#"{"schema_version": 4294967297, "id": "schema-huge", "name": "Bad"}"#,
+        )
+        .unwrap();
+        let err = store
+            .load(&ProfileId::new("schema-huge").unwrap())
+            .unwrap_err();
+        assert!(
+            matches!(err, ProfileStoreError::Parse { .. }),
+            "expected parse error for oversized schema_version, got {err:?}"
         );
         drop(dir);
     }
