@@ -81,5 +81,9 @@ not manual QA. "Docs" refers to `docs/user-guide.md`,
 
 When a row's status changes, update both this file and the
 release-relevant section of `known-limitations-1.0.md` in the same
-commit. CI does not gate on this file today; reviewer responsibility
-is to keep it accurate.
+commit. CI runs an advisory `docs-drift-check` job on pull requests
+that warns when user-facing code changes without an update to either
+document. If the matrix and known-limitations already cover the change,
+include `[docs-drift-ok]` in the PR title or the HEAD commit body to
+bypass the warning. The check never fails CI; set
+`LINSYNC_REQUIRE_DOCS_DRIFT_CHECK=1` locally if you want to enforce it.

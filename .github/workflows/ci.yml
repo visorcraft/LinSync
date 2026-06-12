@@ -3,9 +3,9 @@
 #
 # Per-job CI layout. Each gate runs in its own runner
 # so failures pinpoint quickly and the build job (which needs Arch's
-# fresher Kirigami) doesn't block the faster checks. No `${{ github.event.* }}`
-# interpolations are used: this workflow is safe against workflow
-# injection from PR titles, branch names, or commit messages.
+# fresher Kirigami) doesn't block the faster checks. Workflow-level
+# interpolations are limited to `env:` values, which are safe against
+# shell injection from PR titles, branch names, or commit messages.
 
 name: ci
 
@@ -200,6 +200,20 @@ jobs:
       - uses: actions/checkout@v6
       - name: Check every Button/Switch/SpinBox/ComboBox/TextField has a label
         run: bash scripts/gui-smoke.sh --check-a11y
+
+  docs-drift-check:
+    name: docs drift check (advisory)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Check for feature-matrix / known-limitations drift
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: bash scripts/check-docs-drift.sh
 
   deny:
     name: cargo-deny
