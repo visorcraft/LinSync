@@ -47,6 +47,8 @@ Controls.Pane {
     property int progressCurrent: 0
     property int progressTotal: 0
     property string progressMessage: ""
+    property int selectedRenderedPageIndex: -1
+    readonly property bool isRenderedMode: modeCombo.currentText === "Rendered"
 
     property var documentNameFilters: [
         qsTr("Documents (*.pdf *.odt *.docx *.txt *.rtf)"),
@@ -90,7 +92,10 @@ Controls.Pane {
         root.progressTotal = 0;
         root.progressMessage = "";
 
-        const modeStr = modeCombo.currentText === "OCR Text" ? "ocr_text" : "text";
+        const modeStr = {
+            "OCR Text": "ocr_text",
+            "Rendered": "rendered"
+        }[modeCombo.currentText] || "text";
         const lang = ocrLangField.text.trim() || "eng";
         const url = "/compare/document"
             + "?left=" + encodeURIComponent(root.leftPath)
@@ -110,7 +115,13 @@ Controls.Pane {
             root.lastResult = data;
             if (data.session)
                 root.sessionUpdated(data);
-            if (data.equal) {
+            if (Array.isArray(data.rendered_pages) && data.rendered_pages.length > 0) {
+                const differing = data.rendered_pages.filter(function (p) { return !p.equal }).length;
+                root.selectedRenderedPageIndex = 0;
+                root.statusText = differing === 0
+                    ? qsTr("Rendered pages are identical (%1 pages).").arg(data.rendered_pages.length)
+                    : qsTr("%1 of %2 rendered pages differ.").arg(differing).arg(data.rendered_pages.length);
+            } else if (data.equal) {
                 root.statusText = "Documents are equal (extracted via " + data.left_extractor + ").";
             } else {
                 root.statusText = data.differing_lines + " differing lines (extracted via " + data.left_extractor + ").";
@@ -268,7 +279,7 @@ Controls.Pane {
                 }
                 AppComboBox {
                     id: modeCombo
-                    model: ["Text", "OCR Text"]
+                    model: ["Text", "OCR Text", "Rendered"]
                     currentIndex: 0
                     Layout.preferredWidth: 130
                     implicitHeight: 30
@@ -353,11 +364,22 @@ Controls.Pane {
                     color: root.lastResult !== null && !root.lastResult.equal ? "#e53935" : root.activeText
                 }
                 Controls.Label {
-                    visible: root.lastResult !== null && !root.lastResult.equal
+                    visible: root.lastResult !== null && !root.lastResult.equal && !root.isRenderedMode
                     text: root.lastResult !== null ? "Differing lines: " + root.lastResult.differing_lines : ""
                     color: root.activeText
                 }
                 Controls.Label {
+                    visible: root.lastResult !== null && root.isRenderedMode
+                          && Array.isArray(root.lastResult.rendered_pages)
+                    text: root.lastResult !== null
+                        ? qsTr("Rendered pages: %1, differing: %2")
+                            .arg(root.lastResult.rendered_pages.length)
+                            .arg(root.lastResult.rendered_pages.filter(function (p) { return !p.equal }).length)
+                        : ""
+                    color: root.activeText
+                }
+                Controls.Label {
+                    visible: root.lastResult !== null && !root.isRenderedMode
                     text: root.lastResult !== null ? "Extracted via: " + root.lastResult.left_extractor : ""
                     color: root.activeDisabledText
                     font.pointSize: 9
@@ -393,6 +415,7 @@ Controls.Pane {
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 2
+            visible: !root.isRenderedMode
 
             TextPane {
                 Layout.fillWidth: true
@@ -420,6 +443,239 @@ Controls.Pane {
                 bodyText: root.lastResult !== null && root.lastResult.right_text
                     ? root.lastResult.right_text
                     : (root.running ? "" : qsTr("(run compare to see extracted text)"))
+            }
+        }
+
+        // ── Rendered-page navigator (Rendered mode only) ──────────────────────
+        property real renderedZoom: 1.0
+        function renderedPage(index) {
+            if (!root.lastResult || !Array.isArray(root.lastResult.rendered_pages))
+                return null;
+            const idx = (index < 0 || index >= root.lastResult.rendered_pages.length) ? 0 : index;
+            return root.lastResult.rendered_pages[idx];
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: root.isRenderedMode
+            color: root.activeBgAlt
+            clip: true
+
+            RowLayout {
+                anchors.fill: parent
+                spacing: 2
+
+                // Thumbnail strip
+                Rectangle {
+                    Layout.preferredWidth: 120
+                    Layout.fillHeight: true
+                    color: root.activeBg
+                    border.color: root.separatorColor
+                    border.width: 1
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: 0
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 28
+                            color: root.activeBgAlt
+
+                            Controls.Label {
+                                anchors {
+                                    verticalCenter: parent.verticalCenter
+                                    left: parent.left
+                                    leftMargin: 8
+                                }
+                                text: qsTr("Pages")
+                                color: root.activeText
+                                font.bold: true
+                                font.pixelSize: 12
+                            }
+                        }
+
+                        ListView {
+                            id: pageList
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            model: root.lastResult !== null && Array.isArray(root.lastResult.rendered_pages)
+                                   ? root.lastResult.rendered_pages : []
+                            currentIndex: root.selectedRenderedPageIndex
+                            highlight: Rectangle { color: root.activeHighlight; opacity: 0.3 }
+                            highlightMoveDuration: 0
+
+                            delegate: Rectangle {
+                                required property var modelData
+                                required property int index
+                                width: pageList.width
+                                height: 36
+                                color: pageList.currentIndex === index
+                                    ? "transparent"
+                                    : (modelData.equal ? root.activeBg : Kirigami.Theme.negativeBackgroundColor)
+                                border.color: root.separatorColor
+                                border.width: 1
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 8
+                                    anchors.rightMargin: 8
+                                    spacing: 6
+
+                                    Controls.Label {
+                                        text: modelData.page
+                                        color: root.activeText
+                                        font.bold: true
+                                    }
+                                    Controls.Label {
+                                        Layout.fillWidth: true
+                                        text: modelData.equal ? qsTr("equal") : qsTr("diff")
+                                        color: modelData.equal ? root.activeDisabledText : "#e53935"
+                                        font.pixelSize: 10
+                                        horizontalAlignment: Text.AlignRight
+                                    }
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: root.selectedRenderedPageIndex = index
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.fillHeight: true
+                    color: root.separatorColor
+                }
+
+                // Page viewer
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: 2
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 40
+                        color: root.activeBg
+                        border.color: root.separatorColor
+                        border.width: 1
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 8
+                            anchors.rightMargin: 8
+                            spacing: 8
+
+                            Controls.Label {
+                                text: {
+                                    const p = root.renderedPage(root.selectedRenderedPageIndex);
+                                    return p ? qsTr("Page %1  •  diff %2%").arg(p.page).arg(Math.round(p.diff_ratio * 100)) : "";
+                                }
+                                color: root.activeText
+                                font.bold: true
+                            }
+
+                            Item { Layout.fillWidth: true }
+
+                            Controls.Label {
+                                text: qsTr("Zoom:")
+                                color: root.activeText
+                                opacity: 0.7
+                                font.pixelSize: 12
+                            }
+                            Controls.Slider {
+                                id: zoomSlider
+                                from: 0.25
+                                to: 4.0
+                                value: root.renderedZoom
+                                stepSize: 0.25
+                                Layout.preferredWidth: 160
+                                onMoved: root.renderedZoom = value
+                            }
+                            Controls.Label {
+                                text: Math.round(root.renderedZoom * 100) + "%"
+                                color: root.activeText
+                                Layout.preferredWidth: 44
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        spacing: 2
+
+                        ImagePane {
+                            id: renderedLeftPane
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            source: {
+                                const p = root.renderedPage(root.selectedRenderedPageIndex);
+                                return p && p.left_uri ? p.left_uri : "";
+                            }
+                            zoom: root.renderedZoom
+                            active: true
+                        }
+
+                        Rectangle {
+                            Layout.preferredWidth: 1
+                            Layout.fillHeight: true
+                            color: root.separatorColor
+                        }
+
+                        ImagePane {
+                            id: renderedRightPane
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            source: {
+                                const p = root.renderedPage(root.selectedRenderedPageIndex);
+                                return p && p.right_uri ? p.right_uri : "";
+                            }
+                            zoom: root.renderedZoom
+                            active: true
+                        }
+                    }
+                }
+            }
+
+            ColumnLayout {
+                anchors.centerIn: parent
+                visible: !root.running
+                    && root.isRenderedMode
+                    && (!root.lastResult || !Array.isArray(root.lastResult.rendered_pages)
+                        || root.lastResult.rendered_pages.length === 0)
+                spacing: 12
+
+                Kirigami.Icon {
+                    source: "view-pages"
+                    Layout.preferredWidth: 56
+                    Layout.preferredHeight: 56
+                    Layout.alignment: Qt.AlignHCenter
+                    color: root.activeDisabledText
+                    isMask: true
+                    opacity: 0.6
+                }
+                Controls.Label {
+                    Layout.alignment: Qt.AlignHCenter
+                    horizontalAlignment: Text.AlignHCenter
+                    text: qsTr("No rendered pages")
+                    color: root.activeText
+                    font.pixelSize: 14
+                    font.bold: true
+                }
+                Controls.Label {
+                    Layout.alignment: Qt.AlignHCenter
+                    horizontalAlignment: Text.AlignHCenter
+                    text: qsTr("Select two documents and click Run Compare in Rendered mode.")
+                    color: root.activeDisabledText
+                    font.pixelSize: 12
+                }
             }
         }
 
