@@ -22,6 +22,9 @@
 .idea/
 .zed/
 
+# Python cache directories from project scripts (e.g. scripts/l10n-report.py)
+**/__pycache__/
+
 # AI coding-agent instruction files, kept local-only (not source-tracked).
 # CLAUDE.md is a symlink to AGENTS.md; GEMINI.md is optional / per-developer.
 /AGENTS.md
