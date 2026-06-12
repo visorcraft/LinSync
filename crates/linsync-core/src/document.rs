@@ -82,6 +82,12 @@ pub struct RenderedPageSummary {
     pub differing_pixels: u64,
     /// True when the page exists on only one side (page-count mismatch).
     pub one_sided: bool,
+    /// Path to the rendered left page PNG, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_path: Option<std::path::PathBuf>,
+    /// Path to the rendered right page PNG, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_path: Option<std::path::PathBuf>,
 }
 
 /// Result produced by a document compare.
@@ -528,14 +534,36 @@ fn compare_document_rendered(
                     diff_ratio: cmp.diff_ratio,
                     differing_pixels: cmp.differing_pixels,
                     one_sided: false,
+                    left_path: Some(PathBuf::from(lp)),
+                    right_path: Some(PathBuf::from(rp)),
                 });
             }
-            _ => rendered_pages.push(RenderedPageSummary {
+            (Some(lp), None) => rendered_pages.push(RenderedPageSummary {
                 page: index,
                 equal: false,
                 diff_ratio: 1.0,
                 differing_pixels: 0,
                 one_sided: true,
+                left_path: Some(PathBuf::from(lp)),
+                right_path: None,
+            }),
+            (None, Some(rp)) => rendered_pages.push(RenderedPageSummary {
+                page: index,
+                equal: false,
+                diff_ratio: 1.0,
+                differing_pixels: 0,
+                one_sided: true,
+                left_path: None,
+                right_path: Some(PathBuf::from(rp)),
+            }),
+            (None, None) => rendered_pages.push(RenderedPageSummary {
+                page: index,
+                equal: false,
+                diff_ratio: 1.0,
+                differing_pixels: 0,
+                one_sided: true,
+                left_path: None,
+                right_path: None,
             }),
         }
     }
