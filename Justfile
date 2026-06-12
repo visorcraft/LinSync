@@ -40,6 +40,12 @@ test:
 test-sandbox:
     env -u LINSYNC_SANDBOX_SKIP cargo test -p linsync-sandbox --test sandbox_integration
 
+# Best-effort sandbox enforcement test used by CI. It runs the same integration
+# test as `test-sandbox` but lets the file self-skip when the backend is absent
+# or a no-op, so it does not flake on shared runners.
+test-sandbox-ci:
+    cargo test -p linsync-sandbox --test sandbox_integration
+
 # Type-check without producing binaries.
 check:
     cargo check --workspace
