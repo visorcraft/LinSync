@@ -70,7 +70,7 @@ impl Default for DocumentCompareOptions {
 
 /// Per-page outcome of a `Rendered` document compare (feature-independent
 /// summary of the underlying image comparison).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RenderedPageSummary {
     /// Zero-based page index.
     pub page: usize,
@@ -634,6 +634,7 @@ mod roundtrip_tests {
                     diff_ratio: 0.0,
                     differing_pixels: 0,
                     one_sided: false,
+                    ..Default::default()
                 },
                 RenderedPageSummary {
                     page: 1,
@@ -641,6 +642,7 @@ mod roundtrip_tests {
                     diff_ratio: 0.25,
                     differing_pixels: 42,
                     one_sided: false,
+                    ..Default::default()
                 },
             ],
         }

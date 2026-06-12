@@ -1993,7 +1993,14 @@ fn explicit_tab_for_paths_cancellable(
                 if linsync_core::is_builtin_archive_format(left)
                     && linsync_core::is_builtin_archive_format(right)
                 {
-                    builtin_archive_tab(left, right, left_path, right_path, options, &AppPaths::from_env())
+                    builtin_archive_tab(
+                        left,
+                        right,
+                        left_path,
+                        right_path,
+                        options,
+                        &AppPaths::from_env(),
+                    )
                 } else {
                     (
                         Some(invalid_compare_tab(
@@ -4911,7 +4918,11 @@ fn compare_bridge_response(
             paths,
         );
         let Some(tab) = tab else {
-            return bridge_error(500, "Internal Server Error", "archive compare produced no tab");
+            return bridge_error(
+                500,
+                "Internal Server Error",
+                "archive compare produced no tab",
+            );
         };
         let context = match state.lock() {
             Ok(mut state) => {
@@ -4922,7 +4933,9 @@ fn compare_bridge_response(
                 }
                 context
             }
-            Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
+            Err(_) => {
+                return bridge_error(500, "Internal Server Error", "session state unavailable");
+            }
         };
         record_recent_context(paths, &context);
         return match context_to_json(&context) {
@@ -9140,10 +9153,15 @@ mod tests {
             .unwrap(),
         );
         let tab = &body["session"]["tabs"][0];
-        assert_eq!(tab["mode"], "Folder", "builtin archive routes to the folder view: {tab}");
+        assert_eq!(
+            tab["mode"], "Folder",
+            "builtin archive routes to the folder view: {tab}"
+        );
         let entries = tab["folder_entries"].as_array().expect("folder entries");
         assert!(
-            entries.iter().any(|e| e["path"] == "a.txt" || e["path"] == "b.txt"),
+            entries
+                .iter()
+                .any(|e| e["path"] == "a.txt" || e["path"] == "b.txt"),
             "unpacked members should appear: {tab}"
         );
         assert!(tab["difference_count"].as_u64().unwrap() >= 1);

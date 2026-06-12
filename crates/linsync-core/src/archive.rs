@@ -9,9 +9,12 @@
 //! binary inside the Phase 6 sandbox (`linsync_sandbox`). The extracted trees
 //! are then compared with the standard folder engine.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::folder::{compare_folders, FolderCompareError, FolderCompareOptions, FolderCompareResult};
+use crate::folder::{
+    FolderCompareError, FolderCompareOptions, FolderCompareResult, compare_folders,
+};
 
 /// Failure surface for built-in archive comparison.
 #[derive(Debug)]
@@ -29,7 +32,14 @@ impl std::fmt::Display for ArchiveError {
         match self {
             Self::UnsupportedFormat(p) => write!(f, "unsupported archive format: {}", p.display()),
             Self::ExtractionFailed { command, stderr } => {
-                let tail = stderr.chars().rev().take(400).collect::<String>().chars().rev().collect::<String>();
+                let tail = stderr
+                    .chars()
+                    .rev()
+                    .take(400)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
                 write!(f, "{} failed: {}", command, tail)
             }
             Self::FolderCompare(e) => write!(f, "folder compare failed: {e}"),
@@ -42,6 +52,35 @@ impl std::error::Error for ArchiveError {}
 /// Return `true` if `path` has a built-in archive extension.
 pub fn is_builtin_archive_format(path: &Path) -> bool {
     looks_like_zip(path) || looks_like_tar(path)
+}
+
+/// Compare two archives by extracting both to caller-supplied directories and
+/// running the folder compare engine over the extracted trees.
+pub fn compare_builtin_archives_with_dirs<P: AsRef<Path>, Q: AsRef<Path>>(
+    left: P,
+    right: P,
+    left_dir: Q,
+    right_dir: Q,
+    options: &FolderCompareOptions,
+) -> Result<FolderCompareResult, ArchiveError> {
+    let left = left.as_ref();
+    let right = right.as_ref();
+    let left_dir = left_dir.as_ref();
+    let right_dir = right_dir.as_ref();
+
+    fs::create_dir_all(left_dir).map_err(|e| ArchiveError::ExtractionFailed {
+        command: "mkdir".into(),
+        stderr: e.to_string(),
+    })?;
+    fs::create_dir_all(right_dir).map_err(|e| ArchiveError::ExtractionFailed {
+        command: "mkdir".into(),
+        stderr: e.to_string(),
+    })?;
+
+    extract_archive(left, left_dir)?;
+    extract_archive(right, right_dir)?;
+
+    compare_folders(left_dir, right_dir, options).map_err(ArchiveError::FolderCompare)
 }
 
 /// Compare two archives by extracting both to temporary directories and running
@@ -62,11 +101,7 @@ pub fn compare_builtin_archives<P: AsRef<Path>>(
         stderr: e.to_string(),
     })?;
 
-    extract_archive(left.as_ref(), left_dir.path())?;
-    extract_archive(right.as_ref(), right_dir.path())?;
-
-    compare_folders(left_dir.path(), right_dir.path(), options)
-        .map_err(ArchiveError::FolderCompare)
+    compare_builtin_archives_with_dirs(left, right, left_dir.path(), right_dir.path(), options)
 }
 
 fn extract_archive(archive: &Path, dest: &Path) -> Result<(), ArchiveError> {
@@ -94,16 +129,18 @@ fn run_sandboxed(
     policy: linsync_sandbox::SandboxPolicy,
     name: &str,
 ) -> Result<(), ArchiveError> {
-    let child = linsync_sandbox::SandboxedCommand::new(cmd, policy).spawn().map_err(
-        |e| ArchiveError::ExtractionFailed {
+    let child = linsync_sandbox::SandboxedCommand::new(cmd, policy)
+        .spawn()
+        .map_err(|e| ArchiveError::ExtractionFailed {
             command: name.into(),
             stderr: e.to_string(),
-        },
-    )?;
-    let output = child.wait_with_output().map_err(|e| ArchiveError::ExtractionFailed {
-        command: name.into(),
-        stderr: e.to_string(),
-    })?;
+        })?;
+    let output = child
+        .wait_with_output()
+        .map_err(|e| ArchiveError::ExtractionFailed {
+            command: name.into(),
+            stderr: e.to_string(),
+        })?;
     if !output.status.success() {
         return Err(ArchiveError::ExtractionFailed {
             command: name.into(),
@@ -114,7 +151,11 @@ fn run_sandboxed(
 }
 
 fn looks_like_zip(path: &Path) -> bool {
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     matches!(ext.as_str(), "zip" | "jar" | "war" | "apk" | "ipa")
 }
 
@@ -152,7 +193,10 @@ mod tests {
             args.push("-j".into());
             args.push(dir.join(name).to_string_lossy().into_owned());
         }
-        let status = Command::new("zip").args(&args).status().expect("zip binary required for tests");
+        let status = Command::new("zip")
+            .args(&args)
+            .status()
+            .expect("zip binary required for tests");
         assert!(status.success());
         archive
     }
@@ -172,7 +216,10 @@ mod tests {
             args.push(dir.to_string_lossy().into_owned());
             args.push((*name).into());
         }
-        let status = Command::new("tar").args(&args).status().expect("tar binary required for tests");
+        let status = Command::new("tar")
+            .args(&args)
+            .status()
+            .expect("tar binary required for tests");
         assert!(status.success());
         archive
     }
@@ -180,24 +227,50 @@ mod tests {
     #[test]
     fn compare_two_zip_archives() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let left = make_zip(tmp.path(), "left.zip", &[("a.txt", "hello"), ("b.txt", "world")]);
-        let right = make_zip(tmp.path(), "right.zip", &[("a.txt", "hello"), ("b.txt", "rust")]);
+        let left = make_zip(
+            tmp.path(),
+            "left.zip",
+            &[("a.txt", "hello"), ("b.txt", "world")],
+        );
+        let right = make_zip(
+            tmp.path(),
+            "right.zip",
+            &[("a.txt", "hello"), ("b.txt", "rust")],
+        );
 
-        let result = compare_builtin_archives(&left, &right, &FolderCompareOptions::default()).unwrap();
+        let result =
+            compare_builtin_archives(&left, &right, &FolderCompareOptions::default()).unwrap();
         assert!(!result.is_equal());
-        let changed = result.entries.iter().filter(|e| e.state != FolderEntryState::Identical).count();
+        let changed = result
+            .entries
+            .iter()
+            .filter(|e| e.state != FolderEntryState::Identical)
+            .count();
         assert_eq!(changed, 1);
     }
 
     #[test]
     fn compare_two_tar_archives() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let left = make_tar(tmp.path(), "left.tar", &[("a.txt", "hello"), ("b.txt", "world")]);
-        let right = make_tar(tmp.path(), "right.tar", &[("a.txt", "hello"), ("b.txt", "rust")]);
+        let left = make_tar(
+            tmp.path(),
+            "left.tar",
+            &[("a.txt", "hello"), ("b.txt", "world")],
+        );
+        let right = make_tar(
+            tmp.path(),
+            "right.tar",
+            &[("a.txt", "hello"), ("b.txt", "rust")],
+        );
 
-        let result = compare_builtin_archives(&left, &right, &FolderCompareOptions::default()).unwrap();
+        let result =
+            compare_builtin_archives(&left, &right, &FolderCompareOptions::default()).unwrap();
         assert!(!result.is_equal());
-        let changed = result.entries.iter().filter(|e| e.state != FolderEntryState::Identical).count();
+        let changed = result
+            .entries
+            .iter()
+            .filter(|e| e.state != FolderEntryState::Identical)
+            .count();
         assert_eq!(changed, 1);
     }
 
@@ -219,7 +292,8 @@ mod tests {
         let right = tmp.path().join("right.7z");
         fs::write(&left, b"x").unwrap();
         fs::write(&right, b"y").unwrap();
-        let err = compare_builtin_archives(&left, &right, &FolderCompareOptions::default()).unwrap_err();
+        let err =
+            compare_builtin_archives(&left, &right, &FolderCompareOptions::default()).unwrap_err();
         assert!(matches!(err, ArchiveError::UnsupportedFormat(_)));
     }
 }
