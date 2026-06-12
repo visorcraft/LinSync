@@ -134,6 +134,13 @@ Kirigami.ApplicationWindow {
     property bool suppressTextScrollReset: false
     property var folderEntries: []
     property var visibleFolderEntries: []
+    // Table compare grid data. tableCells holds the currently-loaded window of
+    // rows; tableHeaders is populated when the input has a header row. Windowing
+    // uses tableTotalRows the same way text compare uses textTotalRows.
+    property var tableCells: []
+    property var tableHeaders: []
+    property int tableTotalRows: 0
+    property bool tableWindowLoading: false
     property string folderSortColumn: ""
     property bool folderSortAscending: true
     property string folderGroupBy: ""
@@ -1083,7 +1090,11 @@ Kirigami.ApplicationWindow {
         root.detectMoves        = merged.detectMoves
         root.keepArchiveBackup  = merged.keepArchiveBackup
         root.maxRecentPaths     = merged.maxRecentPaths
-        root.compareMode        = root.defaultCompareMode
+        // Only reset the active compare mode when no comparison is in progress;
+        // otherwise a late settings response would clobber the mode chosen by the
+        // user or auto-detected from the launch context (e.g. table files).
+        if (root.leftPath === "" && root.rightPath === "")
+            root.compareMode = root.defaultCompareMode
         root._settingsReady = true
     }
 
@@ -1651,7 +1662,7 @@ Kirigami.ApplicationWindow {
         // Windowed large text diffs: the response embeds only the first window
         // plus the full row count and navigation index lists. A small diff has
         // no total_rows, so textTotalRows stays 0 (fully loaded).
-        const windowedTotal = (root.compareMode !== "Folder" && tab.total_rows)
+        const windowedTotal = (root.compareMode !== "Folder" && root.compareMode !== "Table" && tab.total_rows)
             ? Number(tab.total_rows) : 0
         root.textTotalRows = windowedTotal
         root.serverDiffRowIndexes = (windowedTotal > 0 && tab.diff_row_indexes) ? tab.diff_row_indexes : []
@@ -1663,6 +1674,10 @@ Kirigami.ApplicationWindow {
         // folderTotalEntries stays 0 (loaded + sorted/filtered client-side).
         root.folderTotalEntries = (root.compareMode === "Folder" && tab.folder_total)
             ? Number(tab.folder_total) : 0
+        root.tableCells = tab.table_cells || []
+        root.tableHeaders = tab.table_headers || []
+        root.tableTotalRows = (root.compareMode === "Table" && tab.total_rows)
+            ? Number(tab.total_rows) : 0
         // Render the embedded page directly (no re-query — the first page is
         // already here); sort/filter/search/scroll re-query when windowed.
         root.rebuildFolderView()
@@ -2186,6 +2201,52 @@ Kirigami.ApplicationWindow {
         const remaining = inner.contentHeight - (inner.contentY + inner.height)
         if (remaining < inner.height * 2)
             root.loadNextHexWindow()
+    }
+
+    // Fetch the next window of a windowed table compare and append it.
+    function loadNextTableWindow(onDone) {
+        const finish = function (loaded) { if (onDone) onDone(loaded) }
+        if (root.tableTotalRows <= 0 || root.bridgeUrl === "" || root.tableWindowLoading) {
+            finish(false)
+            return
+        }
+        if (root.tableCells.length >= root.tableTotalRows) {
+            finish(false)
+            return
+        }
+        root.tableWindowLoading = true
+        const request = new XMLHttpRequest()
+        const url = root.bridgeUrl + "/compare/table/window?offset=" + root.tableCells.length + "&limit=2000"
+        request.onreadystatechange = function () {
+            if (request.readyState !== XMLHttpRequest.DONE)
+                return
+            root.tableWindowLoading = false
+            if (request.status !== 200) {
+                root.statusText = qsTr("Failed to load more table rows")
+                finish(false)
+                return
+            }
+            const payload = JSON.parse(request.responseText)
+            const rows = payload.rows || []
+            if (rows.length === 0) {
+                finish(false)
+                return
+            }
+            root.tableCells = root.tableCells.concat(rows)
+            finish(true)
+        }
+        request.open("GET", url)
+        request.send()
+    }
+
+    // Prefetch the next window of a large table compare as the user nears the bottom.
+    function maybeLoadMoreTableRows(view) {
+        if (root.tableTotalRows <= 0 || root.tableWindowLoading || !view)
+            return
+        if (root.tableCells.length >= root.tableTotalRows)
+            return
+        if (view.contentHeight - (view.contentY + view.height) < view.height)
+            root.loadNextTableWindow()
     }
 
     function requestCompare(newTab) {
@@ -5362,8 +5423,8 @@ Kirigami.ApplicationWindow {
             }
 
             Controls.SplitView {
-                visible: root.compareMode !== "Folder"
-                Layout.fillHeight: root.compareMode !== "Folder"
+                visible: root.compareMode !== "Folder" && root.compareMode !== "Table"
+                Layout.fillHeight: root.compareMode !== "Folder" && root.compareMode !== "Table"
                 Layout.fillWidth: true
                 orientation: Qt.Horizontal
 
@@ -5525,6 +5586,15 @@ Kirigami.ApplicationWindow {
                         }
                     }
                 }
+            }
+
+            TableComparePane {
+                visible: root.compareMode === "Table"
+                Layout.fillHeight: true
+                Layout.fillWidth: true
+                headers: root.tableHeaders
+                rows: root.tableCells
+                onLoadMoreRequested: root.loadNextTableWindow()
             }
 
             Rectangle {

@@ -95,6 +95,11 @@ The only remaining gaps are noted below.
   ranges (`currentConflictStart`/`End` derive from each side's `*_lines`
   array), so conflict next/previous scrolls each pane to the correct
   line.
+- **Table compare** renders as a real grid on the Compare page with
+  column headers, row numbers, per-cell state highlighting (Equal /
+  Changed / LeftOnly / RightOnly), and inline left/right values for
+  changed cells. Large tables page through `/compare/table/window` so
+  the full grid never loads at once.
 
 ## Archive compare
 

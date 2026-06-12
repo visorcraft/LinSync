@@ -268,6 +268,8 @@ struct GuiCompareTab {
     folder_total: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     encoding_metadata: Option<EncodingSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    table_headers: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     table_cells: Option<Vec<linsync_core::TableRowDiff>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1353,6 +1355,7 @@ fn context_to_value(context: &GuiLaunchContext) -> Result<serde_json::Value, ser
             apply_text_windowing(tab);
             apply_folder_windowing(tab);
             apply_binary_windowing(tab);
+            apply_table_windowing(tab);
         }
         serde_json::to_value(&windowed)
     } else {
@@ -2741,7 +2744,7 @@ fn table_tab(
                 summary_item("Rows", result.rows.len()),
                 summary_item("Changed cells", result.changed_cells),
             ];
-            compare_tab(
+            let mut tab = compare_tab(
                 "Table",
                 (left_path, right_path),
                 "Table compare complete".to_owned(),
@@ -2758,7 +2761,9 @@ fn table_tab(
                 Some(result.rows),
                 Vec::new(),
                 Some(options.clone()),
-            )
+            );
+            tab.table_headers = result.header.clone();
+            tab
         }
         Err(err) => compare_tab(
             "Table",
@@ -3262,6 +3267,7 @@ fn compare_tab(
         folder_entries,
         folder_total: None,
         encoding_metadata,
+        table_headers: None,
         table_cells,
         artifacts,
         options,
@@ -3286,15 +3292,28 @@ const FOLDER_WINDOW_THRESHOLD: usize = 5000;
 /// through `/binary/window`. Same rationale as text windowing.
 const BINARY_WINDOW_THRESHOLD: usize = 2000;
 
+/// Table comparisons with more than this many rows are served windowed:
+/// the compare response embeds only the first page, and the GUI pages the rest
+/// through `/compare/table/window`.
+const TABLE_WINDOW_THRESHOLD: usize = 2000;
+/// The window size used for table compare wire responses and fetches.
+const TABLE_WINDOW_SIZE: usize = 2000;
+
 /// Whether `tab` is a comparison large enough to serve windowed — a text diff
 /// over [`TEXT_WINDOW_THRESHOLD`] rows, a folder over
-/// [`FOLDER_WINDOW_THRESHOLD`] entries, or a hex diff over
-/// [`BINARY_WINDOW_THRESHOLD`] rows.
+/// [`FOLDER_WINDOW_THRESHOLD`] entries, a hex diff over
+/// [`BINARY_WINDOW_THRESHOLD`] rows, or a table diff over
+/// [`TABLE_WINDOW_THRESHOLD`] rows.
 fn tab_needs_windowing(tab: &GuiCompareTab) -> bool {
     (tab.mode == "Text" && tab.left_rows.len().max(tab.right_rows.len()) > TEXT_WINDOW_THRESHOLD)
         || (tab.mode == "Folder" && tab.folder_entries.len() > FOLDER_WINDOW_THRESHOLD)
         || (tab.mode == "Hex"
             && tab.left_rows.len().max(tab.right_rows.len()) > BINARY_WINDOW_THRESHOLD)
+        || (tab.mode == "Table"
+            && tab
+                .table_cells
+                .as_ref()
+                .is_some_and(|r| r.len() > TABLE_WINDOW_THRESHOLD))
 }
 
 /// Window a large folder `tab` for transmission: record the full entry count and
@@ -3370,6 +3389,26 @@ fn apply_binary_windowing(tab: &mut GuiCompareTab) {
     tab.diff_row_indexes = diff_row_indexes;
     tab.left_rows.truncate(BINARY_WINDOW_THRESHOLD);
     tab.right_rows.truncate(BINARY_WINDOW_THRESHOLD);
+}
+
+/// Window a large table `tab` *for transmission to the GUI*: record the full
+/// row count and truncate the embedded `table_cells` to the first window. The
+/// GUI then pages the rest through `/compare/table/window`. A no-op for tables
+/// below the threshold.
+fn apply_table_windowing(tab: &mut GuiCompareTab) {
+    if tab.mode != "Table" {
+        return;
+    }
+    let Some(rows) = tab.table_cells.as_ref() else {
+        return;
+    };
+    if rows.len() <= TABLE_WINDOW_THRESHOLD {
+        return;
+    }
+    let total = rows.len();
+    let window = rows.iter().take(TABLE_WINDOW_SIZE).cloned().collect();
+    tab.total_rows = Some(total);
+    tab.table_cells = Some(window);
 }
 
 fn compare_tab_title(mode: &str, left_path: &str, right_path: &str) -> String {
@@ -3646,6 +3685,7 @@ fn bridge_response_with_token(
         "/capabilities" => capabilities_bridge_response(),
         "/folder/query" => folder_query_bridge_response(query, paths),
         "/compare/text/window" => text_window_bridge_response(query, paths),
+        "/compare/table/window" => table_window_bridge_response(query, state),
         "/binary/window" => binary_window_bridge_response(query, state),
         "/folder/op/plan" => folder_op_plan_bridge_response(query, paths, state),
         "/folder/op/execute" => folder_op_execute_bridge_response(query, paths, state),
@@ -4795,6 +4835,7 @@ fn raw_compare_bridge_response(
         folder_entries: vec![],
         folder_total: None,
         encoding_metadata: Some(result.encoding_summary()),
+        table_headers: None,
         table_cells: None,
         artifacts: Vec::new(),
         options: Some(GuiCompareOptions {
@@ -5210,6 +5251,64 @@ fn text_window_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
         "hasMore": offset + returned < total_rows,
         "left_rows": left_window,
         "right_rows": right_window,
+    })
+    .to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
+}
+
+/// Serve a window of table rows from the active table tab. The canonical tab
+/// holds the full `table_cells`; this endpoint slices it without re-running the
+/// compare so large tables page efficiently.
+fn table_window_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {
+    let params = query_params(query);
+    let offset = query_value(&params, "offset")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let limit = query_value(&params, "limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(usize::MAX);
+
+    let (total, rows) = match state.lock() {
+        Ok(s) => {
+            let Some(tab) = s
+                .session
+                .tabs
+                .iter()
+                .find(|t| t.id == s.session.active_tab_id)
+            else {
+                return bridge_error(404, "Not Found", "no active tab");
+            };
+            if tab.mode != "Table" {
+                return bridge_error(400, "Bad Request", "active tab is not a table compare");
+            }
+            let Some(all_rows) = tab.table_cells.as_ref() else {
+                return serde_json::json!({
+                    "rows": [],
+                    "offset": offset,
+                    "limit": limit,
+                    "total": 0,
+                    "hasMore": false,
+                })
+                .to_string()
+                .into_bytes();
+            };
+            let total = all_rows.len();
+            let end = offset.saturating_add(limit).min(total);
+            let window = all_rows
+                .get(offset..end)
+                .map(<[linsync_core::TableRowDiff]>::to_vec)
+                .unwrap_or_default();
+            (total, window)
+        }
+        Err(_) => return bridge_error(500, "Internal Server Error", "state unavailable"),
+    };
+    let body = serde_json::json!({
+        "rows": rows,
+        "offset": offset,
+        "limit": limit,
+        "total": total,
+        "hasMore": offset + rows.len() < total,
     })
     .to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
@@ -7975,6 +8074,189 @@ mod tests {
         // The differing cell values appear on their respective sides.
         assert!(tab.left_rows.iter().any(|r| r.text.contains('2')));
         assert!(tab.right_rows.iter().any(|r| r.text.contains('9')));
+    }
+
+    #[test]
+    fn table_tab_exposes_cells_and_headers() {
+        let root = test_file_root("table-cells-headers");
+        let left = root.join("left.csv");
+        let right = root.join("right.csv");
+        fs::write(&left, "name,count\nalpha,1\nbeta,2\n").unwrap();
+        fs::write(&right, "name,count\nalpha,1\nbeta,3\n").unwrap();
+        let mut options = GuiCompareOptions::default();
+        options.table.has_header = true;
+        let tab = build_tab_for_paths_with_mode(&left, &right, Some("Table"), &options);
+        assert!(
+            tab.table_cells.as_ref().is_some_and(|r| !r.is_empty()),
+            "table_cells must carry the structured row data"
+        );
+        assert_eq!(
+            tab.table_headers.as_deref(),
+            Some(["name".to_owned(), "count".to_owned()].as_slice()),
+            "table_headers must carry the parsed header row"
+        );
+    }
+
+    #[test]
+    fn large_table_response_is_windowed_on_the_wire() {
+        // A table over TABLE_WINDOW_THRESHOLD rows is windowed for the wire:
+        // total_rows carries the full count and only the first window of
+        // table_cells is embedded (the GUI pages the rest via
+        // /compare/table/window). The canonical tab stays full — this windows
+        // a clone at serialization.
+        let total = TABLE_WINDOW_THRESHOLD + 7;
+        let rows: Vec<linsync_core::TableRowDiff> = (0..total)
+            .map(|i| linsync_core::TableRowDiff {
+                row_index: i,
+                cells: vec![linsync_core::TableCellDiff {
+                    column_index: 0,
+                    left: Some(format!("v{i}")),
+                    right: Some(format!("v{i}")),
+                    state: linsync_core::TableCellState::Equal,
+                    column_name: None,
+                    diff_type: linsync_core::table::CellDiffType::ValueChanged,
+                    inline_diff: None,
+                }],
+                has_difference: false,
+            })
+            .collect();
+        let tab = {
+            let mut t = compare_tab(
+                "Table",
+                ("/l.csv".to_owned(), "/r.csv".to_owned()),
+                "ok".to_owned(),
+                0,
+                GuiOpenValidation {
+                    compatible: true,
+                    path_kind: "Files".to_owned(),
+                    message: String::new(),
+                },
+                vec![],
+                (vec![], vec![]),
+                vec![],
+                None,
+                Some(rows),
+                Vec::new(),
+                None,
+            );
+            t.table_headers = Some(vec!["col".to_owned()]);
+            t
+        };
+        let ctx = GuiLaunchContext::single_tab(tab);
+        let value = context_to_value(&ctx).expect("serialize");
+        let wire = &value["session"]["tabs"][0];
+        assert_eq!(
+            wire["total_rows"].as_u64(),
+            Some(total as u64),
+            "the full row count is reported"
+        );
+        assert_eq!(
+            wire["table_cells"].as_array().unwrap().len(),
+            TABLE_WINDOW_SIZE,
+            "only the first window of cells is embedded"
+        );
+
+        // A small table is NOT windowed (no total_rows; every cell embedded).
+        let small_rows: Vec<linsync_core::TableRowDiff> = (0..3)
+            .map(|i| linsync_core::TableRowDiff {
+                row_index: i,
+                cells: vec![linsync_core::TableCellDiff {
+                    column_index: 0,
+                    left: Some(format!("v{i}")),
+                    right: Some(format!("v{i}")),
+                    state: linsync_core::TableCellState::Equal,
+                    column_name: None,
+                    diff_type: linsync_core::table::CellDiffType::ValueChanged,
+                    inline_diff: None,
+                }],
+                has_difference: false,
+            })
+            .collect();
+        let small_tab = {
+            let mut t = compare_tab(
+                "Table",
+                ("/l.csv".to_owned(), "/r.csv".to_owned()),
+                "ok".to_owned(),
+                0,
+                GuiOpenValidation {
+                    compatible: true,
+                    path_kind: "Files".to_owned(),
+                    message: String::new(),
+                },
+                vec![],
+                (vec![], vec![]),
+                vec![],
+                None,
+                Some(small_rows),
+                Vec::new(),
+                None,
+            );
+            t.table_headers = Some(vec!["col".to_owned()]);
+            t
+        };
+        let small = GuiLaunchContext::single_tab(small_tab);
+        let small_value = context_to_value(&small).expect("serialize");
+        let small_wire = &small_value["session"]["tabs"][0];
+        assert!(
+            small_wire["total_rows"].is_null(),
+            "small tables are not windowed"
+        );
+        assert_eq!(small_wire["table_cells"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn table_window_returns_paged_rows() {
+        let root = test_file_root("table-window");
+        let left = root.join("left.csv");
+        let right = root.join("right.csv");
+        let mut left_text = "id\n".to_owned();
+        let mut right_text = "id\n".to_owned();
+        for i in 0..9 {
+            left_text.push_str(&format!("{i}\n"));
+            right_text.push_str(&format!("{i}\n"));
+        }
+        fs::write(&left, left_text).unwrap();
+        fs::write(&right, right_text).unwrap();
+        let paths = test_app_paths("table-window");
+        let state = test_bridge_state(None);
+
+        // Prime the session with a table compare.
+        let _ = bridge_response(
+            &format!(
+                "GET /compare?left={}&right={}&mode=Table HTTP/1.1\r\n",
+                urlencoding::encode(left.to_str().unwrap()),
+                urlencoding::encode(right.to_str().unwrap())
+            ),
+            &paths,
+            &state,
+        );
+
+        let page = |offset: usize, limit: usize| -> serde_json::Value {
+            json_response_body(
+                &String::from_utf8(bridge_response(
+                    &format!(
+                        "GET /compare/table/window?offset={offset}&limit={limit} HTTP/1.1\r\n"
+                    ),
+                    &paths,
+                    &state,
+                ))
+                .expect("utf-8"),
+            )
+        };
+
+        let first = page(0, 3);
+        assert_eq!(first["total"].as_u64().unwrap(), 10);
+        assert_eq!(first["rows"].as_array().unwrap().len(), 3);
+        assert_eq!(first["offset"].as_u64().unwrap(), 0);
+        assert_eq!(first["hasMore"], serde_json::json!(true));
+
+        let second = page(3, 3);
+        assert_eq!(second["rows"].as_array().unwrap().len(), 3);
+        assert_eq!(second["offset"].as_u64().unwrap(), 3);
+
+        let tail = page(6, 10);
+        assert_eq!(tail["rows"].as_array().unwrap().len(), 4);
+        assert_eq!(tail["hasMore"], serde_json::json!(false));
     }
 
     #[test]
