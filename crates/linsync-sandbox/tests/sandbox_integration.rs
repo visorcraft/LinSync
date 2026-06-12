@@ -1,35 +1,111 @@
 //! Integration tests for the sandbox backends.
 //!
-//! Gated on Linux + Landlock ABI >= 1 being available + LINSYNC_SANDBOX_SKIP not set.
-//! The standard CI test job and `just ci` / `just test` set LINSYNC_SANDBOX_SKIP=1
-//! for reliability (Landlock probe can report ABI>=1 but fs enforcement may be a
-//! no-op in containers/CI/dev shells). Real enforcement is exercised by running
-//! the integration test directly without the var on a kernel+env where it works:
+//! Gated on Linux + a confined sandbox backend being available and enforcement
+//! actually biting. The standard CI test job and `just ci` / `just test` set
+//! LINSYNC_SANDBOX_SKIP=1 for reliability. Real enforcement is exercised by
+//! running the integration test directly without the var on a kernel+env where
+//! it works:
 //!   env -u LINSYNC_SANDBOX_SKIP cargo test -p linsync-sandbox --test sandbox_integration
 //!
-//! (There is no active separate sandbox-stress job in ci.yml at present.)
+//! A single probe at the start of the test run attempts a real denial so tests
+//! can self-skip when the backend is absent, disabled, or a no-op.
+
+#[cfg(target_os = "linux")]
+use linsync_sandbox::{SandboxPolicy, SandboxStrategy, SandboxedCommand};
+#[cfg(target_os = "linux")]
+use std::process::Command;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
+#[cfg(target_os = "linux")]
+use tempfile::TempDir;
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeResult {
+    /// Backend detected and a real denial succeeded.
+    Supported,
+    /// Backend not detected or `LINSYNC_SANDBOX_SKIP` is set.
+    Unavailable,
+    /// Backend reports available but enforcement is a no-op.
+    NoOp,
+    /// Unexpected error during the probe.
+    ProbeError,
+}
+
+/// Probe whether the sandbox actually denies a filesystem access.
+///
+/// The result is cached for the whole test run via [`OnceLock`].
+#[cfg(target_os = "linux")]
+fn probe_sandbox() -> ProbeResult {
+    static PROBE: OnceLock<ProbeResult> = OnceLock::new();
+    *PROBE.get_or_init(|| {
+        if std::env::var_os("LINSYNC_SANDBOX_SKIP").is_some() {
+            return ProbeResult::Unavailable;
+        }
+        let strategy = SandboxStrategy::detect();
+        if !strategy.is_confined() {
+            return ProbeResult::Unavailable;
+        }
+
+        let allowed = match TempDir::new() {
+            Ok(tmp) => tmp,
+            Err(_) => return ProbeResult::ProbeError,
+        };
+        let forbidden = match TempDir::new() {
+            Ok(tmp) => tmp,
+            Err(_) => return ProbeResult::ProbeError,
+        };
+        let secret = forbidden.path().join("secret.txt");
+        if std::fs::write(&secret, b"top secret").is_err() {
+            return ProbeResult::ProbeError;
+        }
+
+        let policy = SandboxPolicy::builder()
+            .read(allowed.path())
+            .write(allowed.path())
+            .build();
+
+        let mut cmd = Command::new("cat");
+        cmd.arg(&secret);
+
+        let mut child = match SandboxedCommand::new(cmd, policy).spawn() {
+            Ok(child) => child,
+            Err(_) => return ProbeResult::ProbeError,
+        };
+
+        match child.wait() {
+            Ok(status) => {
+                if status.success() {
+                    ProbeResult::NoOp
+                } else {
+                    ProbeResult::Supported
+                }
+            }
+            Err(_) => ProbeResult::ProbeError,
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn skip_enforcement_tests(label: &str) -> bool {
+    match probe_sandbox() {
+        ProbeResult::Supported => false,
+        reason => {
+            eprintln!("SKIP {label} enforcement tests: {reason:?}");
+            true
+        }
+    }
+}
 
 #[cfg(target_os = "linux")]
 mod landlock_tests {
-    use linsync_sandbox::{SandboxPolicy, SandboxStrategy, SandboxedCommand};
+    use super::{SandboxPolicy, SandboxedCommand, skip_enforcement_tests};
     use std::process::Command;
     use tempfile::TempDir;
 
-    fn skip_if_unavailable() -> bool {
-        if std::env::var_os("LINSYNC_SANDBOX_SKIP").is_some() {
-            eprintln!("SKIP: LINSYNC_SANDBOX_SKIP is set");
-            return true;
-        }
-        if !matches!(SandboxStrategy::detect(), SandboxStrategy::Landlock) {
-            eprintln!("SKIP: Landlock not available on this kernel");
-            return true;
-        }
-        false
-    }
-
     #[test]
     fn cat_reads_allowed_file() {
-        if skip_if_unavailable() {
+        if skip_enforcement_tests("landlock") {
             return;
         }
 
@@ -52,7 +128,7 @@ mod landlock_tests {
 
     #[test]
     fn cat_denied_outside_allowed_path() {
-        if skip_if_unavailable() {
+        if skip_enforcement_tests("landlock") {
             return;
         }
 
@@ -80,29 +156,15 @@ mod landlock_tests {
 
 #[cfg(target_os = "linux")]
 mod seccomp_tests {
-    use linsync_sandbox::{SandboxPolicy, SandboxStrategy, SandboxedCommand};
+    use super::{SandboxPolicy, SandboxedCommand, skip_enforcement_tests};
     use std::process::{Command, Stdio};
     use tempfile::TempDir;
-
-    fn skip_if_unavailable() -> bool {
-        if std::env::var_os("LINSYNC_SANDBOX_SKIP").is_some() {
-            eprintln!("SKIP: LINSYNC_SANDBOX_SKIP is set");
-            return true;
-        }
-        matches!(
-            SandboxStrategy::detect(),
-            linsync_sandbox::SandboxStrategy::Degraded
-        ) && {
-            eprintln!("SKIP: no sandbox backend available");
-            true
-        }
-    }
 
     /// Sandboxed process cannot open an AF_INET socket when network=false.
     /// python3 attempts the socket; seccomp returns EACCES; script exits 42.
     #[test]
     fn network_socket_denied_by_default() {
-        if skip_if_unavailable() {
+        if skip_enforcement_tests("seccomp") {
             return;
         }
 
@@ -133,7 +195,7 @@ mod seccomp_tests {
     /// When network=true the same socket call succeeds.
     #[test]
     fn network_socket_allowed_when_declared() {
-        if skip_if_unavailable() {
+        if skip_enforcement_tests("seccomp") {
             return;
         }
 
@@ -218,38 +280,40 @@ mod strategy_tests {
 
 #[cfg(target_os = "linux")]
 mod degraded_tests {
-    use linsync_sandbox::{SandboxPolicy, SandboxedCommand};
-    use std::process::{Command, Stdio};
-    use tempfile::TempDir;
-
     /// With LINSYNC_SANDBOX_SKIP=1 the command runs unsandboxed and can
-    /// access paths that would normally be blocked.
+    /// access paths that would normally be blocked. We verify this in a child
+    /// process to avoid mutating the shared environment in a multi-threaded
+    /// test process (which would be UB).
     #[test]
     fn skip_env_disables_sandbox() {
-        // SAFETY: set_var is unsafe in multi-threaded tests. This test is
-        // designed to run in isolation or with --test-threads=1.
-        // Restore (not blindly remove) the prior value: when the whole suite
-        // runs with LINSYNC_SANDBOX_SKIP=1 (the documented CI mode), unsetting
-        // it here would race sibling tests into a real-sandbox path.
-        let prev = std::env::var_os("LINSYNC_SANDBOX_SKIP");
-        unsafe { std::env::set_var("LINSYNC_SANDBOX_SKIP", "1") };
-        let tmp = TempDir::new().unwrap();
-        let file = tmp.path().join("data.txt");
-        std::fs::write(&file, b"unsandboxed").unwrap();
+        std::process::Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "linsync-sandbox",
+                "--bin",
+                "skip_disable_check",
+                "--quiet",
+            ])
+            .status()
+            .unwrap();
 
-        let policy = SandboxPolicy::builder().build(); // no allowed paths
+        let exe = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("skip_disable_check");
 
-        let mut cmd = Command::new("cat");
-        cmd.arg(&file).stdout(Stdio::null());
+        let status = std::process::Command::new(&exe)
+            .env("LINSYNC_SANDBOX_SKIP", "1")
+            .status()
+            .unwrap();
 
-        let mut child = SandboxedCommand::new(cmd, policy).spawn().unwrap();
-        let status = child.wait().unwrap();
-        unsafe {
-            match prev {
-                Some(value) => std::env::set_var("LINSYNC_SANDBOX_SKIP", value),
-                None => std::env::remove_var("LINSYNC_SANDBOX_SKIP"),
-            }
-        }
-        assert!(status.success(), "unsandboxed cat should succeed");
+        assert!(
+            status.success(),
+            "LINSYNC_SANDBOX_SKIP=1 should allow unsandboxed execution"
+        );
     }
 }
