@@ -3211,7 +3211,7 @@ Kirigami.ApplicationWindow {
 
                     AppComboBox {
                         id: newCompareModeCombo
-                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document", "Webpage", "Three-way"]
+                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document", "Webpage", "Archive", "Three-way"]
                         Accessible.name: "Compare mode"
                         implicitWidth: 140
                         implicitHeight: 30
@@ -4218,7 +4218,7 @@ Kirigami.ApplicationWindow {
                         implicitHeight: 36
                         Layout.preferredWidth: 140
                         implicitWidth: 140
-                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document", "Webpage", "Three-way"]
+                        model: ["Text", "Folder", "Table", "Hex", "Image", "Document", "Webpage", "Archive", "Three-way"]
                         Accessible.name: "Compare mode"
                         palette.button: root.activeBgAlt
                         palette.buttonText: root.activeText

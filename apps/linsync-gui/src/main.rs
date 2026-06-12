@@ -439,6 +439,9 @@ struct GuiBridgeState {
     /// Owner-only temp directories holding rendered page PNGs for document
     /// compare tabs. Cleaned up when the tab is closed or overwritten.
     rendered_page_cache_dirs: HashMap<u64, PathBuf>,
+    /// Extracted archive cache directories, keyed by tab id. Cleaned up when
+    /// the tab is closed.
+    archive_extract_dirs: HashMap<u64, PathBuf>,
 }
 
 struct CompareProgress {
@@ -590,6 +593,7 @@ impl GuiBridgeState {
             last_image_overlay_path: None,
             archive_edit_tokens: HashMap::new(),
             rendered_page_cache_dirs: HashMap::new(),
+            archive_extract_dirs: HashMap::new(),
         }
     }
 
@@ -646,6 +650,9 @@ impl GuiBridgeState {
         self.undo_stacks.remove(&tab_id);
         self.redo_stacks.remove(&tab_id);
         if let Some(dir) = self.rendered_page_cache_dirs.remove(&tab_id) {
+            let _ = fs::remove_dir_all(dir);
+        }
+        if let Some(dir) = self.archive_extract_dirs.remove(&tab_id) {
             let _ = fs::remove_dir_all(dir);
         }
         if self.session.active_tab_id == tab_id {
@@ -1874,6 +1881,7 @@ enum GuiCompareMode {
     Image,
     Document,
     Webpage,
+    Archive,
 }
 
 impl GuiCompareMode {
@@ -1886,6 +1894,7 @@ impl GuiCompareMode {
             "Image" | "image" => Some(Self::Image),
             "Document" | "document" => Some(Self::Document),
             "Webpage" | "webpage" => Some(Self::Webpage),
+            "Archive" | "archive" => Some(Self::Archive),
             _ => None,
         }
     }
@@ -1899,6 +1908,7 @@ impl GuiCompareMode {
             Self::Image => "Image",
             Self::Document => "Document",
             Self::Webpage => "Webpage",
+            Self::Archive => "Archive",
         }
     }
 }
@@ -1979,6 +1989,23 @@ fn explicit_tab_for_paths_cancellable(
                 )),
                 Vec::new(),
             ),
+            GuiCompareMode::Archive => {
+                if linsync_core::is_builtin_archive_format(left)
+                    && linsync_core::is_builtin_archive_format(right)
+                {
+                    builtin_archive_tab(left, right, left_path, right_path, options, &AppPaths::from_env())
+                } else {
+                    (
+                        Some(invalid_compare_tab(
+                            mode.label(),
+                            left_path,
+                            right_path,
+                            "Built-in archive compare requires two supported archives".to_owned(),
+                        )),
+                        Vec::new(),
+                    )
+                }
+            }
         },
         Ok(ContextPathKind::Folders) => (
             Some(invalid_compare_tab(
@@ -2270,6 +2297,96 @@ fn archive_tab(
             right_path,
             format!("Archive compare failed: {err}"),
         ),
+    }
+}
+
+/// Unique per-request extraction cache directory under the app cache.
+fn archive_extract_cache_dir(paths: &AppPaths) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let id = format!(
+        "{}-{}-{}",
+        std::process::id(),
+        now,
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    paths.cache_dir.join("archive-extract").join(id)
+}
+
+/// Compare two built-in-format archives by extracting them to a persistent
+/// cache directory and presenting the result through the folder view. Returns
+/// the tab plus the cache directory so the bridge can clean it up on tab close.
+fn builtin_archive_tab(
+    left: &Path,
+    right: &Path,
+    left_path: String,
+    right_path: String,
+    options: &GuiCompareOptions,
+    paths: &AppPaths,
+) -> (Option<GuiCompareTab>, Vec<PathBuf>) {
+    let cache_dir = archive_extract_cache_dir(paths);
+    let left_extract = cache_dir.join("left");
+    let right_extract = cache_dir.join("right");
+
+    let cleanup = || {
+        let _ = fs::remove_dir_all(&cache_dir);
+    };
+
+    match linsync_core::compare_builtin_archives_with_dirs(
+        left,
+        right,
+        &left_extract,
+        &right_extract,
+        &options.folder,
+    ) {
+        Ok(result) => {
+            let difference_count = result.summary.different_count
+                + result.summary.one_sided_count
+                + result.summary.errors_count
+                + result.summary.aborted_count;
+            let folder_entries = folder_entries_for_gui(&result.entries);
+            let tab = compare_tab(
+                "Folder",
+                (left_path, right_path),
+                "Archive compare complete".to_owned(),
+                difference_count,
+                GuiOpenValidation {
+                    compatible: true,
+                    path_kind: "Archives".to_owned(),
+                    message: "Compared two archives as folders".to_owned(),
+                },
+                vec![
+                    summary_item("Compared", result.summary.compared_count),
+                    summary_item("Identical", result.summary.identical_count),
+                    summary_item("Different", result.summary.different_count),
+                    summary_item("One-sided", result.summary.one_sided_count),
+                ],
+                (Vec::new(), Vec::new()),
+                folder_entries,
+                None,
+                None,
+                Vec::new(),
+                Some(options.clone()),
+            );
+            (Some(tab), vec![cache_dir])
+        }
+        Err(err) => {
+            cleanup();
+            (
+                Some(invalid_compare_tab(
+                    "Text",
+                    left_path,
+                    right_path,
+                    format!("Archive compare failed: {err}"),
+                )),
+                Vec::new(),
+            )
+        }
     }
 }
 
@@ -4771,6 +4888,41 @@ fn compare_bridge_response(
             Err(_) => {
                 return bridge_error(500, "Internal Server Error", "session state unavailable");
             }
+        };
+        record_recent_context(paths, &context);
+        return match context_to_json(&context) {
+            Ok(body) => http_response(200, "OK", "application/json", body.into_bytes()),
+            Err(err) => bridge_error(500, "Internal Server Error", &err.to_string()),
+        };
+    }
+
+    // Built-in archive-as-folder: if both inputs are supported archive formats
+    // and no plugin took precedence, extract and compare as folders.
+    if matches!(requested_mode, None | Some("Archive"))
+        && linsync_core::is_builtin_archive_format(Path::new(left))
+        && linsync_core::is_builtin_archive_format(Path::new(right))
+    {
+        let (tab, dirs) = builtin_archive_tab(
+            Path::new(left),
+            Path::new(right),
+            left.to_owned(),
+            right.to_owned(),
+            &options,
+            paths,
+        );
+        let Some(tab) = tab else {
+            return bridge_error(500, "Internal Server Error", "archive compare produced no tab");
+        };
+        let context = match state.lock() {
+            Ok(mut state) => {
+                let context = state.apply_compare(tab, new_tab);
+                let tab_id = context.session.active_tab_id;
+                if let Some(dir) = dirs.into_iter().next() {
+                    state.archive_extract_dirs.insert(tab_id, dir);
+                }
+                context
+            }
+            Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
         };
         record_recent_context(paths, &context);
         return match context_to_json(&context) {
@@ -8949,6 +9101,51 @@ mod tests {
             "the unpacked member should appear: {tab}"
         );
         // Differing content → the member is reported different.
+        assert!(tab["difference_count"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn compare_builtin_archive_routes_to_folder_view() {
+        if !command_available("zip") || !command_available("unzip") {
+            return;
+        }
+        let paths = test_app_paths("builtin-archive-route");
+        let files = test_file_root("builtin-archive-route-files");
+        let left = files.join("left.zip");
+        let right = files.join("right.zip");
+        let a = files.join("a.txt");
+        let b = files.join("b.txt");
+        fs::write(&a, "hello").unwrap();
+        fs::write(&b, "world").unwrap();
+        Command::new("zip")
+            .args(["-q", "-j", left.to_str().unwrap(), a.to_str().unwrap()])
+            .status()
+            .unwrap();
+        Command::new("zip")
+            .args(["-q", "-j", right.to_str().unwrap(), b.to_str().unwrap()])
+            .status()
+            .unwrap();
+
+        let state = test_bridge_state(None);
+        let body = json_response_body(
+            &String::from_utf8(bridge_response(
+                &format!(
+                    "GET /compare?mode=Archive&left={}&right={} HTTP/1.1\r\n",
+                    urlencoding::encode(left.to_str().unwrap()),
+                    urlencoding::encode(right.to_str().unwrap())
+                ),
+                &paths,
+                &state,
+            ))
+            .unwrap(),
+        );
+        let tab = &body["session"]["tabs"][0];
+        assert_eq!(tab["mode"], "Folder", "builtin archive routes to the folder view: {tab}");
+        let entries = tab["folder_entries"].as_array().expect("folder entries");
+        assert!(
+            entries.iter().any(|e| e["path"] == "a.txt" || e["path"] == "b.txt"),
+            "unpacked members should appear: {tab}"
+        );
         assert!(tab["difference_count"].as_u64().unwrap() >= 1);
     }
 

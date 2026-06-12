@@ -42,8 +42,9 @@ The only remaining gaps are noted below.
   are all available. Text and OCR-text modes return the extracted
   `left_text`/`right_text` to the GUI side-by-side; rendered mode (via a
   `pdf_renderer` plugin) reports per-page pixel equality with a
-  page-range field. OCR mode also returns per-word positional data
-  (`word_positions`).
+  page-range field and emits `rendered_pages` carrying `file://` URIs for
+  the left/right PNGs. The Document Compare page shows a thumbnail page
+  list and side-by-side zoom/pan image panes for the selected page.
 - A **visual word-box overlay drawn over a rendered source page** is out
   of scope: OCR word positions are returned as structured data, but
   LinSync does not paint bounding boxes onto a rendered page image.
@@ -109,8 +110,12 @@ The only remaining gaps are noted below.
   folder compare on the resulting virtual folder, including nested-archive
   recursion. For archive types the built-in extractor recognizes, the
   `unzip`/`tar` subprocess now runs under `linsync-sandbox` with a policy
-  scoped to the archive and extraction directory. The same archive→virtual-
-  folder source is available from the GUI.
+  scoped to the archive and extraction directory.
+- The GUI auto-routes archive pairs to a folder view: a matching
+  folder-virtualizer plugin takes precedence; otherwise supported
+  `zip`/`tar` archives are extracted to a per-tab cache directory and
+  compared as folders. The mode selector on the Compare page includes an
+  explicit "Archive" entry.
 
 ## Packaging caveats
 
