@@ -201,3 +201,7 @@ l10n-update:
 l10n-release:
     lrelease=$(command -v lrelease6 || command -v lrelease-qt6 || command -v lrelease || echo /usr/lib/qt6/bin/lrelease); \
     for ts in apps/linsync-gui/i18n/*.ts; do "$lrelease" "$ts"; done
+
+# Generate a per-locale translation completeness report from i18n/*.ts.
+l10n-report:
+    python3 scripts/l10n-report.py
