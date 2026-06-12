@@ -6,7 +6,7 @@
 //! All helpers shell out — no Poppler/Tesseract/LibreOffice crate is linked.
 //! All helpers run inside the Phase 6 sandbox (see `linsync_sandbox::run_sandboxed`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};

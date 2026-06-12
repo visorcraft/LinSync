@@ -274,6 +274,9 @@ struct GuiCompareTab {
     table_cells: Option<Vec<linsync_core::TableRowDiff>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     artifacts: Vec<linsync_core::CompareArtifact>,
+    /// Rendered page summaries for document compare in rendered mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rendered_pages: Option<Vec<GuiRenderedPage>>,
     /// Options used to build this tab, so merge-copy, recompare, and window
     /// fetches can honor the same profile / per-request overrides instead of
     /// falling back to defaults.
@@ -329,6 +332,15 @@ struct GuiLineRow {
     has_find_match: bool,
     #[serde(default)]
     bookmarked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GuiRenderedPage {
+    page: usize,
+    equal: bool,
+    diff_ratio: f64,
+    left_uri: Option<String>,
+    right_uri: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,6 +436,9 @@ struct GuiBridgeState {
     /// In-progress archive member edits, keyed by opaque token. The bridge
     /// holds the [`MemberEditContext`] so clients never supply paths to commit.
     archive_edit_tokens: HashMap<String, linsync_core::MemberEditContext>,
+    /// Owner-only temp directories holding rendered page PNGs for document
+    /// compare tabs. Cleaned up when the tab is closed or overwritten.
+    rendered_page_cache_dirs: HashMap<u64, PathBuf>,
 }
 
 struct CompareProgress {
@@ -574,6 +589,7 @@ impl GuiBridgeState {
             last_image_result: None,
             last_image_overlay_path: None,
             archive_edit_tokens: HashMap::new(),
+            rendered_page_cache_dirs: HashMap::new(),
         }
     }
 
@@ -629,6 +645,9 @@ impl GuiBridgeState {
         self.session.tabs.retain(|tab| tab.id != tab_id);
         self.undo_stacks.remove(&tab_id);
         self.redo_stacks.remove(&tab_id);
+        if let Some(dir) = self.rendered_page_cache_dirs.remove(&tab_id) {
+            let _ = fs::remove_dir_all(dir);
+        }
         if self.session.active_tab_id == tab_id {
             self.session.active_tab_id = self
                 .session
@@ -1766,6 +1785,25 @@ fn build_tab_for_paths_with_mode_cancellable(
     should_cancel: &dyn Fn() -> bool,
     progress: Option<Arc<Mutex<CompareProgress>>>,
 ) -> Option<GuiCompareTab> {
+    build_tab_for_paths_with_mode_cancellable_and_artifacts(
+        left,
+        right,
+        mode,
+        options,
+        should_cancel,
+        progress,
+    )
+    .map(|(tab, _)| tab)
+}
+
+fn build_tab_for_paths_with_mode_cancellable_and_artifacts(
+    left: &Path,
+    right: &Path,
+    mode: Option<&str>,
+    options: &GuiCompareOptions,
+    should_cancel: &dyn Fn() -> bool,
+    progress: Option<Arc<Mutex<CompareProgress>>>,
+) -> Option<(GuiCompareTab, Vec<PathBuf>)> {
     if should_cancel() {
         return None;
     }
@@ -1774,21 +1812,27 @@ fn build_tab_for_paths_with_mode_cancellable(
 
     if let Some(mode) = mode.map(str::trim).filter(|mode| !mode.is_empty()) {
         return match GuiCompareMode::from_label(mode) {
-            Some(mode) => explicit_tab_for_paths_cancellable(
-                mode,
-                left,
-                right,
-                left_path,
-                right_path,
-                options,
-                should_cancel,
-                progress,
-            ),
-            None => Some(invalid_compare_tab(
-                "Text",
-                left_path,
-                right_path,
-                format!("Unsupported compare mode '{mode}'"),
+            Some(mode) => {
+                let (tab, dirs) = explicit_tab_for_paths_cancellable(
+                    mode,
+                    left,
+                    right,
+                    left_path,
+                    right_path,
+                    options,
+                    should_cancel,
+                    progress,
+                );
+                tab.map(|tab| (tab, dirs))
+            }
+            None => Some((
+                invalid_compare_tab(
+                    "Text",
+                    left_path,
+                    right_path,
+                    format!("Unsupported compare mode '{mode}'"),
+                ),
+                Vec::new(),
             )),
         };
     }
@@ -1802,7 +1846,8 @@ fn build_tab_for_paths_with_mode_cancellable(
             options,
             should_cancel,
             progress,
-        ),
+        )
+        .map(|tab| (tab, Vec::new())),
         Ok(ContextPathKind::Files) => file_tab_cancellable(
             left,
             right,
@@ -1811,8 +1856,12 @@ fn build_tab_for_paths_with_mode_cancellable(
             options,
             should_cancel,
             progress,
-        ),
-        Err(status) => Some(invalid_compare_tab("Text", left_path, right_path, status)),
+        )
+        .map(|tab| (tab, Vec::new())),
+        Err(status) => Some((
+            invalid_compare_tab("Text", left_path, right_path, status),
+            Vec::new(),
+        )),
     }
 }
 
@@ -1864,19 +1913,10 @@ fn explicit_tab_for_paths_cancellable(
     options: &GuiCompareOptions,
     should_cancel: &dyn Fn() -> bool,
     progress: Option<Arc<Mutex<CompareProgress>>>,
-) -> Option<GuiCompareTab> {
+) -> (Option<GuiCompareTab>, Vec<PathBuf>) {
     match classify_context_paths(left, right) {
-        Ok(ContextPathKind::Folders) if mode == GuiCompareMode::Folder => folder_tab_cancellable(
-            left,
-            right,
-            left_path,
-            right_path,
-            options,
-            should_cancel,
-            progress,
-        ),
-        Ok(ContextPathKind::Files) => match mode {
-            GuiCompareMode::Text => text_tab_cancellable(
+        Ok(ContextPathKind::Folders) if mode == GuiCompareMode::Folder => (
+            folder_tab_cancellable(
                 left,
                 right,
                 left_path,
@@ -1885,15 +1925,42 @@ fn explicit_tab_for_paths_cancellable(
                 should_cancel,
                 progress,
             ),
-            GuiCompareMode::Table => Some(table_tab(left, right, left_path, right_path, options)),
-            GuiCompareMode::Hex => Some(binary_tab(left, right, left_path, right_path, options)),
-            GuiCompareMode::Folder => Some(invalid_compare_tab(
-                mode.label(),
-                left_path,
-                right_path,
-                "Selected folder compare requires two folders".to_owned(),
-            )),
-            GuiCompareMode::Image => Some(image_tab(left, right, left_path, right_path, options)),
+            Vec::new(),
+        ),
+        Ok(ContextPathKind::Files) => match mode {
+            GuiCompareMode::Text => (
+                text_tab_cancellable(
+                    left,
+                    right,
+                    left_path,
+                    right_path,
+                    options,
+                    should_cancel,
+                    progress,
+                ),
+                Vec::new(),
+            ),
+            GuiCompareMode::Table => (
+                Some(table_tab(left, right, left_path, right_path, options)),
+                Vec::new(),
+            ),
+            GuiCompareMode::Hex => (
+                Some(binary_tab(left, right, left_path, right_path, options)),
+                Vec::new(),
+            ),
+            GuiCompareMode::Folder => (
+                Some(invalid_compare_tab(
+                    mode.label(),
+                    left_path,
+                    right_path,
+                    "Selected folder compare requires two folders".to_owned(),
+                )),
+                Vec::new(),
+            ),
+            GuiCompareMode::Image => (
+                Some(image_tab(left, right, left_path, right_path, options)),
+                Vec::new(),
+            ),
             GuiCompareMode::Document => document_tab(
                 left,
                 right,
@@ -1903,25 +1970,34 @@ fn explicit_tab_for_paths_cancellable(
                 should_cancel,
                 progress,
             ),
-            GuiCompareMode::Webpage => Some(invalid_compare_tab(
+            GuiCompareMode::Webpage => (
+                Some(invalid_compare_tab(
+                    mode.label(),
+                    left_path,
+                    right_path,
+                    "Webpage compare uses the dedicated Webpage Compare page".to_owned(),
+                )),
+                Vec::new(),
+            ),
+        },
+        Ok(ContextPathKind::Folders) => (
+            Some(invalid_compare_tab(
                 mode.label(),
                 left_path,
                 right_path,
-                "Webpage compare uses the dedicated Webpage Compare page".to_owned(),
+                format!("Selected {} compare requires two files", mode.label()),
             )),
-        },
-        Ok(ContextPathKind::Folders) => Some(invalid_compare_tab(
-            mode.label(),
-            left_path,
-            right_path,
-            format!("Selected {} compare requires two files", mode.label()),
-        )),
-        Err(status) => Some(invalid_compare_tab(
-            mode.label(),
-            left_path,
-            right_path,
-            status,
-        )),
+            Vec::new(),
+        ),
+        Err(status) => (
+            Some(invalid_compare_tab(
+                mode.label(),
+                left_path,
+                right_path,
+                status,
+            )),
+            Vec::new(),
+        ),
     }
 }
 
@@ -2926,10 +3002,10 @@ fn document_tab(
     options: &GuiCompareOptions,
     should_cancel: &dyn Fn() -> bool,
     progress: Option<Arc<Mutex<CompareProgress>>>,
-) -> Option<GuiCompareTab> {
+) -> (Option<GuiCompareTab>, Vec<PathBuf>) {
     let document_options = &options.document;
     if should_cancel() {
-        return None;
+        return (None, Vec::new());
     }
     set_progress(
         &progress,
@@ -2945,7 +3021,11 @@ fn document_tab(
         document_mode_query_value(document_options.mode),
         urlencoding::encode(&document_options.ocr_language),
     );
-    let body = linsync::document_compare_bridge_response_with_profile(&query, document_options);
+    let (body, artifact_dirs) =
+        linsync::document_compare_bridge_response_with_profile_and_artifacts(
+            &query,
+            document_options,
+        );
     set_progress(
         &progress,
         "finalizing",
@@ -2954,46 +3034,63 @@ fn document_tab(
         "Building document tab".to_owned(),
     );
     if should_cancel() {
-        return None;
+        for dir in &artifact_dirs {
+            let _ = fs::remove_dir_all(dir);
+        }
+        return (None, Vec::new());
     }
     let value = match serde_json::from_str::<serde_json::Value>(&body) {
         Ok(value) => value,
         Err(err) => {
-            return Some(invalid_compare_tab(
-                "Document",
-                left_path,
-                right_path,
-                format!("Document compare failed: {err}"),
-            ));
+            for dir in &artifact_dirs {
+                let _ = fs::remove_dir_all(dir);
+            }
+            return (
+                Some(invalid_compare_tab(
+                    "Document",
+                    left_path,
+                    right_path,
+                    format!("Document compare failed: {err}"),
+                )),
+                Vec::new(),
+            );
         }
     };
-    if let Some(tab) = document_tab_from_response(left_path.clone(), right_path.clone(), &value) {
+    if let Some(mut tab) = document_tab_from_response(left_path.clone(), right_path.clone(), &value)
+    {
+        tab.options = Some(options.clone());
         set_progress(&progress, "done", 3, 3, String::new());
-        return Some(tab);
+        return (Some(tab), artifact_dirs);
+    }
+    for dir in &artifact_dirs {
+        let _ = fs::remove_dir_all(dir);
     }
     let message = value
         .get("error")
         .and_then(|v| v.as_str())
         .unwrap_or("document compare failed");
     set_progress(&progress, "done", 3, 3, String::new());
-    Some(compare_tab(
-        "Document",
-        (left_path, right_path),
-        format!("Document compare failed: {message}"),
-        0,
-        GuiOpenValidation {
-            compatible: true,
-            path_kind: "Files".to_owned(),
-            message: "Validated two document files; compare failed".to_owned(),
-        },
+    (
+        Some(compare_tab(
+            "Document",
+            (left_path, right_path),
+            format!("Document compare failed: {message}"),
+            0,
+            GuiOpenValidation {
+                compatible: true,
+                path_kind: "Files".to_owned(),
+                message: "Validated two document files; compare failed".to_owned(),
+            },
+            Vec::new(),
+            (Vec::new(), Vec::new()),
+            vec![],
+            None,
+            None,
+            Vec::new(),
+            Some(options.clone()),
+        )),
         Vec::new(),
-        (Vec::new(), Vec::new()),
-        vec![],
-        None,
-        None,
-        Vec::new(),
-        Some(options.clone()),
-    ))
+    )
 }
 
 fn image_tab_from_result(
@@ -3062,57 +3159,91 @@ fn document_tab_from_response(
     if response.get("error").is_some() {
         return None;
     }
-    let left_text = response
-        .get("left_text")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let right_text = response
-        .get("right_text")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let text_result = compare_text(
-        &left_path,
-        left_text,
-        &right_path,
-        right_text,
-        &TextCompareOptions::default(),
-    );
-    let diff_count = response
-        .get("differing_lines")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
-        .unwrap_or_else(|| text_result.difference_count());
-    let (left_rows, right_rows) = text_rows_for_gui(&text_result.lines, &text_result.blocks);
+    let rendered_pages: Option<Vec<GuiRenderedPage>> = response
+        .get("rendered_pages")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
     let extractor = response
         .get("left_extractor")
         .and_then(|v| v.as_str())
         .unwrap_or("document plugin")
         .to_owned();
-    Some(compare_tab(
+
+    let (left_rows, right_rows, diff_count, encoding_metadata, summary, status) =
+        if let Some(ref pages) = rendered_pages {
+            let diff_count = pages.iter().filter(|p| !p.equal).count();
+            let status = if diff_count == 0 {
+                format!("Rendered pages are identical (extracted via {extractor})")
+            } else {
+                format!("{diff_count} differing rendered pages (extracted via {extractor})")
+            };
+            let summary = vec![
+                summary_item("Rendered pages", pages.len()),
+                summary_item("Differing pages", diff_count),
+                summary_item_string("Extractor", extractor.clone()),
+            ];
+            (Vec::new(), Vec::new(), diff_count, None, summary, status)
+        } else {
+            let left_text = response
+                .get("left_text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let right_text = response
+                .get("right_text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let text_result = compare_text(
+                &left_path,
+                left_text,
+                &right_path,
+                right_text,
+                &TextCompareOptions::default(),
+            );
+            let diff_count = response
+                .get("differing_lines")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or_else(|| text_result.difference_count());
+            let (left_rows, right_rows) =
+                text_rows_for_gui(&text_result.lines, &text_result.blocks);
+            let summary = vec![
+                summary_item("Differing lines", diff_count),
+                summary_item_string("Extractor", extractor.clone()),
+            ];
+            let status = if diff_count == 0 {
+                format!("Documents are equal (extracted via {extractor})")
+            } else {
+                format!("{diff_count} differing document lines (extracted via {extractor})")
+            };
+            (
+                left_rows,
+                right_rows,
+                diff_count,
+                Some(text_result.encoding_summary()),
+                summary,
+                status,
+            )
+        };
+
+    let mut tab = compare_tab(
         "Document",
         (left_path, right_path),
-        if diff_count == 0 {
-            format!("Documents are equal (extracted via {extractor})")
-        } else {
-            format!("{diff_count} differing document lines (extracted via {extractor})")
-        },
+        status,
         diff_count,
         GuiOpenValidation {
             compatible: true,
             path_kind: "Files".to_owned(),
             message: "Validated two document files".to_owned(),
         },
-        vec![
-            summary_item("Differing lines", diff_count),
-            summary_item_string("Extractor", extractor),
-        ],
+        summary,
         (left_rows, right_rows),
         vec![],
-        Some(text_result.encoding_summary()),
+        encoding_metadata,
         None,
         Vec::new(),
         None,
-    ))
+    );
+    tab.rendered_pages = rendered_pages;
+    Some(tab)
 }
 
 fn webpage_tab_from_response(
@@ -3270,6 +3401,7 @@ fn compare_tab(
         table_headers: None,
         table_cells,
         artifacts,
+        rendered_pages: None,
         options,
     }
 }
@@ -4663,7 +4795,7 @@ fn compare_bridge_response(
         Box::new(|| false)
     };
 
-    let maybe_tab = build_tab_for_paths_with_mode_cancellable(
+    let maybe_tab = build_tab_for_paths_with_mode_cancellable_and_artifacts(
         Path::new(left),
         Path::new(right),
         query_value(&params, "mode"),
@@ -4679,7 +4811,7 @@ fn compare_bridge_response(
     }
     remove_progress_request(request_id.as_deref(), state);
 
-    let Some(tab) = maybe_tab else {
+    let Some((tab, artifact_dirs)) = maybe_tab else {
         // The compare was cancelled — leave the session state untouched.
         return http_response(
             200,
@@ -4690,7 +4822,17 @@ fn compare_bridge_response(
     };
 
     let context = match state.lock() {
-        Ok(mut state) => state.apply_compare(tab, new_tab),
+        Ok(mut state) => {
+            let context = state.apply_compare(tab, new_tab);
+            let tab_id = context.session.active_tab_id;
+            if let Some(old) = state.rendered_page_cache_dirs.remove(&tab_id) {
+                let _ = fs::remove_dir_all(old);
+            }
+            if let Some(dir) = artifact_dirs.into_iter().next() {
+                state.rendered_page_cache_dirs.insert(tab_id, dir);
+            }
+            context
+        }
         Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
     };
     record_recent_context(paths, &context);
@@ -4838,6 +4980,7 @@ fn raw_compare_bridge_response(
         table_headers: None,
         table_cells: None,
         artifacts: Vec::new(),
+        rendered_pages: None,
         options: Some(GuiCompareOptions {
             text: text_options.clone(),
             ..GuiCompareOptions::default()
