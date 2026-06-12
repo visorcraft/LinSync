@@ -26,9 +26,10 @@ class LocaleStats:
 
     @property
     def completion_pct(self) -> float:
-        if self.total == 0:
+        active = self.finished + self.unfinished
+        if active == 0:
             return 100.0
-        return 100.0 * self.finished / self.total
+        return 100.0 * self.finished / active
 
 
 def _classify_message(message: ET.Element) -> str:
@@ -47,10 +48,10 @@ def _classify_message(message: ET.Element) -> str:
 
     # No explicit type: finished if a non-empty translation exists.
     if trans is not None:
-        # Plural forms use <numerusform> children; any non-empty form counts.
+        # Plural forms use <numerusform> children; every form must be filled.
         numerus_forms = trans.findall("numerusform")
         if numerus_forms:
-            if any((f.text or "").strip() for f in numerus_forms):
+            if all((f.text or "").strip() for f in numerus_forms):
                 return "finished"
         elif (trans.text or "").strip():
             return "finished"
