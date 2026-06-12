@@ -1,3 +1,5 @@
+#[cfg(feature = "sandbox")]
+pub mod archive;
 pub mod archive_write;
 pub mod binary;
 #[cfg(feature = "document-compare")]
@@ -18,6 +20,8 @@ pub mod text;
 pub mod trash;
 pub mod webpage;
 
+#[cfg(feature = "sandbox")]
+pub use archive::{ArchiveError, compare_builtin_archives, is_builtin_archive_format};
 pub use archive_write::{
     ArchiveEditCaps, ArchiveWriteError, CommitOptions, CommitOutcome, MemberEditContext,
     commit_member_edit, extract_member_for_edit, extract_member_for_edit_with_caps,
