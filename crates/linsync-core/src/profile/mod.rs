@@ -181,6 +181,111 @@ impl CompareProfile {
     }
 }
 
+/// Schema-version 0 profile: the original on-disk shape before
+/// `schema_version` was introduced. Missing per-mode option sections are
+/// filled with their current defaults on migration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct LegacyProfileV0 {
+    #[serde(default)]
+    id: Option<ProfileId>,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    builtin: bool,
+    #[serde(default)]
+    text: TextCompareOptions,
+    #[serde(default)]
+    folder: FolderCompareOptions,
+    #[serde(default)]
+    table: TableCompareOptions,
+    #[serde(default)]
+    binary: BinaryCompareOptions,
+    #[cfg(feature = "image-compare")]
+    #[serde(default)]
+    image: ImageCompareOptions,
+    #[cfg(feature = "document-compare")]
+    #[serde(default)]
+    document: DocumentCompareOptions,
+    #[serde(default)]
+    webpage: WebpageCompareOptions,
+    #[serde(default)]
+    plugin_enablement: std::collections::BTreeMap<String, bool>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl From<LegacyProfileV0> for CompareProfile {
+    fn from(legacy: LegacyProfileV0) -> Self {
+        let mut profile = Self {
+            schema_version: CURRENT_PROFILE_SCHEMA_VERSION,
+            id: legacy
+                .id
+                .unwrap_or_else(|| ProfileId::new("legacy").unwrap()),
+            name: legacy.name,
+            description: legacy.description,
+            builtin: legacy.builtin,
+            text: legacy.text,
+            folder: legacy.folder,
+            table: legacy.table,
+            binary: legacy.binary,
+            #[cfg(feature = "image-compare")]
+            image: legacy.image,
+            #[cfg(feature = "document-compare")]
+            document: legacy.document,
+            webpage: legacy.webpage,
+            plugin_enablement: legacy.plugin_enablement,
+            extra: legacy.extra,
+        };
+        // The migrated profile carries the current schema version in its
+        // dedicated field; do not keep the old value in the catch-all map.
+        profile.extra.remove("schema_version");
+        profile
+    }
+}
+
+impl CompareProfile {
+    /// Parse a profile from its raw JSON representation, upgrading older
+    /// schema versions to the current one. Returns an error if the JSON is
+    /// malformed or if the profile declares a future schema version.
+    pub fn migrate_from_legacy(raw: serde_json::Value) -> Result<Self, ProfileMigrationError> {
+        let version = raw
+            .get("schema_version")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as u32)
+            .unwrap_or(0);
+
+        if version > CURRENT_PROFILE_SCHEMA_VERSION {
+            return Err(ProfileMigrationError::Parse {
+                message: format!(
+                    "profile schema_version {version} is newer than the supported version {CURRENT_PROFILE_SCHEMA_VERSION}; upgrade LinSync"
+                ),
+            });
+        }
+
+        let profile = if version == 0 {
+            serde_json::from_value::<LegacyProfileV0>(raw)
+                .map_err(|err| ProfileMigrationError::Parse {
+                    message: err.to_string(),
+                })?
+                .into()
+        } else {
+            serde_json::from_value::<CompareProfile>(raw).map_err(|err| {
+                ProfileMigrationError::Parse {
+                    message: err.to_string(),
+                }
+            })?
+        };
+
+        profile
+            .validate()
+            .map_err(ProfileMigrationError::Validation)?;
+        Ok(profile)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileValidationError {
     EmptyId,
@@ -210,6 +315,23 @@ impl std::fmt::Display for ProfileValidationError {
 }
 
 impl std::error::Error for ProfileValidationError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileMigrationError {
+    Parse { message: String },
+    Validation(ProfileValidationError),
+}
+
+impl std::fmt::Display for ProfileMigrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse { message } => write!(f, "profile migration failed: {message}"),
+            Self::Validation(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for ProfileMigrationError {}
 
 /// Records the currently-selected profile id. Stored at
 /// `AppPaths::active_profile_pointer_file()`. Future versions may grow
@@ -336,11 +458,18 @@ impl ProfileStore {
             return Err(ProfileStoreError::NotFound(id.clone()));
         }
         let bytes = fs::read(&path)?;
-        let mut profile: CompareProfile =
+        let raw: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|err| ProfileStoreError::Parse {
                 path: path.clone(),
                 message: err.to_string(),
             })?;
+        let mut profile = CompareProfile::migrate_from_legacy(raw).map_err(|err| match err {
+            ProfileMigrationError::Validation(v) => ProfileStoreError::Validation(v),
+            ProfileMigrationError::Parse { message } => ProfileStoreError::Parse {
+                path: path.clone(),
+                message,
+            },
+        })?;
         // The filename is the source of truth for a profile's id: every
         // write/lookup keys off it. A file body declaring a mismatched id
         // (hand-edited, copied, or imported) is self-healed here so the
@@ -704,6 +833,94 @@ mod tests {
         assert!(
             reread.contains(r#""video""#),
             "expected unknown field preserved through round-trip; got: {reread}"
+        );
+        drop(dir);
+    }
+
+    #[test]
+    fn migrate_schema_zero_fills_defaults() {
+        let (dir, store) = temp_store();
+        fs::create_dir_all(&store.profiles_dir).unwrap();
+        fs::write(
+            store.profiles_dir.join("legacy.json"),
+            br#"{"name": "Legacy"}"#,
+        )
+        .unwrap();
+        let loaded = store.load(&ProfileId::new("legacy").unwrap()).unwrap();
+        assert_eq!(loaded.name, "Legacy");
+        assert_eq!(loaded.schema_version, CURRENT_PROFILE_SCHEMA_VERSION);
+        assert!(loaded.description.is_empty());
+        assert!(!loaded.builtin);
+        assert_eq!(loaded.text, TextCompareOptions::default());
+        assert_eq!(loaded.folder, FolderCompareOptions::default());
+        drop(dir);
+    }
+
+    #[test]
+    fn migrate_schema_zero_validation_error() {
+        let (dir, store) = temp_store();
+        fs::create_dir_all(&store.profiles_dir).unwrap();
+        fs::write(
+            store.profiles_dir.join("legacy-empty.json"),
+            br#"{"name": ""}"#,
+        )
+        .unwrap();
+        let err = store
+            .load(&ProfileId::new("legacy-empty").unwrap())
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ProfileStoreError::Validation(ProfileValidationError::EmptyName)
+        ));
+        drop(dir);
+    }
+
+    #[test]
+    fn migrate_schema_zero_does_not_rewrite_file() {
+        let (dir, store) = temp_store();
+        fs::create_dir_all(&store.profiles_dir).unwrap();
+        fs::write(
+            store.profiles_dir.join("legacy.json"),
+            br#"{"name": "Legacy"}"#,
+        )
+        .unwrap();
+        let loaded = store.load(&ProfileId::new("legacy").unwrap()).unwrap();
+        assert_eq!(loaded.schema_version, CURRENT_PROFILE_SCHEMA_VERSION);
+        let contents = fs::read_to_string(store.profiles_dir.join("legacy.json")).unwrap();
+        assert!(
+            !contents.contains("\"schema_version\""),
+            "loading a v0 profile must not auto-migrate the on-disk file; got {contents:?}"
+        );
+        drop(dir);
+    }
+
+    #[test]
+    fn migration_preserves_unknown_future_section() {
+        let (dir, store) = temp_store();
+        fs::create_dir_all(&store.profiles_dir).unwrap();
+        let raw = br#"{"name": "Legacy Future", "video": {"codec": "av1"}}"#;
+        fs::write(store.profiles_dir.join("legacy-future.json"), raw).unwrap();
+        let loaded = store
+            .load(&ProfileId::new("legacy-future").unwrap())
+            .unwrap();
+        assert!(loaded.extra.contains_key("video"));
+        assert_eq!(loaded.schema_version, CURRENT_PROFILE_SCHEMA_VERSION);
+        drop(dir);
+    }
+
+    #[test]
+    fn future_schema_still_rejected_for_user_profile() {
+        let (dir, store) = temp_store();
+        fs::create_dir_all(&store.profiles_dir).unwrap();
+        fs::write(
+            store.profiles_dir.join("future.json"),
+            br#"{"schema_version": 99, "id": "future", "name": "Future"}"#,
+        )
+        .unwrap();
+        let err = store.load(&ProfileId::new("future").unwrap()).unwrap_err();
+        assert!(
+            matches!(err, ProfileStoreError::Parse { .. }),
+            "expected parse error for future schema, got {err:?}"
         );
         drop(dir);
     }
