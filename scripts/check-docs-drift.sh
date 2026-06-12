@@ -30,22 +30,33 @@ allowlist=(
     "apps/linsync-gui/qml/SettingsPage.qml"
 )
 
-base_ref=""
+candidate_refs=()
 if [[ -n "${GITHUB_BASE_REF:-}" ]]; then
     if [[ "${GITHUB_BASE_REF}" == origin/* ]]; then
-        base_ref="${GITHUB_BASE_REF}"
+        candidate_refs+=("${GITHUB_BASE_REF}")
     else
-        base_ref="origin/${GITHUB_BASE_REF}"
+        candidate_refs+=("origin/${GITHUB_BASE_REF}" "${GITHUB_BASE_REF}")
     fi
-elif git rev-parse --verify origin/master &>/dev/null; then
-    base_ref="origin/master"
 else
-    base_ref="HEAD~1"
+    candidate_refs+=("origin/master" "master" "HEAD~1")
+fi
+
+base_ref=""
+for candidate in "${candidate_refs[@]}"; do
+    if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
+        base_ref="$(git rev-parse --verify "${candidate}^{commit}")"
+        break
+    fi
+done
+
+if [[ -z "${base_ref}" ]]; then
+    echo "::warning title=Docs drift check::Could not resolve a base ref; skipping advisory docs drift check."
+    exit 0
 fi
 
 merge_base="${base_ref}"
-if git merge-base --is-ancestor "${merge_base}" HEAD 2>/dev/null; then
-    merge_base="$(git merge-base "${merge_base}" HEAD)"
+if resolved_merge_base="$(git merge-base "${base_ref}" HEAD 2>/dev/null)"; then
+    merge_base="${resolved_merge_base}"
 fi
 
 mapfile -t changed_files < <(git diff --name-only "${merge_base}..HEAD")
