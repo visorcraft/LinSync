@@ -13,7 +13,7 @@
 #[cfg(target_os = "linux")]
 use linsync_sandbox::{SandboxPolicy, SandboxStrategy, SandboxedCommand};
 #[cfg(target_os = "linux")]
-use std::process::Command;
+use std::process::{Command, Stdio};
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
 #[cfg(target_os = "linux")]
@@ -65,8 +65,21 @@ fn probe_sandbox() -> ProbeResult {
             .write(allowed.path())
             .build();
 
-        let mut cmd = Command::new("cat");
-        cmd.arg(&secret);
+        let script = allowed.path().join("probe_read.py");
+        if std::fs::write(
+            &script,
+            b"import pathlib, sys\ntry:\n    pathlib.Path(sys.argv[1]).read_bytes()\n    sys.exit(0)\nexcept PermissionError:\n    sys.exit(42)\nexcept Exception:\n    sys.exit(2)\n",
+        )
+        .is_err()
+        {
+            return ProbeResult::ProbeError;
+        }
+
+        let mut cmd = Command::new("python3");
+        cmd.arg(&script)
+            .arg(&secret)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
 
         let mut child = match SandboxedCommand::new(cmd, policy).spawn() {
             Ok(child) => child,
@@ -74,13 +87,11 @@ fn probe_sandbox() -> ProbeResult {
         };
 
         match child.wait() {
-            Ok(status) => {
-                if status.success() {
-                    ProbeResult::NoOp
-                } else {
-                    ProbeResult::Supported
-                }
-            }
+            Ok(status) => match status.code() {
+                Some(42) => ProbeResult::Supported,
+                Some(0) => ProbeResult::NoOp,
+                _ => ProbeResult::ProbeError,
+            },
             Err(_) => ProbeResult::ProbeError,
         }
     })
@@ -100,7 +111,7 @@ fn skip_enforcement_tests(label: &str) -> bool {
 #[cfg(target_os = "linux")]
 mod landlock_tests {
     use super::{SandboxPolicy, SandboxedCommand, skip_enforcement_tests};
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use tempfile::TempDir;
 
     #[test]
@@ -119,7 +130,7 @@ mod landlock_tests {
             .build();
 
         let mut cmd = Command::new("cat");
-        cmd.arg(&allowed);
+        cmd.arg(&allowed).stdout(Stdio::null());
 
         let mut child = SandboxedCommand::new(cmd, policy).spawn().unwrap();
         let status = child.wait().unwrap();
@@ -143,7 +154,7 @@ mod landlock_tests {
             .build();
 
         let mut cmd = Command::new("cat");
-        cmd.arg(&secret);
+        cmd.arg(&secret).stdout(Stdio::null()).stderr(Stdio::null());
 
         let mut child = SandboxedCommand::new(cmd, policy).spawn().unwrap();
         let status = child.wait().unwrap();
@@ -244,29 +255,7 @@ mod strategy_tests {
     /// We test this by spawning a child process with check_detection binary.
     #[test]
     fn skip_env_forces_degraded() {
-        // Build the binary first.
-        std::process::Command::new("cargo")
-            .args([
-                "build",
-                "-p",
-                "linsync-sandbox",
-                "--bin",
-                "check_detection",
-                "--quiet",
-            ])
-            .status()
-            .unwrap();
-
-        // current_exe is in target/debug/deps/; check_detection is in target/debug/
-        let exe = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("check_detection");
-
-        let status = std::process::Command::new(&exe)
+        let status = std::process::Command::new(env!("CARGO_BIN_EXE_check_detection"))
             .env("LINSYNC_SANDBOX_SKIP", "1")
             .status()
             .unwrap();
@@ -286,27 +275,7 @@ mod degraded_tests {
     /// test process (which would be UB).
     #[test]
     fn skip_env_disables_sandbox() {
-        std::process::Command::new("cargo")
-            .args([
-                "build",
-                "-p",
-                "linsync-sandbox",
-                "--bin",
-                "skip_disable_check",
-                "--quiet",
-            ])
-            .status()
-            .unwrap();
-
-        let exe = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("skip_disable_check");
-
-        let status = std::process::Command::new(&exe)
+        let status = std::process::Command::new(env!("CARGO_BIN_EXE_skip_disable_check"))
             .env("LINSYNC_SANDBOX_SKIP", "1")
             .status()
             .unwrap();
