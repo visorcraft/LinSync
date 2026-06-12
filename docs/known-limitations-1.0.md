@@ -1,14 +1,14 @@
 # Known Limitations
 
 This document is the user-facing summary of what LinSync does *not* do
-in the current release (1.12.1). For the shipped feature record, see
+in the current release (1.13.0). For the shipped feature record, see
 `docs/feature-matrix.md`. Items here fall into two
 categories:
 
 1. **Currently unavailable** features that may ship in a future release.
 2. **Permanent non-goals** that LinSync will not pursue.
 
-This file is updated each release. As of 1.12.1 all roadmap phases (0–44)
+This file is updated each release. As of 1.13.0 all roadmap phases (0–44)
 are shipped. The image (frame selector), document, and webpage compare
 surfaces, the three-pane merge, the filter-grammar migrator, the plugin
 host with sandboxed helpers, sessions/projects, accessibility, localization,
