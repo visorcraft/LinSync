@@ -249,55 +249,24 @@ Controls.Pane {
             border.color: root.separatorColor
             border.width: 1
 
-            RowLayout {
+            UrlInputBar {
                 anchors.fill: parent
                 anchors.margins: 8
-                spacing: 8
-
-                AppTextField {
-                    id: leftUrlField
-                    Layout.fillWidth: true
-                    implicitHeight: 36
-                    placeholderText: qsTr("Left URL")
-                    text: root.leftUrl
-                    onTextChanged: root.leftUrl = text
-                    Accessible.name: qsTr("Left URL")
-                    color: root.activeText
-                    placeholderTextColor: root.activeDisabledText
-                    background: Rectangle {
-                        color: root.activeBg
-                        border.color: root.separatorColor
-                        border.width: 1
-                        radius: 4
-                    }
-                }
-
-                AppTextField {
-                    id: rightUrlField
-                    Layout.fillWidth: true
-                    implicitHeight: 36
-                    placeholderText: qsTr("Right URL")
-                    text: root.rightUrl
-                    onTextChanged: root.rightUrl = text
-                    Accessible.name: qsTr("Right URL")
-                    color: root.activeText
-                    placeholderTextColor: root.activeDisabledText
-                    background: Rectangle {
-                        color: root.activeBg
-                        border.color: root.separatorColor
-                        border.width: 1
-                        radius: 4
-                    }
-                }
-
-                AppButton {
-                    Layout.preferredHeight: 30
-                    text: root.busy ? qsTr("Comparing…") : qsTr("Compare…")
-                    enabled: root.leftUrl.length > 0 && root.rightUrl.length > 0 && !root.busy
-                    onClicked: confirmDialog.open()
-                    icon.name: "internet-web-browser-symbolic"
-                    Accessible.name: qsTr("Compare")
-                }
+                leftLabel: qsTr("Left URL")
+                rightLabel: qsTr("Right URL")
+                leftText: root.leftUrl
+                rightText: root.rightUrl
+                actionText: root.busy ? qsTr("Comparing…") : qsTr("Compare…")
+                actionAccessibleName: qsTr("Compare")
+                actionIcon: "internet-web-browser-symbolic"
+                actionEnabled: root.leftUrl.length > 0 && root.rightUrl.length > 0 && !root.busy
+                textColor: root.activeText
+                disabledTextColor: root.activeDisabledText
+                fieldColor: root.activeBg
+                borderColor: root.separatorColor
+                onLeftTextEdited: function (text) { root.leftUrl = text }
+                onRightTextEdited: function (text) { root.rightUrl = text }
+                onActionActivated: confirmDialog.open()
             }
         }
 
