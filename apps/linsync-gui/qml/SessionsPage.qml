@@ -164,7 +164,7 @@ Kirigami.ScrollablePage {
             Layout.topMargin: 20
             spacing: 16
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Open tabs")
                 subtitle: page.tabs.length === 0
@@ -289,7 +289,7 @@ Kirigami.ScrollablePage {
                 }
             }
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Recent comparisons")
                 subtitle: page.recentSessions.length === 0
@@ -398,7 +398,7 @@ Kirigami.ScrollablePage {
                 }
             }
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 visible: page.recentProjects.length > 0
                 title: qsTr("Recent workspaces")
@@ -447,7 +447,7 @@ Kirigami.ScrollablePage {
                 }
             }
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Recent paths")
                 subtitle: page.recentPaths.length === 0

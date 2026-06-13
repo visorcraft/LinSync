@@ -104,7 +104,7 @@ Kirigami.ScrollablePage {
             Layout.topMargin: 20
             spacing: 16
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Appearance")
                 subtitle: qsTr("Theme, fonts, and pane decoration.")
@@ -517,7 +517,7 @@ up.indicator: Rectangle {
                 }
             }
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Comparison behavior")
                 subtitle: qsTr("Defaults applied when a new comparison starts.")
@@ -817,7 +817,7 @@ up.indicator: Rectangle {
                 }
             }
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Session")
                 subtitle: qsTr("How LinSync remembers and reopens your work between launches.")
@@ -995,7 +995,7 @@ up.indicator: Rectangle {
                 }
             }
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Storage")
                 subtitle: qsTr("Configuration lives under $XDG_CONFIG_HOME/linsync/. Reset wipes only LinSync's own files.")

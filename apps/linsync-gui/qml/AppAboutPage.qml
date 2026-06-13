@@ -352,7 +352,7 @@ Kirigami.ScrollablePage {
                 }
             }
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Licenses & Credits")
                 subtitle: qsTr("Every direct + transitive crate, with version and license expression, is documented in docs/third-party-notices.md.")

@@ -524,7 +524,7 @@ Kirigami.ScrollablePage {
             Layout.topMargin: 20
             spacing: 16
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Discovery paths")
                 subtitle: qsTr("Plugin manifests use these install locations when discovery is enabled.")

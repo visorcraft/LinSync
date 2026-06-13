@@ -117,7 +117,7 @@ PR description.
 ### QML / Kirigami (GUI)
 
 - One QML file per page. Shared widgets go through
-  `apps/linsync-gui/qml/Card.qml`, `LinSyncNavItem.qml`, etc.
+  `apps/linsync-gui/qml/AppCard.qml`, `LinSyncNavItem.qml`, etc.
 - Signals must not collide with auto-generated `<property>Changed`
   names. Use suffixes like `Edited`, `Toggled`, `Activated`.
 - Kirigami theme: `Kirigami.Theme.separatorColor` does not exist. Use

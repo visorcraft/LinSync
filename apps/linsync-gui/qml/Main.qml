@@ -5958,7 +5958,7 @@ Kirigami.ApplicationWindow {
                 onOpenConfigFolderRequested: root.openConfigFolder()
             }
 
-            AboutPage {
+            AppAboutPage {
                 id: aboutPage
                 anchors.fill: parent
                 visible: root.activeSection === 5

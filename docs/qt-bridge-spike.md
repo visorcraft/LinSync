@@ -117,7 +117,7 @@ no socket and is not subject to them.
 The QML shell hosts eight sections in a single `StackLayout` driven by
 `root.activeSection` in `apps/linsync-gui/qml/Main.qml`.  Sections 0–5 sit
 in the sidebar; Credits (6) and Licenses (7) are reachable only via the
-About page's `creditsRequested()` / `licensesRequested()` signals.
+About page (`AppAboutPage`)'s `creditsRequested()` / `licensesRequested()` signals.
 
 | Section | File | Bridge usage |
 | --- | --- | --- |
@@ -130,7 +130,7 @@ About page's `creditsRequested()` / `licensesRequested()` signals.
 | Credits (6) | `CreditsPage.qml` | None; static crate manifest mirroring `docs/third-party-notices.md`. |
 | Licenses (7) | `LicensesPage.qml` | None; tabbed reader (LinSync License / Third-party / Acknowledgements) with line-filtered search and a Dialog popup of the GPL v3 text. |
 
-All eight pages share `Card.qml` and a locally-computed `separator` color
+All eight pages share `AppCard.qml` and a locally-computed `separator` color
 derived from `Kirigami.ColorUtils.tintWithAlpha` because `Kirigami.Theme`
 does not expose `separatorColor`. The next bridge work owns wiring
 Filters, Plugins, and Settings to real Rust slots so edits round-trip

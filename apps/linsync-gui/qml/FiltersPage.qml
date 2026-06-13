@@ -106,7 +106,7 @@ Kirigami.ScrollablePage {
             Layout.topMargin: 20
             spacing: 16
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Include patterns")
                 subtitle: qsTr("When filter wiring is enabled, only files matching at least one include pattern are compared.")
@@ -202,7 +202,7 @@ Kirigami.ScrollablePage {
                 }
             }
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Exclude patterns")
                 subtitle: qsTr("When filter wiring is enabled, files matching any exclude pattern are skipped.")
@@ -326,7 +326,7 @@ Kirigami.ScrollablePage {
                 }
             }
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Walk options")
 
@@ -500,7 +500,7 @@ up.indicator: Rectangle {
                 }
             }
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Saved filters")
                 subtitle: page.bridgeConnected
@@ -595,7 +595,7 @@ up.indicator: Rectangle {
                 }
             }
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Legacy .flt migration")
                 subtitle: page.bridgeConnected

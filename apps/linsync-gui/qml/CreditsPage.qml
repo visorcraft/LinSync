@@ -229,7 +229,7 @@ Kirigami.ScrollablePage {
             Layout.topMargin: 20
             spacing: 16
 
-            Card {
+            AppCard {
                 Layout.fillWidth: true
                 title: qsTr("Runtime components")
                 subtitle: qsTr("System libraries LinSync links against at execution. None are bundled — downstream packagers handle redistribution.")
