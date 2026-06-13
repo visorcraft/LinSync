@@ -489,12 +489,14 @@ pub fn document_compare_bridge_response_with_profile_and_artifacts(
 fn cache_rendered_pages(
     pages: &[linsync_core::document::RenderedPageSummary],
 ) -> (Vec<RenderedPageView>, Option<std::path::PathBuf>) {
+    use std::collections::HashSet;
     use std::os::unix::fs::PermissionsExt;
 
     let Some(cache_dir) = rendered_pages_output_dir() else {
         return (Vec::new(), None);
     };
     let mut views = Vec::with_capacity(pages.len());
+    let mut source_dirs: HashSet<std::path::PathBuf> = HashSet::new();
     for page in pages {
         let left_dest = cache_dir.join(format!("page-{}-left.png", page.page));
         let right_dest = cache_dir.join(format!("page-{}-right.png", page.page));
@@ -502,7 +504,10 @@ fn cache_rendered_pages(
             .left_path
             .as_ref()
             .filter(|p| p.exists())
-            .and_then(|p| std::fs::copy(p, &left_dest).ok())
+            .and_then(|p| {
+                source_dirs.insert(p.parent()?.to_path_buf());
+                std::fs::copy(p, &left_dest).ok()
+            })
             .map(|_| {
                 let _ =
                     std::fs::set_permissions(&left_dest, std::fs::Permissions::from_mode(0o600));
@@ -512,7 +517,10 @@ fn cache_rendered_pages(
             .right_path
             .as_ref()
             .filter(|p| p.exists())
-            .and_then(|p| std::fs::copy(p, &right_dest).ok())
+            .and_then(|p| {
+                source_dirs.insert(p.parent()?.to_path_buf());
+                std::fs::copy(p, &right_dest).ok()
+            })
             .map(|_| {
                 let _ =
                     std::fs::set_permissions(&right_dest, std::fs::Permissions::from_mode(0o600));
@@ -526,12 +534,19 @@ fn cache_rendered_pages(
             right_uri,
         });
     }
+    // The core owned these directories only because we set
+    // `retain_rendered_pages = true`; clean them up now that the pages
+    // needed by the GUI have been copied into our per-request cache.
+    for dir in source_dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
     (views, Some(cache_dir))
 }
 
-/// Build an unpredictable, per-process cache directory for rendered page PNGs.
+/// Build a safe, per-request cache directory for rendered page PNGs.
+/// Mirrors [`overlay_dir`]: verifies owner and rejects group/other bits.
 fn rendered_pages_output_dir() -> Option<std::path::PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -541,7 +556,15 @@ fn rendered_pages_output_dir() -> Option<std::path::PathBuf> {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).ok()?;
+    let meta = std::fs::symlink_metadata(&dir).ok()?;
+    let euid = unsafe { libc::geteuid() };
+    if !meta.is_dir() || meta.uid() != euid {
+        return None;
+    }
     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    if std::fs::symlink_metadata(&dir).ok()?.mode() & 0o077 != 0 {
+        return None;
+    }
     Some(dir)
 }
 

@@ -275,7 +275,9 @@ struct GuiCompareTab {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     artifacts: Vec<linsync_core::CompareArtifact>,
     /// Rendered page summaries for document compare in rendered mode.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Transient: `file://` URIs point to per-process temp cache directories
+    /// that do not survive session restore, so they must not be serialized.
+    #[serde(skip)]
     rendered_pages: Option<Vec<GuiRenderedPage>>,
     /// Options used to build this tab, so merge-copy, recompare, and window
     /// fetches can honor the same profile / per-request overrides instead of
@@ -3967,8 +3969,11 @@ fn bridge_response_with_token(
                 3,
                 "Running document extractor".to_owned(),
             );
-            let mut body =
-                linsync::document_compare_bridge_response_with_profile(query, &profile.document);
+            let (mut body, artifacts) =
+                linsync::document_compare_bridge_response_with_profile_and_artifacts(
+                    query,
+                    &profile.document,
+                );
             set_progress(
                 &progress,
                 "finalizing",
@@ -3989,6 +3994,17 @@ fn bridge_response_with_token(
                     paths,
                     state,
                 );
+                if !artifacts.is_empty()
+                    && let Ok(mut state) = state.lock()
+                {
+                    let tab_id = state.session.active_tab_id;
+                    if let Some(old) = state.rendered_page_cache_dirs.remove(&tab_id) {
+                        let _ = fs::remove_dir_all(old);
+                    }
+                    if let Some(dir) = artifacts.into_iter().next() {
+                        state.rendered_page_cache_dirs.insert(tab_id, dir);
+                    }
+                }
             }
             set_progress(&progress, "done", 3, 3, String::new());
             remove_progress_request(request_id.as_deref(), state);
@@ -4928,6 +4944,9 @@ fn compare_bridge_response(
             Ok(mut state) => {
                 let context = state.apply_compare(tab, new_tab);
                 let tab_id = context.session.active_tab_id;
+                if let Some(old) = state.archive_extract_dirs.remove(&tab_id) {
+                    let _ = fs::remove_dir_all(old);
+                }
                 if let Some(dir) = dirs.into_iter().next() {
                     state.archive_extract_dirs.insert(tab_id, dir);
                 }

@@ -126,7 +126,43 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<(), ArchiveError> {
     } else {
         return Err(ArchiveError::UnsupportedFormat(archive.to_path_buf()));
     }
+    validate_extracted_paths(dest)?;
     Ok(())
+}
+
+fn validate_extracted_paths(dest: &Path) -> Result<(), ArchiveError> {
+    let canonical_dest = fs::canonicalize(dest).map_err(|e| ArchiveError::ExtractionFailed {
+        command: "canonicalize".into(),
+        stderr: e.to_string(),
+    })?;
+    fn walk(dir: &Path, canonical_dest: &Path) -> Result<(), ArchiveError> {
+        for entry in fs::read_dir(dir).map_err(|e| ArchiveError::ExtractionFailed {
+            command: "read_dir".into(),
+            stderr: e.to_string(),
+        })? {
+            let entry = entry.map_err(|e| ArchiveError::ExtractionFailed {
+                command: "read_dir".into(),
+                stderr: e.to_string(),
+            })?;
+            let path = entry.path();
+            let canonical =
+                fs::canonicalize(&path).map_err(|e| ArchiveError::ExtractionFailed {
+                    command: "canonicalize".into(),
+                    stderr: e.to_string(),
+                })?;
+            if !canonical.starts_with(canonical_dest) {
+                return Err(ArchiveError::ExtractionFailed {
+                    command: "extract".into(),
+                    stderr: format!("path traversal detected: {}", path.display()),
+                });
+            }
+            if path.is_dir() {
+                walk(&path, canonical_dest)?;
+            }
+        }
+        Ok(())
+    }
+    walk(dest, &canonical_dest)
 }
 
 fn run_sandboxed(

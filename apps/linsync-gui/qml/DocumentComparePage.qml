@@ -524,7 +524,7 @@ Controls.Pane {
                                     spacing: 6
 
                                     Controls.Label {
-                                        text: modelData.page
+                                        text: modelData.page + 1
                                         color: root.activeText
                                         font.bold: true
                                     }
@@ -574,7 +574,7 @@ Controls.Pane {
                             Controls.Label {
                                 text: {
                                     const p = root.renderedPage(root.selectedRenderedPageIndex);
-                                    return p ? qsTr("Page %1  •  diff %2%").arg(p.page).arg(Math.round(p.diff_ratio * 100)) : "";
+                                    return p ? qsTr("Page %1  •  diff %2%").arg(p.page + 1).arg(Math.round(p.diff_ratio * 100)) : "";
                                 }
                                 color: root.activeText
                                 font.bold: true
