@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.13.0
+Version:        1.13.1
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -122,6 +122,9 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Fri Jun 12 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.13.1-1
+- Version bump to 1.13.1.
+
 * Fri Jun 12 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.13.0-1
 - Version bump to 1.13.0.
 

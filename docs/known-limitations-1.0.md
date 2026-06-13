@@ -1,14 +1,14 @@
 # Known Limitations
 
 This document is the user-facing summary of what LinSync does *not* do
-in the current release (1.13.0). For the shipped feature record, see
+in the current release (1.13.1). For the shipped feature record, see
 `docs/feature-matrix.md`. Items here fall into two
 categories:
 
 1. **Currently unavailable** features that may ship in a future release.
 2. **Permanent non-goals** that LinSync will not pursue.
 
-This file is updated each release. As of 1.13.0 all roadmap phases (0–44)
+This file is updated each release. As of 1.13.1 all roadmap phases (0–44)
 are shipped. The image (frame selector), document, and webpage compare
 surfaces, the three-pane merge, the filter-grammar migrator, the plugin
 host with sandboxed helpers, sessions/projects, accessibility, localization,
@@ -42,8 +42,9 @@ The only remaining gaps are noted below.
   are all available. Text and OCR-text modes return the extracted
   `left_text`/`right_text` to the GUI side-by-side; rendered mode (via a
   `pdf_renderer` plugin) reports per-page pixel equality with a
-  page-range field. OCR mode also returns per-word positional data
-  (`word_positions`).
+  page-range field and emits `rendered_pages` carrying `file://` URIs for
+  the left/right PNGs. The Document Compare page shows a thumbnail page
+  list and side-by-side zoom/pan image panes for the selected page.
 - A **visual word-box overlay drawn over a rendered source page** is out
   of scope: OCR word positions are returned as structured data, but
   LinSync does not paint bounding boxes onto a rendered page image.
@@ -95,6 +96,11 @@ The only remaining gaps are noted below.
   ranges (`currentConflictStart`/`End` derive from each side's `*_lines`
   array), so conflict next/previous scrolls each pane to the correct
   line.
+- **Table compare** renders as a real grid on the Compare page with
+  column headers, row numbers, per-cell state highlighting (Equal /
+  Changed / LeftOnly / RightOnly), and inline left/right values for
+  changed cells. Large tables page through `/compare/table/window` so
+  the full grid never loads at once.
 
 ## Archive compare
 
@@ -104,8 +110,12 @@ The only remaining gaps are noted below.
   folder compare on the resulting virtual folder, including nested-archive
   recursion. For archive types the built-in extractor recognizes, the
   `unzip`/`tar` subprocess now runs under `linsync-sandbox` with a policy
-  scoped to the archive and extraction directory. The same archive→virtual-
-  folder source is available from the GUI.
+  scoped to the archive and extraction directory.
+- The GUI auto-routes archive pairs to a folder view: a matching
+  folder-virtualizer plugin takes precedence; otherwise supported
+  `zip`/`tar` archives are extracted to a per-tab cache directory and
+  compared as folders. The mode selector on the Compare page includes an
+  explicit "Archive" entry.
 
 ## Packaging caveats
 

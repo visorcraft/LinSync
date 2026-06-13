@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use linsync_core::{Settings as CoreSettings, ThemePreference};
+use serde::Serialize;
 
 const RESPONSE_SCHEMA_VERSION: u32 = 1;
 
@@ -306,6 +307,16 @@ pub fn document_compare_bridge_response(query: &str) -> String {
     )
 }
 
+/// View-model for a single rendered page returned to the GUI.
+#[derive(Serialize)]
+struct RenderedPageView {
+    page: usize,
+    equal: bool,
+    diff_ratio: f64,
+    left_uri: Option<String>,
+    right_uri: Option<String>,
+}
+
 /// Resolve the effective [`DocumentCompareOptions`](linsync_core::DocumentCompareOptions)
 /// for a single `/compare/document` request.
 ///
@@ -363,17 +374,32 @@ pub fn document_compare_bridge_response_with_profile(
     query: &str,
     profile_options: &linsync_core::DocumentCompareOptions,
 ) -> String {
+    document_compare_bridge_response_with_profile_and_artifacts(query, profile_options).0
+}
+
+/// Same as [`document_compare_bridge_response_with_profile`], but also returns
+/// paths to temporary artifacts that must be cleaned up when the compare tab is
+/// closed (e.g. rendered page PNG caches).
+pub fn document_compare_bridge_response_with_profile_and_artifacts(
+    query: &str,
+    profile_options: &linsync_core::DocumentCompareOptions,
+) -> (String, Vec<std::path::PathBuf>) {
     use linsync_core::document::{DocumentCompareError, compare_document_files};
 
     let left = match image_query_param(query, "left") {
         Some(v) => std::path::PathBuf::from(v),
-        None => return error_json("missing 'left' parameter"),
+        None => return (error_json("missing 'left' parameter"), Vec::new()),
     };
     let right = match image_query_param(query, "right") {
         Some(v) => std::path::PathBuf::from(v),
-        None => return error_json("missing 'right' parameter"),
+        None => return (error_json("missing 'right' parameter"), Vec::new()),
     };
-    let opts = resolve_document_options(query, profile_options);
+    let mut opts = resolve_document_options(query, profile_options);
+    // Rendered-mode PNGs are written to a per-process temp dir. Retain them so
+    // we can copy the relevant pages into a per-request cache for the GUI.
+    if opts.mode == linsync_core::DocumentCompareMode::Rendered {
+        opts.retain_rendered_pages = true;
+    }
 
     // Locate the plugins root (same logic as the CLI helper).
     let plugins_root = detect_document_plugins_root();
@@ -381,17 +407,22 @@ pub fn document_compare_bridge_response_with_profile(
     let result = match compare_document_files(&left, &right, &plugins_root, &opts) {
         Ok(r) => r,
         Err(DocumentCompareError::NoSuitablePlugin { path, mime_hint }) => {
-            return error_json(format!(
-                "no document plugin for '{path}' (MIME: {mime_hint})"
-            ));
+            return (
+                error_json(format!(
+                    "no document plugin for '{path}' (MIME: {mime_hint})"
+                )),
+                Vec::new(),
+            );
         }
         Err(e) => {
-            return error_json(e.to_string());
+            return (error_json(e.to_string()), Vec::new());
         }
     };
 
     let text_result = result.text_result.as_ref();
-    let is_equal = text_result.map(|t| t.is_equal()).unwrap_or(false);
+    let is_equal = text_result
+        .map(|t| t.is_equal())
+        .unwrap_or_else(|| result.is_equal());
     let diff_count = text_result.map(|t| t.difference_count()).unwrap_or(0);
 
     let left_text = text_result.map(|t| {
@@ -438,7 +469,103 @@ pub fn document_compare_bridge_response_with_profile(
         json["right_word_positions"] = value;
     }
 
-    json_with_schema(json)
+    let mut artifacts = Vec::new();
+    if opts.mode == linsync_core::DocumentCompareMode::Rendered && !result.rendered_pages.is_empty()
+    {
+        let (views, cache_dir) = cache_rendered_pages(&result.rendered_pages);
+        if let Some(dir) = cache_dir {
+            artifacts.push(dir);
+        }
+        if let Ok(value) = serde_json::to_value(&views) {
+            json["rendered_pages"] = value;
+        }
+    }
+
+    (json_with_schema(json), artifacts)
+}
+
+/// Copy rendered page PNGs into an owner-only per-request cache and return view
+/// objects plus the cache directory path (for later cleanup).
+fn cache_rendered_pages(
+    pages: &[linsync_core::document::RenderedPageSummary],
+) -> (Vec<RenderedPageView>, Option<std::path::PathBuf>) {
+    use std::collections::HashSet;
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(cache_dir) = rendered_pages_output_dir() else {
+        return (Vec::new(), None);
+    };
+    let mut views = Vec::with_capacity(pages.len());
+    let mut source_dirs: HashSet<std::path::PathBuf> = HashSet::new();
+    for page in pages {
+        let left_dest = cache_dir.join(format!("page-{}-left.png", page.page));
+        let right_dest = cache_dir.join(format!("page-{}-right.png", page.page));
+        let left_uri = page
+            .left_path
+            .as_ref()
+            .filter(|p| p.exists())
+            .and_then(|p| {
+                source_dirs.insert(p.parent()?.to_path_buf());
+                std::fs::copy(p, &left_dest).ok()
+            })
+            .map(|_| {
+                let _ =
+                    std::fs::set_permissions(&left_dest, std::fs::Permissions::from_mode(0o600));
+                format!("file://{}", left_dest.display())
+            });
+        let right_uri = page
+            .right_path
+            .as_ref()
+            .filter(|p| p.exists())
+            .and_then(|p| {
+                source_dirs.insert(p.parent()?.to_path_buf());
+                std::fs::copy(p, &right_dest).ok()
+            })
+            .map(|_| {
+                let _ =
+                    std::fs::set_permissions(&right_dest, std::fs::Permissions::from_mode(0o600));
+                format!("file://{}", right_dest.display())
+            });
+        views.push(RenderedPageView {
+            page: page.page,
+            equal: page.equal,
+            diff_ratio: page.diff_ratio,
+            left_uri,
+            right_uri,
+        });
+    }
+    // The core owned these directories only because we set
+    // `retain_rendered_pages = true`; clean them up now that the pages
+    // needed by the GUI have been copied into our per-request cache.
+    for dir in source_dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    (views, Some(cache_dir))
+}
+
+/// Build a safe, per-request cache directory for rendered page PNGs.
+/// Mirrors [`overlay_dir`]: verifies owner and rejects group/other bits.
+fn rendered_pages_output_dir() -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "linsync-rendered-pages-{}-{seq}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).ok()?;
+    let meta = std::fs::symlink_metadata(&dir).ok()?;
+    let euid = unsafe { libc::geteuid() };
+    if !meta.is_dir() || meta.uid() != euid {
+        return None;
+    }
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    if std::fs::symlink_metadata(&dir).ok()?.mode() & 0o077 != 0 {
+        return None;
+    }
+    Some(dir)
 }
 
 /// Return the directory where LinSync plugins are installed.

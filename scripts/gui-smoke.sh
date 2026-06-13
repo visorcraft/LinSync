@@ -76,6 +76,7 @@ run_gui_smoke() {
 
 run_gui_smoke tests/fixtures/text/left.txt tests/fixtures/text/right.txt
 run_gui_smoke tests/fixtures/folders/left tests/fixtures/folders/right
+run_gui_smoke tests/fixtures/table/left.csv tests/fixtures/table/right.csv
 
 # Exercise the new sidebar-page bridge surfaces through the CLI so each
 # section's backend is touched even when we cannot drive QML interactions.
@@ -191,6 +192,16 @@ echo "--- Document compare GUI section smoke ---"
 grep -q "DocumentComparePage" apps/linsync-gui/qml/Main.qml \
   || { echo "DocumentComparePage not found in Main.qml" >&2; exit 1; }
 echo "document-compare GUI smoke OK"
+
+# Table compare GUI section smoke — verify TableComparePane is wired into Main.qml
+# and the table compare windowing endpoint is exercised through Rust unit tests.
+echo "--- Table compare GUI section smoke ---"
+grep -q "TableComparePane" apps/linsync-gui/qml/Main.qml \
+  || { echo "TableComparePane not found in Main.qml" >&2; exit 1; }
+cargo test -q -p linsync table_window_returns_paged_rows 2>&1 \
+  | grep -v "^$" \
+  | tail -5
+echo "table-compare GUI smoke OK"
 
 # Moved-block detection smoke — verifies detect_moves: true produces Moved
 # blocks in the compare result and that the JSON serialisation round-trips.

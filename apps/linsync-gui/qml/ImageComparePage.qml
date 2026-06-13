@@ -12,7 +12,7 @@ Controls.Pane {
     padding: 0
     background: Rectangle { color: root.activeBg }
 
-    component ImagePane: Rectangle {
+    component ImageCard: Rectangle {
         id: pane
 
         property string heading: ""
@@ -59,40 +59,21 @@ Controls.Pane {
             }
         }
 
-        Flickable {
-            id: paneFlickable
+        ImagePane {
+            id: paneImage
             anchors.top: paneHeader.bottom
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.margins: 4
-            clip: true
-            contentWidth: Math.max(width, paneImage.zoomedWidth)
-            contentHeight: Math.max(height, paneImage.zoomedHeight)
-
-            Image {
-                id: paneImage
-                property real zoomedWidth: status === Image.Ready && sourceSize.width > 0 ? sourceSize.width * root.imageZoom : paneFlickable.width
-                property real zoomedHeight: status === Image.Ready && sourceSize.height > 0 ? sourceSize.height * root.imageZoom : paneFlickable.height
-                width: zoomedWidth
-                height: zoomedHeight
-                x: Math.max(0, (paneFlickable.width - zoomedWidth) / 2)
-                y: Math.max(0, (paneFlickable.height - zoomedHeight) / 2)
-                source: pane.imageSource
-                fillMode: Image.Stretch
-                smooth: true
-                asynchronous: true
-                visible: pane.imageSource !== "" && status !== Image.Error
-                onStatusChanged: {
-                    if (status === Image.Ready)
-                        pane.sourceImageSize = Qt.size(sourceSize.width, sourceSize.height)
-                }
-            }
+            source: pane.imageSource
+            zoom: root.imageZoom
+            active: true
         }
 
         ColumnLayout {
             anchors.centerIn: parent
-            visible: pane.imageSource === "" || paneImage.status === Image.Error
+            visible: pane.imageSource === "" || paneImage.imageItem.status === Image.Error
             spacing: 12
 
             Kirigami.Icon {
@@ -107,7 +88,7 @@ Controls.Pane {
             Controls.Label {
                 Layout.alignment: Qt.AlignHCenter
                 horizontalAlignment: Text.AlignHCenter
-                text: paneImage.status === Image.Error
+                text: paneImage.imageItem.status === Image.Error
                     ? qsTr("Could not load image")
                     : pane.emptyPrimary
                 color: root.activeText
@@ -117,7 +98,7 @@ Controls.Pane {
             Controls.Label {
                 Layout.alignment: Qt.AlignHCenter
                 horizontalAlignment: Text.AlignHCenter
-                text: paneImage.status === Image.Error
+                text: paneImage.imageItem.status === Image.Error
                     ? pane.imageSource.replace(/^file:\/\//, "")
                     : pane.emptySecondary
                 color: root.activeDisabledText
@@ -126,6 +107,15 @@ Controls.Pane {
                 elide: Text.ElideMiddle
                 Layout.maximumWidth: pane.width - 24
             }
+        }
+
+        Binding {
+            target: pane
+            property: "sourceImageSize"
+            value: paneImage.imageItem.status === Image.Ready
+                ? Qt.size(paneImage.imageItem.sourceSize.width, paneImage.imageItem.sourceSize.height)
+                : Qt.size(0, 0)
+            when: paneImage.imageItem.status === Image.Ready || paneImage.imageItem.status === Image.Null
         }
     }
 
@@ -568,7 +558,7 @@ Controls.Pane {
                 spacing: 2
                 visible: !root.splitViewActive
 
-                ImagePane {
+                ImageCard {
                     id: leftImagePane
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -586,7 +576,7 @@ Controls.Pane {
                     color: root.separatorColor
                 }
 
-                ImagePane {
+                ImageCard {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     heading: qsTr("Right")
@@ -641,45 +631,29 @@ Controls.Pane {
                         }
                     }
 
-                    Flickable {
-                        id: overlayFlickable
+                    ImagePane {
+                        id: overlayPane
                         anchors.top: overlayHeader.bottom
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         anchors.margins: 4
-                        clip: true
-                        contentWidth: Math.max(width, overlayContentItem.zoomedWidth)
-                        contentHeight: Math.max(height, overlayContentItem.zoomedHeight)
+                        source: root.rightPath !== "" ? "file://" + root.rightPath : ""
+                        zoom: root.imageZoom
+                        active: true
 
-                        Item {
-                            id: overlayContentItem
-                            property real zoomedWidth: overlayBaseImg.status === Image.Ready && overlayBaseImg.sourceSize.width > 0 ? overlayBaseImg.sourceSize.width * root.imageZoom : overlayFlickable.width
-                            property real zoomedHeight: overlayBaseImg.status === Image.Ready && overlayBaseImg.sourceSize.height > 0 ? overlayBaseImg.sourceSize.height * root.imageZoom : overlayFlickable.height
-                            width: zoomedWidth
-                            height: zoomedHeight
-                            x: Math.max(0, (overlayFlickable.width - zoomedWidth) / 2)
-                            y: Math.max(0, (overlayFlickable.height - zoomedHeight) / 2)
-
-                            Image {
-                                id: overlayBaseImg
-                                anchors.fill: parent
-                                source: root.rightPath !== "" ? "file://" + root.rightPath : ""
-                                fillMode: Image.Stretch
-                                smooth: true
-                                asynchronous: true
-                                visible: root.overlayUri !== "" || root.rightPath !== ""
-                            }
-
-                            Image {
-                                anchors.fill: parent
-                                source: root.overlayUri
-                                fillMode: Image.Stretch
-                                smooth: false
-                                asynchronous: true
-                                opacity: overlayOpacity.value
-                                visible: root.overlayUri !== ""
-                            }
+                        Image {
+                            x: overlayPane.imageItem.x
+                            y: overlayPane.imageItem.y
+                            width: overlayPane.imageItem.width
+                            height: overlayPane.imageItem.height
+                            source: root.overlayUri
+                            fillMode: Image.Stretch
+                            smooth: false
+                            asynchronous: true
+                            opacity: overlayOpacity.value
+                            visible: root.overlayUri !== ""
+                            cache: false
                         }
                     }
 
@@ -724,7 +698,7 @@ Controls.Pane {
                 visible: root.splitViewActive
                 orientation: Qt.Horizontal
 
-                ImagePane {
+                ImageCard {
                     id: splitLeftPane
                     Controls.SplitView.fillWidth: true
                     Controls.SplitView.minimumWidth: 120
@@ -736,7 +710,7 @@ Controls.Pane {
                     emptySecondary: qsTr("Pick a file in the toolbar above to compare.")
                 }
 
-                ImagePane {
+                ImageCard {
                     id: splitRightPane
                     Controls.SplitView.fillWidth: true
                     Controls.SplitView.minimumWidth: 120

@@ -7,7 +7,7 @@
 set -euo pipefail
 
 SIZES=("1600x900:desktop" "412x915:mobile")
-SECTIONS=("compare" "sessions" "filters" "plugins" "settings" "about" "merge" "image" "webpage" "document")
+SECTIONS=("compare" "sessions" "filters" "plugins" "settings" "about" "merge" "image" "webpage" "document" "table")
 OUT="target/screenshots"
 LINSYNC_BIN="${LINSYNC_BIN:-target/release/linsync}"
 STARTUP_SLEEP="${STARTUP_SLEEP:-5}"
@@ -42,13 +42,19 @@ for spec in "${SIZES[@]}"; do
     sleep 1
 
     for section in "${SECTIONS[@]}"; do
+        extra_args=()
+        startup_section="$section"
+        if [[ "$section" == "table" ]]; then
+            startup_section="compare"
+            extra_args=("$(pwd)/tests/fixtures/table/left.csv" "$(pwd)/tests/fixtures/table/right.csv")
+        fi
         echo "Capturing ${tag}-${section} at ${geo} ..."
         DISPLAY=":${DISPLAY_NUM}" \
         QT_QPA_PLATFORM=xcb \
         QT_QPA_PLATFORM_PLUGIN_PATH="" \
-            LINSYNC_STARTUP_SECTION="$section" \
+            LINSYNC_STARTUP_SECTION="$startup_section" \
             LINSYNC_QML_ROOT="${LINSYNC_QML_ROOT:-$(pwd)/apps/linsync-gui/qml}" \
-            "$LINSYNC_BIN" &
+            "$LINSYNC_BIN" "${extra_args[@]}" &
         APP_PID=$!
         sleep "$STARTUP_SLEEP"
 
