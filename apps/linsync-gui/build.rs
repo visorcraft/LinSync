@@ -3,6 +3,8 @@ fn main() {
     use cxx_qt_build::{CxxQtBuilder, QmlModule};
     use qt_build_utils::{QResource, QResourceFile, QResources};
 
+    println!("cargo:rerun-if-changed=src/icon_theme.cpp");
+
     let mut module = QmlModule::new("com.visorcraft.LinSync");
     let mut rust_sources = Vec::new();
 
@@ -41,6 +43,7 @@ fn main() {
     builder = unsafe {
         builder.cc_builder(|cc| {
             cc.include(concat!(env!("CARGO_MANIFEST_DIR"), "/cpp"));
+            cc.file("src/icon_theme.cpp");
         })
     };
     builder

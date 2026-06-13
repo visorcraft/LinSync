@@ -65,6 +65,29 @@ for size in 16 22 24 32 36 48 64 72 96 128 192 256 512; do
         "${appdir}/usr/share/icons/hicolor/${size}x${size}/apps/com.visorcraft.LinSync.png"
 done
 
+# Bundle the Breeze icon theme and the Qt SVG icon-engine plugin so
+# Kirigami symbolic icons resolve inside the AppImage sandbox. The in-process
+# host sets the theme name and prepends AppDir/usr/share/icons at runtime.
+for theme in breeze breeze-dark; do
+    if [ -d "/usr/share/icons/${theme}" ]; then
+        cp -R "/usr/share/icons/${theme}" "${appdir}/usr/share/icons/"
+    fi
+done
+for plugin_path in \
+    /usr/lib/qt6/plugins \
+    /usr/lib/x86_64-linux-gnu/qt6/plugins \
+    /usr/lib64/qt6/plugins
+do
+    if [ -f "${plugin_path}/iconengines/libqsvgicon.so" ]; then
+        install -Dm755 "${plugin_path}/iconengines/libqsvgicon.so" \
+            "${appdir}/usr/plugins/iconengines/libqsvgicon.so"
+    fi
+    if [ -f "${plugin_path}/imageformats/libqsvg.so" ]; then
+        install -Dm755 "${plugin_path}/imageformats/libqsvg.so" \
+            "${appdir}/usr/plugins/imageformats/libqsvg.so"
+    fi
+done
+
 # AppRun shim — lives outside the AppDir so linuxdeploy's
 # --custom-apprun copy has distinct source / destination paths.
 apprun_src="${root}/target/appimage/AppRun"

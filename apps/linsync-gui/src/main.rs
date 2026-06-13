@@ -42,6 +42,8 @@ const GUI_TABS_SNAPSHOT_KEY: &str = "gui_tabs_snapshot";
 mod cxxqt_session;
 #[cfg(feature = "cxxqt-smoke")]
 mod cxxqt_smoke;
+#[cfg(feature = "cxxqt-app")]
+mod icon_theme;
 
 fn main() -> ExitCode {
     let paths = linsync_core::AppPaths::from_env();
@@ -7810,6 +7812,10 @@ fn run_cxxqt_host(
             tracing::info!(dir = %i18n_dir.display(), "installed UI translation catalog");
         }
     }
+
+    // AppImage builds bundle Breeze but cannot rely on the host's icon theme
+    // search paths, so point Qt at the bundled AppDir/share/icons tree.
+    icon_theme::set_icon_theme("breeze");
 
     let mut engine = QQmlApplicationEngine::new();
     engine
