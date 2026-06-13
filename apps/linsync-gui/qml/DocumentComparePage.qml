@@ -49,6 +49,13 @@ Controls.Pane {
     property string progressMessage: ""
     property int selectedRenderedPageIndex: -1
     readonly property bool isRenderedMode: modeCombo.currentText === "Rendered"
+    property real renderedZoom: 1.0
+    function renderedPage(index) {
+        if (!root.lastResult || !Array.isArray(root.lastResult.rendered_pages))
+            return null;
+        const idx = (index < 0 || index >= root.lastResult.rendered_pages.length) ? 0 : index;
+        return root.lastResult.rendered_pages[idx];
+    }
 
     property var documentNameFilters: [
         qsTr("Documents (*.pdf *.odt *.docx *.txt *.rtf)"),
@@ -447,14 +454,6 @@ Controls.Pane {
         }
 
         // ── Rendered-page navigator (Rendered mode only) ──────────────────────
-        property real renderedZoom: 1.0
-        function renderedPage(index) {
-            if (!root.lastResult || !Array.isArray(root.lastResult.rendered_pages))
-                return null;
-            const idx = (index < 0 || index >= root.lastResult.rendered_pages.length) ? 0 : index;
-            return root.lastResult.rendered_pages[idx];
-        }
-
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true

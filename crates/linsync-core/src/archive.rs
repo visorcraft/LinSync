@@ -56,11 +56,16 @@ pub fn is_builtin_archive_format(path: &Path) -> bool {
 
 /// Compare two archives by extracting both to caller-supplied directories and
 /// running the folder compare engine over the extracted trees.
-pub fn compare_builtin_archives_with_dirs<P: AsRef<Path>, Q: AsRef<Path>>(
+pub fn compare_builtin_archives_with_dirs<
+    P: AsRef<Path>,
+    Q: AsRef<Path>,
+    LD: AsRef<Path>,
+    RD: AsRef<Path>,
+>(
     left: P,
-    right: P,
-    left_dir: Q,
-    right_dir: Q,
+    right: Q,
+    left_dir: LD,
+    right_dir: RD,
     options: &FolderCompareOptions,
 ) -> Result<FolderCompareResult, ArchiveError> {
     let left = left.as_ref();
