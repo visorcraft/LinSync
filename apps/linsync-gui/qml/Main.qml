@@ -83,7 +83,7 @@ Kirigami.ApplicationWindow {
     property bool validationCompatible: false
     property string validationMessage: ""
     property string validationPathKind: ""
-    property string appVersion: "1.13.0"
+    property string appVersion: "1.13.1"
     property int bridgeModelRevision: 0
     property bool canUndo: false
     property bool canRedo: false
