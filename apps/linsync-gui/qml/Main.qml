@@ -37,7 +37,6 @@ Kirigami.ApplicationWindow {
     property var tabItems: []
     property var leftRows: makeBlankRows()
     property var rightRows: makeBlankRows()
-    property var sessionBridge: null
     property var sessionState: ({})
     property int activeTabId: 0
     property bool syncingScroll: false
@@ -991,57 +990,6 @@ Kirigami.ApplicationWindow {
     }
 
 
-    function hasSessionBridge() {
-        return root.sessionBridge !== null && root.sessionBridge !== undefined
-    }
-
-    function sessionBridgeMemberName(name) {
-        return name.replace(/([A-Z])/g, "_$1").toLowerCase()
-    }
-
-    function sessionBridgeCall(name, args) {
-        if (!hasSessionBridge())
-            return ""
-
-        const snakeName = sessionBridgeMemberName(name)
-        let method = root.sessionBridge[name]
-        if (typeof method !== "function")
-            method = root.sessionBridge[snakeName]
-        if (typeof method !== "function")
-            return ""
-        return method.apply(root.sessionBridge, args || [])
-    }
-
-    function sessionBridgeProperty(name) {
-        if (!hasSessionBridge())
-            return undefined
-
-        const value = root.sessionBridge[name]
-        if (value !== undefined && value !== null)
-            return value
-
-        const snakeValue = root.sessionBridge[sessionBridgeMemberName(name)]
-        if (snakeValue !== undefined && snakeValue !== null)
-            return snakeValue
-        return undefined
-    }
-
-    function sessionBridgeError(fallback) {
-        const error = sessionBridgeProperty("lastError")
-        if (error && error !== "")
-            return error
-        return fallback
-    }
-
-    function sessionBridgeValue(name, fallback, preferBridge) {
-        if (preferBridge && hasSessionBridge()) {
-            const value = sessionBridgeProperty(name)
-            if (value !== undefined && value !== null)
-                return value
-        }
-        return fallback
-    }
-
     function defaultUiSettings() {
         return {
             "themePreference": 0,
@@ -1122,12 +1070,6 @@ Kirigami.ApplicationWindow {
     }
 
     function loadUiSettings() {
-        if (hasSessionBridge()) {
-            const json = sessionBridgeCall("loadSettings")
-            if (json && json !== "")
-                applyUiSettings(JSON.parse(json))
-            return
-        }
         if (root.bridgeUrl === "") {
             applyUiSettings(defaultUiSettings())
             return
@@ -1149,10 +1091,6 @@ Kirigami.ApplicationWindow {
     function persistUiSetting(key, value) {
         if (!root._settingsReady)
             return
-        if (hasSessionBridge()) {
-            sessionBridgeCall("saveSetting", [key, String(value)])
-            return
-        }
         if (root.bridgeUrl === "")
             return
 
@@ -1169,7 +1107,7 @@ Kirigami.ApplicationWindow {
     }
 
     function bridgeAvailable() {
-        return hasSessionBridge() || root.bridgeUrl !== ""
+        return root.bridgeUrl !== ""
     }
 
     function bridgeGet(path, onJson) {
@@ -1199,13 +1137,6 @@ Kirigami.ApplicationWindow {
     }
 
     function reopenRecentSession(index) {
-        if (hasSessionBridge()) {
-            // Bridge JS path: ask the in-process bridge to load recent and reopen
-            const json = sessionBridgeCall("reopenRecentSession", [index])
-            if (json && json !== "")
-                applySessionContextJson(json)
-            return
-        }
         bridgeGet("/sessions/reopen?index=" + encodeURIComponent(index), function (ok, payload) {
             if (ok && payload) {
                 applyLaunchContext(payload, false)
@@ -1482,12 +1413,6 @@ Kirigami.ApplicationWindow {
     }
 
     function resetUiSettings() {
-        if (hasSessionBridge()) {
-            const json = sessionBridgeCall("resetSettings")
-            if (json && json !== "")
-                applyUiSettings(JSON.parse(json))
-            return
-        }
         if (root.bridgeUrl === "") {
             applyUiSettings(defaultUiSettings())
             return
@@ -1507,20 +1432,7 @@ Kirigami.ApplicationWindow {
     }
 
     function summaryItemsFromBridge(fallback, preferBridge) {
-        if (!preferBridge || !hasSessionBridge())
-            return fallback
-
-        const count = sessionBridgeCall("summaryCount")
-        if (count <= 0)
-            return fallback
-
-        const items = []
-        for (let index = 0; index < count; index++)
-            items.push({
-                "label": sessionBridgeCall("summaryLabelAt", [index]),
-                "value": sessionBridgeCall("summaryValueAt", [index])
-            })
-        return items
+        return fallback
     }
 
     function recentPathsFromBridge(fallback, preferBridge) {
@@ -1531,14 +1443,6 @@ Kirigami.ApplicationWindow {
             return []
 
         let items = fallback
-        if (preferBridge && hasSessionBridge()) {
-            const count = sessionBridgeCall("recentPathCount")
-            if (count > 0) {
-                items = []
-                for (let index = 0; index < count; index++)
-                    items.push(sessionBridgeCall("recentPathAt", [index]))
-            }
-        }
         // Apply the user's maxRecentPaths cap (lower bound 1) so the
         // Sessions page and the bridge persistence stay in sync.
         const cap = Math.max(1, root.maxRecentPaths)
@@ -1566,30 +1470,12 @@ Kirigami.ApplicationWindow {
     }
 
     function tabItemsFromBridge(fallback, preferBridge) {
-        if (!preferBridge || !hasSessionBridge())
-            return fallback
-
-        const count = sessionBridgeValue("tabCount", fallback.length, true)
-        if (count <= 0)
-            return fallback
-
-        const items = []
-        for (let index = 0; index < count; index++) {
-            const id = sessionBridgeCall("tabIdAt", [index])
-            items.push({
-                "id": id,
-                "title": sessionBridgeCall("tabTitleAt", [index]) || "Compare",
-                "dirty": sessionBridgeCall("tabDirtyAt", [index]),
-                "can_undo": sessionBridgeCall("tabCanUndoAt", [index]),
-                "can_redo": sessionBridgeCall("tabCanRedoAt", [index])
-            })
-        }
-        return items
+        return fallback
     }
 
     function applySessionContextJson(contextJson) {
         if (!contextJson || contextJson === "") {
-            root.statusText = sessionBridgeError("Session bridge returned no state")
+            root.statusText = "Session bridge returned no state"
             return
         }
 
@@ -1618,7 +1504,7 @@ Kirigami.ApplicationWindow {
         root.sessionState = Object.assign({}, session, { "recent_paths": recentPaths })
         root.tabItems = tabItemsFromBridge(tabItemsFromSession(root.sessionState.tabs), preferBridge)
         const activeTab = activeSessionTab(context)
-        root.activeTabId = sessionBridgeValue("activeTabId", activeTab.id || 0, preferBridge)
+        root.activeTabId = activeTab.id || 0
         applySessionTab(activeTab, preferBridge)
         // Honour startup_section forwarded by the Rust binary (sourced from
         // LINSYNC_STARTUP_SECTION). Used by the screenshot capture pipeline.
@@ -1648,12 +1534,12 @@ Kirigami.ApplicationWindow {
         if (!tab)
             return
 
-        root.activeTabId = sessionBridgeValue("activeTabId", tab.id || 0, preferBridge)
-        root.leftPath = sessionBridgeValue("leftPath", tab.left_path || "", preferBridge)
-        root.rightPath = sessionBridgeValue("rightPath", tab.right_path || "", preferBridge)
-        root.basePath = sessionBridgeValue("basePath", tab.base_path || "", preferBridge)
-        root.compareMode = sessionBridgeValue("compareMode", tab.mode || "Text", preferBridge)
-        root.statusText = sessionBridgeValue("status", tab.status || "Ready", preferBridge)
+        root.activeTabId = tab.id || 0
+        root.leftPath = tab.left_path || ""
+        root.rightPath = tab.right_path || ""
+        root.basePath = tab.base_path || ""
+        root.compareMode = tab.mode || "Text"
+        root.statusText = tab.status || "Ready"
         root.summaryItems = summaryItemsFromBridge(tab.summary || [], preferBridge)
         const fallbackLeftRows = tab.left_rows && tab.left_rows.length > 0 ? tab.left_rows : makeBlankRows()
         const fallbackRightRows = tab.right_rows && tab.right_rows.length > 0 ? tab.right_rows : makeBlankRows()
@@ -1681,20 +1567,18 @@ Kirigami.ApplicationWindow {
         // Render the embedded page directly (no re-query — the first page is
         // already here); sort/filter/search/scroll re-query when windowed.
         root.rebuildFolderView()
-        if (preferBridge && hasSessionBridge())
-            root.bridgeModelRevision += 1
         const validation = tab.validation || {}
-        root.validationCompatible = sessionBridgeValue("validationCompatible", validation.compatible || false, preferBridge)
-        root.validationMessage = sessionBridgeValue("validationMessage", validation.message || "", preferBridge)
-        root.validationPathKind = sessionBridgeValue("validationPathKind", validation.path_kind || "", preferBridge)
-        const count = sessionBridgeValue("differenceCount", tab.difference_count || 0, preferBridge)
+        root.validationCompatible = validation.compatible || false
+        root.validationMessage = validation.message || ""
+        root.validationPathKind = validation.path_kind || ""
+        const count = tab.difference_count || 0
         setDifferenceCount(count)
         const modeIndex = modeSelector.model.indexOf(root.compareMode)
         modeSelector.currentIndex = modeIndex >= 0 ? modeIndex : 0
-        root.leftDirty = sessionBridgeValue("leftDirty", tab.left_dirty || false, preferBridge)
-        root.rightDirty = sessionBridgeValue("rightDirty", tab.right_dirty || false, preferBridge)
-        root.canUndo = sessionBridgeValue("canUndo", tab.can_undo || false, preferBridge)
-        root.canRedo = sessionBridgeValue("canRedo", tab.can_redo || false, preferBridge)
+        root.leftDirty = tab.left_dirty || false
+        root.rightDirty = tab.right_dirty || false
+        root.canUndo = tab.can_undo || false
+        root.canRedo = tab.can_redo || false
         rebuildDiffRows()
         rebuildSearchRows()
         rebuildBookmarkRows()
@@ -1715,11 +1599,6 @@ Kirigami.ApplicationWindow {
     function activateSessionTab(tabId) {
         if (tabId === root.activeTabId)
             return
-
-        if (hasSessionBridge()) {
-            applySessionContextJson(sessionBridgeCall("activateTab", [tabId]))
-            return
-        }
 
         if (root.bridgeUrl !== "") {
             const request = new XMLHttpRequest()
@@ -1806,11 +1685,6 @@ Kirigami.ApplicationWindow {
         if (root.archiveEditInProgress && root.archiveEditTabId === tabId)
             root.discardArchiveMemberEdit()
 
-        if (hasSessionBridge()) {
-            applySessionContextJson(sessionBridgeCall("closeTab", [tabId]))
-            return
-        }
-
         if (root.bridgeUrl === "") {
             closeLocalTab(tabId)
             return
@@ -1839,18 +1713,6 @@ Kirigami.ApplicationWindow {
 
         if (!root.leftDirty && !root.rightDirty) {
             performCloseTab(tabId)
-            return
-        }
-
-        if (hasSessionBridge()) {
-            root.statusText = "Saving"
-            const contextJson = sessionBridgeCall("saveSide", ["dirty"])
-            if (contextJson && contextJson !== "") {
-                applySessionContextJson(contextJson)
-                performCloseTab(tabId)
-            } else {
-                root.statusText = sessionBridgeError("Save failed")
-            }
             return
         }
 
@@ -1888,12 +1750,6 @@ Kirigami.ApplicationWindow {
             return
         }
 
-        if (hasSessionBridge()) {
-            root.statusText = "Saving"
-            applySessionContextJson(sessionBridgeCall("saveSide", ["dirty"]))
-            return
-        }
-
         if (root.bridgeUrl !== "") {
             root.statusText = "Saving"
             const request = new XMLHttpRequest()
@@ -1921,12 +1777,6 @@ Kirigami.ApplicationWindow {
             return
         }
 
-        if (hasSessionBridge()) {
-            root.statusText = "Undoing"
-            applySessionContextJson(sessionBridgeCall("undo"))
-            return
-        }
-
         if (root.bridgeUrl !== "") {
             root.statusText = "Undoing"
             const request = new XMLHttpRequest()
@@ -1951,12 +1801,6 @@ Kirigami.ApplicationWindow {
     function redoLastMergeAction() {
         if (!root.canRedo) {
             root.statusText = "Nothing to redo"
-            return
-        }
-
-        if (hasSessionBridge()) {
-            root.statusText = "Redoing"
-            applySessionContextJson(sessionBridgeCall("redo"))
             return
         }
 
@@ -2272,12 +2116,6 @@ Kirigami.ApplicationWindow {
         if (root.compareMode === "Webpage") {
             root.activeSection = 10
             webpageComparePage.startFromMain(root.leftPath, root.rightPath, newTab)
-            return
-        }
-
-        if (hasSessionBridge()) {
-            root.statusText = "Comparing"
-            applySessionContextJson(sessionBridgeCall("comparePaths", [root.leftPath, root.rightPath, root.compareMode, newTab]))
             return
         }
 
@@ -2660,12 +2498,6 @@ Kirigami.ApplicationWindow {
         if (root.currentDiffRow < 0)
             return
 
-        if (hasSessionBridge()) {
-            root.statusText = "Applying copy"
-            applySessionContextJson(sessionBridgeCall("copyCurrentRow", [root.currentDiffRow, direction]))
-            return
-        }
-
         if (root.bridgeUrl !== "") {
             root.statusText = "Applying copy"
             const request = new XMLHttpRequest()
@@ -2726,12 +2558,6 @@ Kirigami.ApplicationWindow {
     function copyAllDifferences(direction) {
         if (root.diffRowIndexes.length === 0)
             return
-
-        if (hasSessionBridge()) {
-            root.statusText = "Applying copy"
-            applySessionContextJson(sessionBridgeCall("copyAll", [direction]))
-            return
-        }
 
         if (root.bridgeUrl !== "") {
             root.statusText = "Applying copy"
@@ -3642,7 +3468,7 @@ Kirigami.ApplicationWindow {
                 icon.name: "document-save"
                 icon.color: root.activeText
                 text: "Save"
-                enabled: root.hasSessionBridge() || root.bridgeUrl !== ""
+                enabled: root.bridgeUrl !== ""
                 onClicked: {
                     closeDirtyDialog.close()
                     root.saveDirtySidesThenClose()
@@ -5438,7 +5264,7 @@ Kirigami.ApplicationWindow {
                     accentColor: root.activeNeutralText
                     pathText: root.leftPath
                     rows: root.compareMode === "Folder" ? [] : root.leftRows
-                    useBridgeModel: root.hasSessionBridge()
+                    useBridgeModel: false
                     modelRevision: root.bridgeModelRevision
                     editMode: root.editLeftMode
                 }
@@ -5453,7 +5279,7 @@ Kirigami.ApplicationWindow {
                     accentColor: root.activePositiveText
                     pathText: root.rightPath
                     rows: root.compareMode === "Folder" ? [] : root.rightRows
-                    useBridgeModel: root.hasSessionBridge()
+                    useBridgeModel: false
                     modelRevision: root.bridgeModelRevision
                     editMode: root.editRightMode
                 }
@@ -5642,7 +5468,7 @@ Kirigami.ApplicationWindow {
                     }
                     Controls.Label { text: root.compareMode; color: root.activeText }
                     Controls.Label {
-                        text: "Tabs: " + sessionBridgeValue("tabCount", root.sessionState.tabs ? root.sessionState.tabs.length : 0, hasSessionBridge())
+                        text: "Tabs: " + (root.sessionState.tabs ? root.sessionState.tabs.length : 0)
                         color: root.activeText
                     }
                     Controls.Label {

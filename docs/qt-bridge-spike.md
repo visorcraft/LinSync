@@ -61,13 +61,10 @@ that `cxx-qt` cannot address cleanly.
 - Host: the `linsync` binary constructs `QGuiApplication` and
   `QQmlApplicationEngine`, initializes the `com.visorcraft.LinSync` QML module,
   and loads the existing `Main.qml` component through the Qt resource system.
-- Bridge object: `LinSyncSessionBridge` is a `cxx-qt` QObject with typed
-  active-tab/session scalar properties, typed active validation properties,
-  indexed typed summary/recent-path accessors, indexed typed tab metadata
-  accessors, an active row-pair `QAbstractListModel` role surface, and
-  invokable session, selected-mode compare, activate-tab, tab-close, copy, undo,
-  redo, and save methods. QML uses this object instead of the local HTTP bridge
-  whenever the object is present.
+- Bridge object: both the in-process cxx-qt host and the external `qml6`
+  host drive the UI over the same local HTTP/JSON bridge. An in-process
+  `LinSyncSessionBridge` QObject transport was removed as dead code (it was
+  never registered with the QML engine).
 - Fallback: the default build still launches QML through `qml6`/`qml` and uses
   the local HTTP/JSON bridge. A `cxxqt-app` build can force that route with
   `LINSYNC_QML_HOST=external`.

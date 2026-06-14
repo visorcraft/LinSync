@@ -62,6 +62,14 @@ deny:
 audit:
     cargo audit
 
+# Generate an HTML + terminal coverage report (requires `cargo install
+# cargo-llvm-cov` and the `llvm-tools-preview` rustup component). Opens
+# target/llvm-cov/html/index.html. Sandbox tests are skipped (same
+# rationale as `just test`) so the report is reproducible off-host.
+coverage:
+    LINSYNC_SANDBOX_SKIP=1 cargo llvm-cov --workspace --html --output-dir target/llvm-cov
+    @echo "coverage report at target/llvm-cov/html/index.html"
+
 # Regenerate (or print) the authoritative third-party crate/license table for
 # the shipped feature set (cxxqt + cxxqt-app + web-engine on the Linux target,
 # build deps included, dev deps excluded). The single generator

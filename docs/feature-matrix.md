@@ -71,7 +71,7 @@ not manual QA. "Docs" refers to `docs/user-guide.md`,
 | Sessions | `SessionsPage.qml` | `/session`, `/sessions/recent`, `/sessions/reopen`, `/sessions/delete`, `/sessions/rename` | complete |
 | Filters | `FiltersPage.qml` | `/filters/*`, `/walk`, `/walk/set` | complete |
 | Plugins | `PluginsPage.qml` | `/plugins/*` | complete |
-| Settings | `SettingsPage.qml` | `/settings*` and `LinSyncSessionBridge` settings methods | complete |
+| Settings | `SettingsPage.qml` | `/settings*` | complete |
 | About | `AboutPage.qml` | static, deep-links to Credits / Licenses | complete |
 | Credits | `CreditsPage.qml` | static (`docs/third-party-notices.md` mirror) | complete |
 | Licenses | `LicensesPage.qml` | static (full-text reader) | complete |

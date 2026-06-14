@@ -56,8 +56,8 @@ What it covers today:
 - Text, folder, binary (hex), and CSV/TSV table compare.
 - Image compare (exact, tolerance, perceptual / CIEDE2000).
 - Document compare (PDF / DOCX / ODT) through plugin extractors
-  (Tesseract OCR, Poppler, LibreOffice). Rendered-page compare is
-  pending.
+  (Tesseract OCR, Poppler, LibreOffice): text, OCR-text, and rendered
+  (per-page image diff) modes.
 - Webpage source HTML, extracted text, and resource-tree compare via
   the `webpage` CLI subcommand. Rendered DOM diff and screenshot diff
   are gated behind the `web-engine` Cargo feature and currently return
@@ -200,6 +200,7 @@ Quick rules of thumb:
 
 ## Documentation
 
+- [Changelog](CHANGELOG.md)
 - [User guide](docs/user-guide.md)
 - [Known limitations for 1.0](docs/known-limitations-1.0.md)
 - [Engine decisions](docs/engine-decisions.md)
