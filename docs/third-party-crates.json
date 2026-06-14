@@ -195,6 +195,11 @@
     "license": "BSD-3-Clause"
   },
   {
+    "name": "fastrand",
+    "version": "2.4.1",
+    "license": "Apache-2.0 OR MIT"
+  },
+  {
     "name": "fax",
     "version": "0.2.7",
     "license": "MIT"
@@ -228,6 +233,11 @@
     "name": "generic-array",
     "version": "0.14.7",
     "license": "MIT"
+  },
+  {
+    "name": "getrandom",
+    "version": "0.3.4",
+    "license": "MIT OR Apache-2.0"
   },
   {
     "name": "gif",
@@ -303,6 +313,11 @@
     "name": "link-cplusplus",
     "version": "1.0.12",
     "license": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "linux-raw-sys",
+    "version": "0.12.1",
+    "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
   },
   {
     "name": "log",
@@ -405,6 +420,11 @@
     "license": "MIT OR Apache-2.0"
   },
   {
+    "name": "rustix",
+    "version": "1.1.4",
+    "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+  },
+  {
     "name": "rustversion",
     "version": "1.0.22",
     "license": "MIT OR Apache-2.0"
@@ -488,6 +508,11 @@
     "name": "syntect",
     "version": "5.3.0",
     "license": "MIT"
+  },
+  {
+    "name": "tempfile",
+    "version": "3.27.0",
+    "license": "MIT OR Apache-2.0"
   },
   {
     "name": "termcolor",

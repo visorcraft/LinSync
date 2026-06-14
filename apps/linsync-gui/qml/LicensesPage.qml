@@ -67,8 +67,8 @@ Kirigami.Page {
         "after any dependency change.\n" +
         "\n" +
         // BEGIN GENERATED CREDITS COUNTS (do not edit inside; run `just credits-update`)
-        " - MIT License                  (115 crates)\n" +
-        " - Apache License 2.0           (7 crates)\n" +
+        " - MIT License                  (118 crates)\n" +
+        " - Apache License 2.0           (9 crates)\n" +
         " - BSD 3-Clause                 (2 crates)\n" +
         " - BSD 2-Clause                 (1 crate)\n" +
         " - Zlib                         (1 crate)\n" +
@@ -120,6 +120,7 @@ Kirigami.Page {
         "| enumflags2_derive    | 0.7.12   | MIT OR Apache-2.0 |\n" +
         "| equivalent           | 1.0.2    | Apache-2.0 OR MIT |\n" +
         "| exr                  | 1.74.0   | BSD-3-Clause |\n" +
+        "| fastrand             | 2.4.1    | Apache-2.0 OR MIT |\n" +
         "| fax                  | 0.2.7    | MIT |\n" +
         "| fdeflate             | 0.3.7    | MIT OR Apache-2.0 |\n" +
         "| find-msvc-tools      | 0.1.9    | MIT OR Apache-2.0 |\n" +
@@ -127,6 +128,7 @@ Kirigami.Page {
         "| fnv                  | 1.0.7    | Apache-2.0 / MIT |\n" +
         "| foldhash             | 0.2.0    | Zlib |\n" +
         "| generic-array        | 0.14.7   | MIT |\n" +
+        "| getrandom            | 0.3.4    | MIT OR Apache-2.0 |\n" +
         "| gif                  | 0.14.2   | MIT OR Apache-2.0 |\n" +
         "| half                 | 2.7.1    | MIT OR Apache-2.0 |\n" +
         "| hashbrown            | 0.17.1   | MIT OR Apache-2.0 |\n" +
@@ -142,6 +144,7 @@ Kirigami.Page {
         "| lebe                 | 0.5.3    | BSD-3-Clause |\n" +
         "| libc                 | 0.2.186  | MIT OR Apache-2.0 |\n" +
         "| link-cplusplus       | 1.0.12   | MIT OR Apache-2.0 |\n" +
+        "| linux-raw-sys        | 0.12.1   | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |\n" +
         "| log                  | 0.4.29   | MIT OR Apache-2.0 |\n" +
         "| memchr               | 2.8.0    | Unlicense OR MIT |\n" +
         "| miniz_oxide          | 0.8.9    | MIT OR Zlib OR Apache-2.0 |\n" +
@@ -162,6 +165,7 @@ Kirigami.Page {
         "| regex                | 1.12.3   | MIT OR Apache-2.0 |\n" +
         "| regex-automata       | 0.4.14   | MIT OR Apache-2.0 |\n" +
         "| regex-syntax         | 0.8.10   | MIT OR Apache-2.0 |\n" +
+        "| rustix               | 1.1.4    | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |\n" +
         "| rustversion          | 1.0.22   | MIT OR Apache-2.0 |\n" +
         "| same-file            | 1.0.6    | Unlicense/MIT |\n" +
         "| seccompiler          | 0.4.0    | Apache-2.0 OR BSD-3-Clause |\n" +
@@ -179,6 +183,7 @@ Kirigami.Page {
         "| static_assertions    | 1.1.0    | MIT OR Apache-2.0 |\n" +
         "| syn                  | 2.0.117  | MIT OR Apache-2.0 |\n" +
         "| syntect              | 5.3.0    | MIT |\n" +
+        "| tempfile             | 3.27.0   | MIT OR Apache-2.0 |\n" +
         "| termcolor            | 1.4.1    | Unlicense OR MIT |\n" +
         "| thiserror            | 1.0.69   | MIT OR Apache-2.0 |\n" +
         "| thiserror            | 2.0.18   | MIT OR Apache-2.0 |\n" +

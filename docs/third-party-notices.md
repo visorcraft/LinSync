@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Last regenerated: 2026-06-10
+Last regenerated: 2026-06-14
 
 This notice file covers the current LinSync source tree and Cargo dependency
 set. It must be regenerated or reviewed before every public binary release.
@@ -73,6 +73,7 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `enumflags2_derive` | 0.7.12 | MIT OR Apache-2.0 |
 | `equivalent` | 1.0.2 | Apache-2.0 OR MIT |
 | `exr` | 1.74.0 | BSD-3-Clause |
+| `fastrand` | 2.4.1 | Apache-2.0 OR MIT |
 | `fax` | 0.2.7 | MIT |
 | `fdeflate` | 0.3.7 | MIT OR Apache-2.0 |
 | `find-msvc-tools` | 0.1.9 | MIT OR Apache-2.0 |
@@ -80,6 +81,7 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `fnv` | 1.0.7 | Apache-2.0 / MIT |
 | `foldhash` | 0.2.0 | Zlib |
 | `generic-array` | 0.14.7 | MIT |
+| `getrandom` | 0.3.4 | MIT OR Apache-2.0 |
 | `gif` | 0.14.2 | MIT OR Apache-2.0 |
 | `half` | 2.7.1 | MIT OR Apache-2.0 |
 | `hashbrown` | 0.17.1 | MIT OR Apache-2.0 |
@@ -95,6 +97,7 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `lebe` | 0.5.3 | BSD-3-Clause |
 | `libc` | 0.2.186 | MIT OR Apache-2.0 |
 | `link-cplusplus` | 1.0.12 | MIT OR Apache-2.0 |
+| `linux-raw-sys` | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | `log` | 0.4.29 | MIT OR Apache-2.0 |
 | `memchr` | 2.8.0 | Unlicense OR MIT |
 | `miniz_oxide` | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
@@ -115,6 +118,7 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `regex` | 1.12.3 | MIT OR Apache-2.0 |
 | `regex-automata` | 0.4.14 | MIT OR Apache-2.0 |
 | `regex-syntax` | 0.8.10 | MIT OR Apache-2.0 |
+| `rustix` | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | `rustversion` | 1.0.22 | MIT OR Apache-2.0 |
 | `same-file` | 1.0.6 | Unlicense/MIT |
 | `seccompiler` | 0.4.0 | Apache-2.0 OR BSD-3-Clause |
@@ -132,6 +136,7 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `static_assertions` | 1.1.0 | MIT OR Apache-2.0 |
 | `syn` | 2.0.117 | MIT OR Apache-2.0 |
 | `syntect` | 5.3.0 | MIT |
+| `tempfile` | 3.27.0 | MIT OR Apache-2.0 |
 | `termcolor` | 1.4.1 | Unlicense OR MIT |
 | `thiserror` | 1.0.69 | MIT OR Apache-2.0 |
 | `thiserror` | 2.0.18 | MIT OR Apache-2.0 |

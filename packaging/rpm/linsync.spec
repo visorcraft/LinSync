@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.13.1
+Version:        1.14.0
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -122,6 +122,10 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Sun Jun 14 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.14.0-1
+- Split CLI and GUI monoliths into modules. Removed dead LinSyncSessionBridge
+  transport. Added coverage recipe.
+
 * Fri Jun 12 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.13.1-1
 - Version bump to 1.13.1.
 
