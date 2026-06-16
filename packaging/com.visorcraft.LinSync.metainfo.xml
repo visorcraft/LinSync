@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.15.0" date="2026-06-16">
+      <description>
+        <p>Version bump to 1.15.0.</p>
+      </description>
+    </release>
     <release version="1.14.0" date="2026-06-14">
       <description>
         <p>Split CLI and GUI monoliths into modules. Removed dead LinSyncSessionBridge transport. Added coverage recipe.</p>
