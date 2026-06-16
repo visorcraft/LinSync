@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Last regenerated: 2026-06-14
+Last regenerated: 2026-06-16
 
 This notice file covers the current LinSync source tree and Cargo dependency
 set. It must be regenerated or reviewed before every public binary release.
