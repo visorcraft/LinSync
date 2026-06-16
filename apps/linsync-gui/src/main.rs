@@ -483,15 +483,48 @@ fn set_progress(
     }
 }
 
+/// RAII guard for a registered `/progress?id=X` entry. On drop it removes the
+/// snapshot from `GuiBridgeState::compare_progress`, so an early return or
+/// panic cannot leak progress entries.
+struct ProgressGuard {
+    request_id: Option<String>,
+    state: Arc<Mutex<GuiBridgeState>>,
+    progress: Option<Arc<Mutex<CompareProgress>>>,
+}
+
+impl ProgressGuard {
+    fn none(state: Arc<Mutex<GuiBridgeState>>) -> Self {
+        Self {
+            request_id: None,
+            state,
+            progress: None,
+        }
+    }
+
+    fn progress(&self) -> Option<Arc<Mutex<CompareProgress>>> {
+        self.progress.clone()
+    }
+}
+
+impl Drop for ProgressGuard {
+    fn drop(&mut self) {
+        if let Some(id) = self.request_id.take()
+            && let Ok(mut state) = self.state.lock()
+        {
+            state.compare_progress.remove(&id);
+        }
+    }
+}
+
 fn register_progress_request(
     params: &[(String, String)],
     state: &Arc<Mutex<GuiBridgeState>>,
     phase: &str,
     total: usize,
     message: &str,
-) -> (Option<String>, Option<Arc<Mutex<CompareProgress>>>) {
+) -> ProgressGuard {
     let Some(request_id) = query_value(params, "request_id").map(str::to_owned) else {
-        return (None, None);
+        return ProgressGuard::none(Arc::clone(state));
     };
     let progress = Arc::new(Mutex::new(CompareProgress {
         phase: phase.to_owned(),
@@ -504,24 +537,19 @@ fn register_progress_request(
             .compare_progress
             .insert(request_id.clone(), Arc::clone(&progress));
     }
-    (Some(request_id), Some(progress))
-}
-
-fn remove_progress_request(request_id: Option<&str>, state: &Arc<Mutex<GuiBridgeState>>) {
-    if let Some(id) = request_id
-        && let Ok(mut state) = state.lock()
-    {
-        state.compare_progress.remove(id);
+    ProgressGuard {
+        request_id: Some(request_id),
+        state: Arc::clone(state),
+        progress: Some(progress),
     }
 }
 
-/// A registered cancellable compare request: holds the request id (for
-/// cleanup), a should_cancel closure (polled by the compare), and a progress
-/// tracker (updated by the compare, read by `/progress`).
+/// A registered cancellable compare request. Dropping it removes both the
+/// cancel flag and the progress entry, so panics or early returns cannot leak
+/// either map entry.
 struct CancellableRequest {
-    request_id: Option<String>,
+    progress_guard: ProgressGuard,
     should_cancel: Box<dyn Fn() -> bool>,
-    progress: Option<Arc<Mutex<CompareProgress>>>,
 }
 
 impl CancellableRequest {
@@ -530,11 +558,28 @@ impl CancellableRequest {
     fn is_cancelled(&self) -> bool {
         (self.should_cancel)()
     }
+
+    fn progress(&self) -> Option<Arc<Mutex<CompareProgress>>> {
+        self.progress_guard.progress()
+    }
+
+    fn cancel_checker(&self) -> &dyn Fn() -> bool {
+        &*self.should_cancel
+    }
+}
+
+impl Drop for CancellableRequest {
+    fn drop(&mut self) {
+        if let Some(id) = &self.progress_guard.request_id
+            && let Ok(mut state) = self.progress_guard.state.lock()
+        {
+            state.compare_cancels.remove(id);
+        }
+    }
 }
 
 /// Register both a progress tracker and a cancellation flag for a compare
-/// request. Call [`CancellableRequest::remove`] (or
-/// [`remove_cancellable_request`]) when the compare finishes or is cancelled.
+/// request. The returned guard cleans up both entries when dropped.
 fn register_cancellable_request(
     params: &[(String, String)],
     state: &Arc<Mutex<GuiBridgeState>>,
@@ -542,8 +587,8 @@ fn register_cancellable_request(
     total: usize,
     message: &str,
 ) -> CancellableRequest {
-    let (request_id, progress) = register_progress_request(params, state, phase, total, message);
-    let should_cancel: Box<dyn Fn() -> bool> = if let Some(id) = &request_id {
+    let progress_guard = register_progress_request(params, state, phase, total, message);
+    let should_cancel: Box<dyn Fn() -> bool> = if let Some(id) = &progress_guard.request_id {
         let flag = Arc::new(AtomicBool::new(false));
         if let Ok(mut state) = state.lock() {
             state.compare_cancels.insert(id.clone(), Arc::clone(&flag));
@@ -553,21 +598,9 @@ fn register_cancellable_request(
         Box::new(|| false)
     };
     CancellableRequest {
-        request_id,
+        progress_guard,
         should_cancel,
-        progress,
     }
-}
-
-/// Remove the cancel flag and progress tracker registered by
-/// [`register_cancellable_request`].
-fn remove_cancellable_request(req: &CancellableRequest, state: &Arc<Mutex<GuiBridgeState>>) {
-    if let Some(id) = &req.request_id
-        && let Ok(mut state) = state.lock()
-    {
-        state.compare_cancels.remove(id);
-    }
-    remove_progress_request(req.request_id.as_deref(), state);
 }
 
 const GUI_HISTORY_LIMIT: usize = 16;

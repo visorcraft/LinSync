@@ -15,6 +15,16 @@ use crate::filter::{
     FileFilter, FilterDecision, FilterEntryContext, FilterFileKind, FilterMatchOptions,
 };
 
+/// Maximum recursion depth for folder traversal. Extremely deep trees (e.g.
+/// malicious loops or runaway dependency directories) can otherwise exhaust the
+/// stack or walk forever.
+const MAX_DIRECTORY_DEPTH: usize = 256;
+
+/// Hard ceiling on how many bytes of a single file the folder engine will read
+/// into memory for a content comparison. Files larger than this are compared by
+/// metadata/size instead, preventing OOM on huge inputs.
+const MAX_CONTENT_READ_BYTES: u64 = 64 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FolderCompareOptions {
@@ -2288,6 +2298,16 @@ fn readers_equal_until_first_difference(left: impl Read, right: impl Read) -> io
 const BUFFER: usize = 8192;
 
 fn normalized_text_content(path: &Path) -> io::Result<String> {
+    let metadata = fs::metadata(path)?;
+    if metadata.len() > MAX_CONTENT_READ_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "file size {} exceeds {MAX_CONTENT_READ_BYTES} byte text-content limit",
+                metadata.len()
+            ),
+        ));
+    }
     let bytes = fs::read(path)?;
     let text = String::from_utf8_lossy(&bytes);
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
@@ -2332,11 +2352,24 @@ fn effective_compare_method(
         return (selected, None);
     }
 
+    let largest_side = left.size.max(right.size);
+
+    // Absolute read-size guard: even when no per-profile threshold is set, never
+    // slurp files larger than MAX_CONTENT_READ_BYTES into memory for Full/Quick.
+    if largest_side > MAX_CONTENT_READ_BYTES {
+        return (
+            CompareMethod::Size,
+            Some(format!(
+                "method downgraded from {} to size because largest side is {largest_side} bytes, exceeding the {MAX_CONTENT_READ_BYTES} byte read limit",
+                selected.as_str()
+            )),
+        );
+    }
+
     let Some(threshold) = options.large_file_threshold else {
         return (selected, None);
     };
 
-    let largest_side = left.size.max(right.size);
     if largest_side <= threshold {
         return (selected, None);
     }
@@ -2393,6 +2426,7 @@ fn collect_entries(
     let cancelled = collect_entries_inner(
         root,
         root,
+        0,
         options,
         &mut entries,
         &mut visited_dirs,
@@ -2404,6 +2438,7 @@ fn collect_entries(
 fn collect_entries_inner(
     root: &Path,
     current: &Path,
+    depth: usize,
     options: &FolderCompareOptions,
     entries: &mut BTreeMap<PathBuf, EntryMeta>,
     visited_dirs: &mut BTreeSet<DirectoryIdentity>,
@@ -2438,6 +2473,7 @@ fn collect_entries_inner(
                 root,
                 relative_path,
                 &path,
+                depth,
                 options,
                 entries,
                 visited_dirs,
@@ -2467,14 +2503,22 @@ fn collect_entries_inner(
 
         if options.recursive
             && metadata.is_dir()
+            && depth < MAX_DIRECTORY_DEPTH
             && entries
                 .get(relative_path)
                 .is_some_and(|entry| !entry.skipped && entry.error.is_none())
         {
             let identity = directory_identity(&path, &metadata)?;
             visited_dirs.insert(identity.clone());
-            let cancelled =
-                collect_entries_inner(root, &path, options, entries, visited_dirs, on_event)?;
+            let cancelled = collect_entries_inner(
+                root,
+                &path,
+                depth + 1,
+                options,
+                entries,
+                visited_dirs,
+                on_event,
+            )?;
             visited_dirs.remove(&identity);
             if cancelled {
                 return Ok(true);
@@ -2485,10 +2529,12 @@ fn collect_entries_inner(
     Ok(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_symlink_entry(
     root: &Path,
     relative_path: &Path,
     path: &Path,
+    depth: usize,
     options: &FolderCompareOptions,
     entries: &mut BTreeMap<PathBuf, EntryMeta>,
     visited_dirs: &mut BTreeSet<DirectoryIdentity>,
@@ -2554,14 +2600,22 @@ fn collect_symlink_entry(
             )?;
             if options.recursive
                 && metadata.is_dir()
+                && depth < MAX_DIRECTORY_DEPTH
                 && entries
                     .get(relative_path)
                     .is_some_and(|entry| !entry.skipped && entry.error.is_none())
             {
                 let identity = directory_identity(path, &metadata)?;
                 visited_dirs.insert(identity.clone());
-                let cancelled =
-                    collect_entries_inner(root, path, options, entries, visited_dirs, on_event)?;
+                let cancelled = collect_entries_inner(
+                    root,
+                    path,
+                    depth + 1,
+                    options,
+                    entries,
+                    visited_dirs,
+                    on_event,
+                )?;
                 visited_dirs.remove(&identity);
                 if cancelled {
                     return Ok(true);
@@ -4433,6 +4487,65 @@ mod tests {
         assert!(
             !with_xattr.is_equal(),
             "an xattr-only difference is detected with compare_xattrs"
+        );
+    }
+
+    #[test]
+    fn normalized_text_content_rejects_oversize_files() {
+        let fixture = TempFixture::new();
+        let path = fixture.path.join("big.txt");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_CONTENT_READ_BYTES + 1).unwrap();
+        drop(file);
+        let err = normalized_text_content(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn effective_compare_method_downgrades_full_contents_for_oversize() {
+        let meta = EntryMeta {
+            size: MAX_CONTENT_READ_BYTES + 1,
+            is_dir: false,
+            kind: EntryKind::File,
+            link_target: None,
+            modified: None,
+            skipped: false,
+            error: None,
+            permissions: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let options = FolderCompareOptions {
+            compare_method: CompareMethod::FullContents,
+            ..FolderCompareOptions::default()
+        };
+        let (method, note) = effective_compare_method(&meta, &meta, &options);
+        assert_eq!(method, CompareMethod::Size);
+        assert!(note.unwrap().contains("downgraded"));
+    }
+
+    #[test]
+    fn max_directory_depth_stops_deep_recursion() {
+        let fixture = TempFixture::new();
+        let root = fixture.path.join("root");
+        let mut dir = root.clone();
+        for _ in 0..260 {
+            dir = dir.join("d");
+            fs::create_dir_all(&dir).unwrap();
+        }
+        fs::write(dir.join("deep.txt"), "deep").unwrap();
+        fs::write(root.join("top.txt"), "top").unwrap();
+
+        let result = compare_folders(&root, &root, &FolderCompareOptions::default()).unwrap();
+        let paths: Vec<&std::path::Path> = result
+            .entries
+            .iter()
+            .map(|e| e.relative_path.as_path())
+            .collect();
+        assert!(paths.contains(&Path::new("top.txt")));
+        assert!(
+            !paths.iter().any(|p| p.ends_with("deep.txt")),
+            "files below the max depth should not be enumerated"
         );
     }
 }

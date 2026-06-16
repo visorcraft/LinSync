@@ -5,6 +5,10 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+/// Maximum size of a file the binary engine will read entirely into memory for
+/// content comparison. Larger files are rejected to prevent OOM.
+const MAX_BINARY_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TypedValueKind {
@@ -487,6 +491,17 @@ pub fn compare_binary_files(
     };
 
     let (left_bytes, right_bytes) = if options.compare_content {
+        for path in [left, right] {
+            let len = fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX);
+            if len > MAX_BINARY_CONTENT_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "file size {len} exceeds {MAX_BINARY_CONTENT_BYTES} byte binary-content limit"
+                    ),
+                ));
+            }
+        }
         (fs::read(left)?, fs::read(right)?)
     } else {
         (Vec::new(), Vec::new())
@@ -1107,5 +1122,19 @@ mod tests {
         assert!(result.interpret_at(1, TypedValueKind::U16Le).is_none());
         assert!(result.interpret_at(0, TypedValueKind::U32Le).is_none());
         assert!(result.interpret_at(100, TypedValueKind::U8).is_none());
+    }
+
+    #[test]
+    fn compare_binary_files_rejects_oversize_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = tmp.path().join("left.bin");
+        let right = tmp.path().join("right.bin");
+        let f = std::fs::File::create(&left).unwrap();
+        f.set_len(MAX_BINARY_CONTENT_BYTES + 1).unwrap();
+        drop(f);
+        std::fs::write(&right, b"x").unwrap();
+        let err = compare_binary_files(&left, &right, &BinaryCompareOptions::default())
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 }

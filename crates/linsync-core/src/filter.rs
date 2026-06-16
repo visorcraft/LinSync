@@ -762,7 +762,14 @@ fn days_since_epoch(year: i64, month: u8, day: u8) -> Option<u64> {
 
 /// Recursively sum the sizes of all files under `dir`.  Symlinks are not
 /// followed; errors on individual entries are silently skipped.
-fn dir_size_recursive(dir: &std::path::Path) -> u64 {
+/// Maximum recursion depth for the `size` filter expression's recursive
+/// directory walk. Prevents runaway walks on extremely deep trees.
+const DIR_SIZE_MAX_DEPTH: usize = 64;
+
+fn dir_size_recursive(dir: &std::path::Path, depth: usize) -> u64 {
+    if depth > DIR_SIZE_MAX_DEPTH {
+        return 0;
+    }
     let Ok(read_dir) = std::fs::read_dir(dir) else {
         return 0;
     };
@@ -773,7 +780,7 @@ fn dir_size_recursive(dir: &std::path::Path) -> u64 {
         };
         let path = entry.path();
         if file_type.is_dir() {
-            total = total.saturating_add(dir_size_recursive(&path));
+            total = total.saturating_add(dir_size_recursive(&path, depth + 1));
         } else if file_type.is_file()
             && let Ok(meta) = entry.metadata()
         {
@@ -811,7 +818,7 @@ fn expression_match(
             // recursive walk always wins over the cached inode size.
             let resolvable = context.resolved_path.unwrap_or(context.path);
             let actual = if context.is_dir {
-                dir_size_recursive(resolvable)
+                dir_size_recursive(resolvable, 0)
             } else if let Some(s) = context.size {
                 s
             } else {
@@ -928,8 +935,10 @@ fn system_time_millis(time: SystemTime) -> Option<u128> {
 // case_sensitive). The folder walk calls `regex_match` once per directory
 // entry × per regex filter rule — without this cache, a 100k-entry tree with
 // one regex filter recompiles the regex ~100k times (each compile is
-// µs–ms). The cache is bounded by the number of distinct filter rules × 2
-// (case-sensitive vs insensitive), which is a handful for typical usage.
+// µs–ms). The cache is capped so dynamically-generated or adversarial
+// rule sets cannot grow memory without bound.
+const FILTER_REGEX_CACHE_MAX_SIZE: usize = 128;
+
 thread_local! {
     static FILTER_REGEX_CACHE:
         RefCell<HashMap<(String, bool), Option<Regex>>> =
@@ -954,9 +963,14 @@ fn regex_match(pattern: &str, value: &str, case_sensitive: bool) -> bool {
         .ok();
     let result = compiled.as_ref().is_some_and(|regex| regex.is_match(value));
     FILTER_REGEX_CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .insert((pattern.to_owned(), case_sensitive), compiled);
+        let mut cache = cache.borrow_mut();
+        cache.insert((pattern.to_owned(), case_sensitive), compiled);
+        // Hard cap: if the cache has grown past the limit, drop everything.
+        // A real LRU would be nicer, but rule sets are normally tiny and a
+        // full reset is simple and safe.
+        if cache.len() > FILTER_REGEX_CACHE_MAX_SIZE {
+            cache.clear();
+        }
     });
     result
 }
@@ -1645,6 +1659,35 @@ d!:^target/tmp$
             err.message.contains("mtime"),
             "error message should mention 'mtime'; got: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn regex_cache_handles_more_patterns_than_cache_limit() {
+        // Exercise the hard cap by compiling more patterns than the cache can hold.
+        // The reset must be transparent: every pattern still matches correctly.
+        for i in 0..=FILTER_REGEX_CACHE_MAX_SIZE {
+            let pattern = format!("^{}$", i);
+            let text = i.to_string();
+            assert!(regex_match(&pattern, &text, true), "pattern {i} should match");
+        }
+        // A pattern that was evicted still works when re-encountered.
+        assert!(regex_match("^0$", "0", true));
+    }
+
+    #[test]
+    fn dir_size_recursive_stops_at_max_depth() {
+        let tmp = TempDir::new();
+        let mut dir = tmp.path().to_path_buf();
+        for _ in 0..70 {
+            dir = dir.join("d");
+            std::fs::create_dir_all(&dir).unwrap();
+        }
+        std::fs::write(dir.join("leaf.txt"), b"x").unwrap();
+        let size = dir_size_recursive(tmp.path(), 0);
+        assert_eq!(
+            size, 0,
+            "files below the max depth cap should not be counted"
         );
     }
 }

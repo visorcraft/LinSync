@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 /// Which sub-mode to use for a webpage comparison.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +62,7 @@ impl Default for WebpageCompareOptions {
 /// The result type for a webpage comparison.  Wraps the appropriate
 /// existing result depending on the sub-mode.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum WebpageCompareResult {
     /// Returned by HtmlSource and ExtractedText modes.
     Text(crate::text::TextCompareResult),
@@ -202,7 +204,67 @@ pub fn clear_webcompare_cache(cache_dir: &Path) -> Result<(), WebpageCompareErro
 pub fn webcompare_cache_dir(cache_dir: &Path) -> Result<PathBuf, WebpageCompareError> {
     let dir = cache_dir.join("webcompare").join("fetched");
     std::fs::create_dir_all(&dir)?;
+    prune_stale_webcompare_files(&dir, Duration::from_secs(7 * 24 * 60 * 60));
     Ok(dir)
+}
+
+/// Remove files in `dir` older than `max_age`. This keeps the webcompare fetched
+/// temp directory from growing without bound when individual temp-file guards
+/// are leaked by panic/early-return paths. Directories are left untouched.
+fn prune_stale_webcompare_files(dir: &Path, max_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let stale = meta
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > max_age);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// RAII guard for a one-off WebEngine profile directory. Deletes the directory
+/// on drop so the persistent profile/cache cannot accumulate across compares.
+#[cfg(feature = "web-engine")]
+struct WebProfileDir {
+    path: Option<PathBuf>,
+}
+
+#[cfg(feature = "web-engine")]
+impl WebProfileDir {
+    fn new(cache_dir: &Path) -> Result<Self, WebpageCompareError> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = cache_dir
+            .join("webcompare")
+            .join(format!("profile-{}", seq));
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self { path: Some(dir) })
+    }
+
+    fn path(&self) -> &Path {
+        self.path.as_ref().expect("path only taken on drop")
+    }
+}
+
+#[cfg(feature = "web-engine")]
+impl Drop for WebProfileDir {
+    fn drop(&mut self) {
+        if let Some(dir) = self.path.take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -621,10 +683,9 @@ pub fn compare_webpage_rendered(
     guard_confirmed(options)?;
     validate_url(left_url)?;
     validate_url(right_url)?;
-    let profile_dir = cache_dir.join("webcompare").join("profile");
-    std::fs::create_dir_all(&profile_dir)?;
+    let profile_dir = WebProfileDir::new(cache_dir)?;
     let engine_opts = linsync_webengine::WebEngineOptions {
-        profile_storage_dir: profile_dir,
+        profile_storage_dir: profile_dir.path().to_path_buf(),
         timeout_secs: options.timeout_secs,
         ..Default::default()
     };
@@ -681,10 +742,9 @@ pub fn compare_webpage_screenshot(
     guard_confirmed(options)?;
     validate_url(left_url)?;
     validate_url(right_url)?;
-    let profile_dir = cache_dir.join("webcompare").join("profile");
-    std::fs::create_dir_all(&profile_dir)?;
+    let profile_dir = WebProfileDir::new(cache_dir)?;
     let engine_opts = linsync_webengine::WebEngineOptions {
-        profile_storage_dir: profile_dir,
+        profile_storage_dir: profile_dir.path().to_path_buf(),
         timeout_secs: options.timeout_secs,
         ..Default::default()
     };
@@ -1184,5 +1244,34 @@ mod tests {
         let err =
             compare_webpage_screenshot("http://x/", "http://x/", &opts, tmp.path()).unwrap_err();
         assert!(matches!(err, WebpageCompareError::ConfirmationRequired));
+    }
+
+    #[test]
+    fn prune_stale_webcompare_files_removes_old_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fetched = tmp.path().join("fetched");
+        std::fs::create_dir_all(&fetched).unwrap();
+        let file = fetched.join("old.txt");
+        std::fs::write(&file, b"data").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        prune_stale_webcompare_files(&fetched, std::time::Duration::from_millis(10));
+        assert!(!file.exists(), "stale fetched temp file should be pruned");
+    }
+
+    #[cfg(feature = "web-engine")]
+    #[test]
+    fn web_profile_dir_cleans_up_on_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let profile_path = {
+            let guard = WebProfileDir::new(&cache).unwrap();
+            let path = guard.path().to_path_buf();
+            assert!(path.is_dir());
+            path
+        };
+        assert!(
+            !profile_path.exists(),
+            "WebEngine profile dir should be removed on drop"
+        );
     }
 }

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 VisorCraft LLC
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::path::Path;
+
 use linsync_core::{Settings as CoreSettings, ThemePreference};
 use serde::Serialize;
 
@@ -109,7 +111,20 @@ pub fn image_compare_bridge_response_with_profile(
     query: &str,
     profile_options: &linsync_core::ImageCompareOptions,
 ) -> (String, Option<linsync_core::ImageCompareResult>) {
-    use linsync_core::{ImageCompareMode, ImageCompareOptions, compare_images};
+    let never = || false;
+    image_compare_bridge_response_with_profile_and_cancel(query, profile_options, &never)
+}
+
+/// Cancellable/timeout-aware variant. `should_cancel` is polled while waiting
+/// for the compare thread; the core call also respects `options.timeout_secs`.
+pub fn image_compare_bridge_response_with_profile_and_cancel(
+    query: &str,
+    profile_options: &linsync_core::ImageCompareOptions,
+    should_cancel: &dyn Fn() -> bool,
+) -> (String, Option<linsync_core::ImageCompareResult>) {
+    use linsync_core::{
+        FrameCompareMode, ImageCompareMode, ImageCompareOptions, compare_images_cancellable,
+    };
 
     let left = match image_query_param(query, "left") {
         Some(v) => std::path::PathBuf::from(v),
@@ -141,20 +156,29 @@ pub fn image_compare_bridge_response_with_profile(
         .and_then(|v| v.parse().ok())
         .unwrap_or(profile_options.delta_e_threshold);
     let frame_mode = match image_query_param(query, "frames").as_deref() {
-        Some("all") => linsync_core::FrameCompareMode::AllFrames,
-        Some("first") => linsync_core::FrameCompareMode::FirstFrame,
+        Some("all") => FrameCompareMode::AllFrames,
+        Some("first") => FrameCompareMode::FirstFrame,
         _ => profile_options.frame_mode,
     };
+    let mut timeout_secs = image_query_param(query, "timeout")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(profile_options.timeout_secs);
+    // Default guard: image compares that do not specify a timeout get a
+    // 5-minute ceiling so a huge/animated image cannot hang the bridge forever.
+    if timeout_secs == 0 {
+        timeout_secs = 300;
+    }
 
     let opts = ImageCompareOptions {
         mode,
         tolerance,
         delta_e_threshold: delta_e,
         frame_mode,
+        timeout_secs,
         ..profile_options.clone()
     };
 
-    let result = match compare_images(&left, &right, &opts) {
+    let result = match compare_images_cancellable(&left, &right, &opts, &should_cancel) {
         Ok(r) => r,
         Err(e) => {
             return (error_json(e.to_string()), None);
@@ -492,11 +516,37 @@ fn cache_rendered_pages(
     use std::collections::HashSet;
     use std::os::unix::fs::PermissionsExt;
 
+    // Collect the source directories the core handed us. These must be deleted
+    // on every exit path — if creating the per-request cache fails we still do
+    // not want to leave the core's temporary rendered-page directories behind.
+    let mut source_dirs: HashSet<std::path::PathBuf> = HashSet::new();
+    for page in pages {
+        if let Some(parent) = page
+            .left_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+        {
+            source_dirs.insert(parent);
+        }
+        if let Some(parent) = page
+            .right_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+        {
+            source_dirs.insert(parent);
+        }
+    }
+
     let Some(cache_dir) = rendered_pages_output_dir() else {
+        for dir in source_dirs {
+            let _ = std::fs::remove_dir_all(dir);
+        }
         return (Vec::new(), None);
     };
+
     let mut views = Vec::with_capacity(pages.len());
-    let mut source_dirs: HashSet<std::path::PathBuf> = HashSet::new();
     for page in pages {
         let left_dest = cache_dir.join(format!("page-{}-left.png", page.page));
         let right_dest = cache_dir.join(format!("page-{}-right.png", page.page));
@@ -504,10 +554,7 @@ fn cache_rendered_pages(
             .left_path
             .as_ref()
             .filter(|p| p.exists())
-            .and_then(|p| {
-                source_dirs.insert(p.parent()?.to_path_buf());
-                std::fs::copy(p, &left_dest).ok()
-            })
+            .and_then(|p| std::fs::copy(p, &left_dest).ok())
             .map(|_| {
                 let _ =
                     std::fs::set_permissions(&left_dest, std::fs::Permissions::from_mode(0o600));
@@ -517,10 +564,7 @@ fn cache_rendered_pages(
             .right_path
             .as_ref()
             .filter(|p| p.exists())
-            .and_then(|p| {
-                source_dirs.insert(p.parent()?.to_path_buf());
-                std::fs::copy(p, &right_dest).ok()
-            })
+            .and_then(|p| std::fs::copy(p, &right_dest).ok())
             .map(|_| {
                 let _ =
                     std::fs::set_permissions(&right_dest, std::fs::Permissions::from_mode(0o600));

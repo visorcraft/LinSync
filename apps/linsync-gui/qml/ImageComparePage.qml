@@ -160,6 +160,8 @@ Controls.Pane {
     property var lastResult: null
     property real imageZoom: 1.0
     property bool splitViewActive: false
+    property int imageRequestCounter: 0
+    property string activeImageRequestId: ""
 
     function bridgeGet(path, onLoad) {
         if (root.bridgeUrl === "") {
@@ -210,6 +212,9 @@ Controls.Pane {
         root.overlayUri = "";
         root.lastResult = null;
         root.statusText = "Comparing…";
+        root.imageRequestCounter += 1;
+        const reqId = "img-" + root.imageRequestCounter;
+        root.activeImageRequestId = reqId;
 
         const modeStr = modeCombo.currentText.toLowerCase();
         const tol = toleranceSpin.value;
@@ -218,12 +223,17 @@ Controls.Pane {
         // bridge expects; sending it unscaled made the threshold 10× too lenient.
         const deltaE = deltaESpin.value / 10;
         const frameMode = frameCombo.currentIndex === 1 ? "all" : "first";
-        const url = "/compare/image" + "?left=" + encodeURIComponent(root.leftPath) + "&right=" + encodeURIComponent(root.rightPath) + "&mode=" + modeStr + "&tolerance=" + tol + "&delta_e=" + deltaE + "&frames=" + frameMode + "&overlay=true";
+        const url = "/compare/image" + "?left=" + encodeURIComponent(root.leftPath) + "&right=" + encodeURIComponent(root.rightPath) + "&mode=" + modeStr + "&tolerance=" + tol + "&delta_e=" + deltaE + "&frames=" + frameMode + "&overlay=true" + "&request_id=" + encodeURIComponent(reqId);
 
         root.bridgeGet(url, function (ok, data) {
             root.running = false;
+            root.activeImageRequestId = "";
             if (!ok || !data) {
                 root.statusText = "Compare failed — check file paths and format support.";
+                return;
+            }
+            if (data.cancelled === true) {
+                root.statusText = "Compare cancelled";
                 return;
             }
             root.lastResult = data;
@@ -407,6 +417,18 @@ Controls.Pane {
                     icon.name: "media-playback-start"
                     enabled: !root.running && root.leftPath !== "" && root.rightPath !== ""
                     onClicked: root.runCompare()
+                }
+
+                AppButton {
+                    Layout.preferredHeight: 30
+                    Layout.preferredWidth: 100
+                    text: qsTr("Stop")
+                    icon.name: "media-playback-stop"
+                    enabled: root.running && root.activeImageRequestId !== ""
+                    onClicked: {
+                        root.bridgeGet("/cancel?id=" + encodeURIComponent(root.activeImageRequestId))
+                        root.statusText = qsTr("Cancelling…")
+                    }
                 }
 
                 Controls.BusyIndicator {

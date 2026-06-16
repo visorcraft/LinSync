@@ -55,6 +55,10 @@ Kirigami.ApplicationWindow {
     property int progressCurrent: 0
     property int progressTotal: 0
     property string progressMessage: ""
+    // Defensive iteration cap for the progress timer so a missed cancel path
+    // cannot poll forever. At 200 ms intervals 30000 iterations == ~100 min.
+    property int progressPollCount: 0
+    readonly property int progressPollMax: 30000
     // Compare-profile selector state (Phase 1). `profileEntries` mirrors
     // /profiles/list (built-ins first, then user profiles); `activeProfileId`
     // is the persisted active pointer; `profileError` surfaces a 400/404 inline.
@@ -136,6 +140,12 @@ Kirigami.ApplicationWindow {
     // appending a fetched window (vs. loading a fresh comparison).
     property bool suppressTextScrollReset: false
     property var folderEntries: []
+    // Hard ceiling on how many folder rows the GUI will hold in memory for
+    // windowed folders. Further lazy-load pages are dropped once the cap is
+    // reached and the user is told to refine filters. Sort/filter/search changes
+    // reset the model via queryFolderPage(0, false), so the cap only bounds
+    // scroll-driven growth within one query.
+    readonly property int folderEntriesMax: 50000
     property var visibleFolderEntries: []
     // Table compare grid data. tableCells holds the currently-loaded window of
     // rows; tableHeaders is populated when the input has a header row. Windowing
@@ -2220,6 +2230,10 @@ Kirigami.ApplicationWindow {
                 }
             }
         }
+        // The progressTimer already provides a defensive ceiling for stuck
+        // compares; any non-200 response in onreadystatechange above also clears
+        // the flags. Keep the request path simple because QML's XMLHttpRequest
+        // subset does not expose timeout/onerror callbacks.
         request.open("GET", url)
         request.send()
     }
@@ -2434,6 +2448,10 @@ Kirigami.ApplicationWindow {
     function queryFolderPage(offset, append) {
         if (root.bridgeUrl === "" || root.compareMode !== "Folder" || root.folderWindowLoading)
             return
+        if (append && root.folderEntries.length >= root.folderEntriesMax) {
+            root.statusText = qsTr("Folder view limited to %1 entries; refine filters to load more.").arg(root.folderEntriesMax)
+            return
+        }
         root.folderWindowLoading = true
         let url = root.bridgeUrl + "/folder/query?left=" + encodeURIComponent(root.leftPath)
             + "&right=" + encodeURIComponent(root.rightPath)
@@ -2464,6 +2482,10 @@ Kirigami.ApplicationWindow {
             }
             const payload = JSON.parse(request.responseText)
             const entries = payload.entries || []
+            if (append && root.folderEntries.length + entries.length > root.folderEntriesMax) {
+                root.statusText = qsTr("Folder view limited to %1 entries; refine filters to load more.").arg(root.folderEntriesMax)
+                return
+            }
             root.folderEntries = append ? root.folderEntries.concat(entries) : entries
             if (payload.totalMatched !== undefined)
                 root.folderTotalEntries = Math.max(Number(payload.totalMatched), root.folderEntries.length)
@@ -2481,6 +2503,8 @@ Kirigami.ApplicationWindow {
         if (root.folderTotalEntries <= 0 || root.folderWindowLoading || !view)
             return
         if (root.folderEntries.length >= root.folderTotalEntries)
+            return
+        if (root.folderEntries.length >= root.folderEntriesMax)
             return
         if (view.contentHeight - (view.contentY + view.height) < view.height)
             root.queryFolderPage(root.folderEntries.length, true)
@@ -6521,6 +6545,14 @@ Kirigami.ApplicationWindow {
                 progressTimer.stop()
                 return
             }
+            root.progressPollCount += 1
+            if (root.progressPollCount > root.progressPollMax) {
+                root.comparing = false
+                root.activeRequestId = ""
+                root.statusText = qsTr("Compare monitoring timed out")
+                progressTimer.stop()
+                return
+            }
             var req = new XMLHttpRequest()
             req.onreadystatechange = function () {
                 if (req.readyState === XMLHttpRequest.DONE && req.status === 200) {
@@ -6549,6 +6581,7 @@ Kirigami.ApplicationWindow {
             root.progressCurrent = 0
             root.progressTotal = 0
             root.progressMessage = ""
+            root.progressPollCount = 0
             progressTimer.start()
         } else {
             progressTimer.stop()
@@ -6556,6 +6589,7 @@ Kirigami.ApplicationWindow {
             root.progressCurrent = 0
             root.progressTotal = 0
             root.progressMessage = ""
+            root.progressPollCount = 0
         }
     }
 }

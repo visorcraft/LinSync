@@ -5,6 +5,10 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+/// Maximum size of a file the table engine will read into memory. Larger CSV/TSV
+/// files are rejected to prevent OOM.
+const MAX_TABLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TableCompareOptions {
@@ -511,6 +515,15 @@ pub fn compare_table_files(
     right: &Path,
     options: &TableCompareOptions,
 ) -> Result<TableCompareResult, TableError> {
+    for path in [left, right] {
+        let len = fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX);
+        if len > MAX_TABLE_FILE_BYTES {
+            return Err(TableError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("file size {len} exceeds {MAX_TABLE_FILE_BYTES} byte table-file limit"),
+            )));
+        }
+    }
     let left_text = fs::read_to_string(left)?;
     let right_text = fs::read_to_string(right)?;
     Ok(compare_tables(
@@ -1732,5 +1745,21 @@ mod tests {
         assert_eq!(result.rows[0].cells[1].left.as_deref(), Some("world"));
         assert_eq!(result.rows[0].cells[1].right.as_deref(), Some("earth"));
         assert!(!result.is_equal());
+    }
+
+    #[test]
+    fn compare_table_files_rejects_oversize_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = tmp.path().join("left.csv");
+        let right = tmp.path().join("right.csv");
+        let f = std::fs::File::create(&left).unwrap();
+        f.set_len(MAX_TABLE_FILE_BYTES + 1).unwrap();
+        drop(f);
+        std::fs::write(&right, "a,b\n1,2\n").unwrap();
+        let err = compare_table_files(&left, &right, &TableCompareOptions::default()).unwrap_err();
+        assert!(
+            err.to_string().contains("table-file limit"),
+            "error should mention table-file limit; got: {err}"
+        );
     }
 }

@@ -110,6 +110,15 @@ pub struct ImageCompareOptions {
     /// behavior (and existing profiles) are unchanged.
     #[serde(default)]
     pub frame_mode: FrameCompareMode,
+    /// Maximum time in seconds the compare is allowed to run. `0` means no
+    /// timeout. When exceeded the compare returns [`ImageCompareError::TimedOut`].
+    #[serde(default)]
+    pub timeout_secs: u64,
+    /// Maximum total decoded pixels for an animated (`AllFrames`) compare.
+    /// `0` means the internal default cap is used. This bounds memory for
+    /// animations with many high-resolution frames.
+    #[serde(default)]
+    pub max_total_pixels: u64,
 }
 
 impl Default for ImageCompareOptions {
@@ -121,6 +130,8 @@ impl Default for ImageCompareOptions {
             trust_extension_fallback: false,
             stream_stripe_rows: 64,
             frame_mode: FrameCompareMode::FirstFrame,
+            timeout_secs: 0,
+            max_total_pixels: 0,
         }
     }
 }
@@ -164,6 +175,10 @@ pub enum ImageCompareError {
     UnsupportedFormat(String),
     DecodeError(String),
     IoError(String),
+    TimedOut { timeout_secs: u64 },
+    Cancelled,
+    TooManyFrames { count: usize, limit: usize },
+    TooLarge { pixels: u64, limit: u64 },
 }
 
 impl std::fmt::Display for ImageCompareError {
@@ -177,13 +192,94 @@ impl std::fmt::Display for ImageCompareError {
             Self::UnsupportedFormat(fmt) => write!(f, "unsupported image format: {fmt}"),
             Self::DecodeError(msg) => write!(f, "decode error: {msg}"),
             Self::IoError(msg) => write!(f, "I/O error: {msg}"),
+            Self::TimedOut { timeout_secs } => {
+                write!(f, "image compare timed out after {timeout_secs}s")
+            }
+            Self::Cancelled => write!(f, "image compare cancelled"),
+            Self::TooManyFrames { count, limit } => {
+                write!(f, "animated image has {count} frames; limit is {limit}")
+            }
+            Self::TooLarge { pixels, limit } => {
+                write!(f, "decoded image is {pixels} pixels; limit is {limit}")
+            }
         }
     }
 }
 
 impl std::error::Error for ImageCompareError {}
 
+/// Maximum number of frames the `AllFrames` mode will decode. Animations with
+/// more frames are rejected to prevent memory/CPU exhaustion.
+const MAX_ANIMATED_FRAMES: usize = 1_000;
+
+/// Default cap on total decoded pixels for `AllFrames` mode (256 million
+/// pixels ~= 1 GiB of RGBA8). The per-frame [`open_image`] dimension cap
+/// already limits a single frame; this limits the aggregate across frames.
+const DEFAULT_MAX_ANIMATED_PIXELS: u64 = 256 * 1024 * 1024;
+
 pub fn compare_images(
+    left: &Path,
+    right: &Path,
+    options: &ImageCompareOptions,
+) -> Result<ImageCompareResult, ImageCompareError> {
+    // Fast path: no timeout and no cancellation means we can avoid the
+    // overhead of spawning a monitoring thread.
+    if options.timeout_secs == 0 {
+        return compare_images_impl(left, right, options);
+    }
+    let never = || false;
+    compare_images_cancellable(left, right, options, &never)
+}
+
+/// Cancellable/timeout variant of [`compare_images`]. The compare runs on a
+/// dedicated thread so the host can return [`ImageCompareError::Cancelled`] or
+/// [`ImageCompareError::TimedOut`] without being blocked by decode/compare work.
+pub fn compare_images_cancellable(
+    left: &Path,
+    right: &Path,
+    options: &ImageCompareOptions,
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<ImageCompareResult, ImageCompareError> {
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let timeout_secs = options.timeout_secs;
+    let timeout = if timeout_secs > 0 {
+        Some(Duration::from_secs(timeout_secs))
+    } else {
+        None
+    };
+    let deadline = timeout.map(|t| Instant::now() + t);
+
+    let (tx, rx) = channel();
+    let left = left.to_path_buf();
+    let right = right.to_path_buf();
+    let options = options.clone();
+    thread::spawn(move || {
+        let _ = tx.send(compare_images_impl(&left, &right, &options));
+    });
+
+    loop {
+        if should_cancel() {
+            return Err(ImageCompareError::Cancelled);
+        }
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return Err(ImageCompareError::TimedOut { timeout_secs });
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(result) => return result,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(ImageCompareError::DecodeError(
+                    "image compare thread panicked".to_owned(),
+                ));
+            }
+        }
+    }
+}
+
+fn compare_images_impl(
     left: &Path,
     right: &Path,
     options: &ImageCompareOptions,
@@ -400,7 +496,37 @@ pub fn compare_images_all_frames(
 ) -> Result<ImageCompareResult, ImageCompareError> {
     let left_frames = decode_image_frames(left)?;
     let right_frames = decode_image_frames(right)?;
-    let frame_count = left_frames.len().max(right_frames.len());
+
+    let left_count = left_frames.len();
+    let right_count = right_frames.len();
+    if left_count > MAX_ANIMATED_FRAMES || right_count > MAX_ANIMATED_FRAMES {
+        return Err(ImageCompareError::TooManyFrames {
+            count: left_count.max(right_count),
+            limit: MAX_ANIMATED_FRAMES,
+        });
+    }
+
+    let max_pixels = if options.max_total_pixels > 0 {
+        options.max_total_pixels
+    } else {
+        DEFAULT_MAX_ANIMATED_PIXELS
+    };
+    let total_decoded_pixels: u64 = left_frames
+        .iter()
+        .chain(right_frames.iter())
+        .map(|f| {
+            let (w, h) = f.dimensions();
+            w as u64 * h as u64
+        })
+        .sum();
+    if total_decoded_pixels > max_pixels {
+        return Err(ImageCompareError::TooLarge {
+            pixels: total_decoded_pixels,
+            limit: max_pixels,
+        });
+    }
+
+    let frame_count = left_count.max(right_count);
 
     // Inner comparisons run as a single still frame (avoid recursing here).
     let inner = ImageCompareOptions {
@@ -1336,5 +1462,57 @@ mod tests {
         assert!(json.contains("\"id\":0"));
         assert!(json.contains("\"x\":1"));
         assert!(json.contains("\"y\":2"));
+    }
+
+    #[test]
+    fn compare_images_cancellable_returns_cancelled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = tmp.path().join("left.png");
+        let right = tmp.path().join("right.png");
+        let img = ::image::RgbaImage::from_pixel(4, 4, ::image::Rgba([1, 2, 3, 255]));
+        img.save(&left).unwrap();
+        img.save(&right).unwrap();
+        let opts = ImageCompareOptions::default();
+        let err = compare_images_cancellable(&left, &right, &opts, &|| true).unwrap_err();
+        assert!(
+            matches!(err, ImageCompareError::Cancelled),
+            "expected cancelled, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn compare_images_cancellable_small_image_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = tmp.path().join("left.png");
+        let right = tmp.path().join("right.png");
+        let img = ::image::RgbaImage::from_pixel(8, 8, ::image::Rgba([10, 20, 30, 255]));
+        img.save(&left).unwrap();
+        img.save(&right).unwrap();
+        let opts = ImageCompareOptions {
+            timeout_secs: 5,
+            ..Default::default()
+        };
+        let result = compare_images_cancellable(&left, &right, &opts, &|| false).unwrap();
+        assert!(result.equal);
+    }
+
+    #[test]
+    fn all_frames_rejects_total_pixels_over_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = tmp.path().join("left.png");
+        let right = tmp.path().join("right.png");
+        let img = ::image::RgbaImage::from_pixel(10, 10, ::image::Rgba([255, 0, 0, 255]));
+        img.save(&left).unwrap();
+        img.save(&right).unwrap();
+        let opts = ImageCompareOptions {
+            frame_mode: FrameCompareMode::AllFrames,
+            max_total_pixels: 1,
+            ..Default::default()
+        };
+        let err = compare_images(&left, &right, &opts).unwrap_err();
+        assert!(
+            matches!(err, ImageCompareError::TooLarge { .. }),
+            "expected TooLarge, got {err:?}"
+        );
     }
 }

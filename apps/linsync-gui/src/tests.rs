@@ -5367,6 +5367,209 @@ fn sessions_save_persists_session() {
     assert!(body["ok"].as_bool().unwrap());
 }
 
+#[test]
+fn sessions_save_caps_and_deduplicates_recent_sessions() {
+    let root = test_file_root("session-save-cap");
+    let paths = test_app_paths("session-save-cap");
+    let state = test_bridge_state(None);
+
+    let settings = Settings {
+        recent_limit: 3,
+        // Disable automatic recent-session recording from /compare so the store
+        // contains only the explicit /sessions/save entries we are testing.
+        persist_recent_paths: false,
+        ..Default::default()
+    };
+    SettingsStore::new(paths.settings_file())
+        .save(&settings)
+        .unwrap();
+
+    for i in 0..5 {
+        let left = root.join(format!("a{i}.txt"));
+        let right = root.join(format!("b{i}.txt"));
+        fs::write(&left, "x\n").unwrap();
+        fs::write(&right, "y\n").unwrap();
+        let left_str = left.to_string_lossy();
+        let right_str = right.to_string_lossy();
+        let left_url = urlencoding::encode(&left_str);
+        let right_url = urlencoding::encode(&right_str);
+        let _ = String::from_utf8(bridge_response(
+            &format!("GET /compare?left={left_url}&right={right_url}&mode=Text HTTP/1.1\r\n"),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8");
+        let resp = String::from_utf8(bridge_response(
+            &format!("GET /sessions/save?title=Session{i} HTTP/1.1\r\n"),
+            &paths,
+            &state,
+        ))
+        .expect("utf-8 response");
+        assert!(resp.contains("HTTP/1.1 200"), "save should succeed: {resp}");
+    }
+
+    let recent = RecentSessionStore::new(paths.recent_sessions_file(), 3)
+        .load_or_default()
+        .unwrap();
+    assert_eq!(
+        recent.sessions.len(),
+        3,
+        "recent sessions must be capped to recent_limit"
+    );
+    assert_eq!(recent.sessions[0].session.title, "Session4");
+    assert_eq!(recent.sessions[1].session.title, "Session3");
+    assert_eq!(recent.sessions[2].session.title, "Session2");
+
+    // Re-save an existing session (same paths, same title) and verify
+    // deduplication moves it to the front without growing the list.
+    let left = root.join("a2.txt");
+    let right = root.join("b2.txt");
+    let left_str = left.to_string_lossy();
+    let right_str = right.to_string_lossy();
+    let left_url = urlencoding::encode(&left_str);
+    let right_url = urlencoding::encode(&right_str);
+    let _ = String::from_utf8(bridge_response(
+        &format!("GET /compare?left={left_url}&right={right_url}&mode=Text HTTP/1.1\r\n"),
+        &paths,
+        &state,
+    ))
+    .expect("utf-8");
+    let resp = String::from_utf8(bridge_response(
+        "GET /sessions/save?title=Session2 HTTP/1.1\r\n",
+        &paths,
+        &state,
+    ))
+    .expect("utf-8 response");
+    assert!(resp.contains("HTTP/1.1 200"));
+
+    let recent = RecentSessionStore::new(paths.recent_sessions_file(), 3)
+        .load_or_default()
+        .unwrap();
+    assert_eq!(recent.sessions.len(), 3);
+    assert_eq!(recent.sessions[0].session.title, "Session2");
+    assert!(
+        recent
+            .sessions
+            .iter()
+            .any(|s| s.session.title == "Session4")
+    );
+    assert!(
+        recent
+            .sessions
+            .iter()
+            .any(|s| s.session.title == "Session3")
+    );
+    assert!(
+        !recent
+            .sessions
+            .iter()
+            .any(|s| s.session.title == "Session1")
+    );
+}
+
+#[test]
+fn cancellable_request_guard_cleans_up_on_drop() {
+    let state = test_bridge_state(None);
+    let params = vec![("request_id".to_owned(), "req-drop".to_owned())];
+    let req = register_cancellable_request(&params, &state, "test", 1, "testing");
+    {
+        let s = state.lock().unwrap();
+        assert!(s.compare_cancels.contains_key("req-drop"));
+        assert!(s.compare_progress.contains_key("req-drop"));
+    }
+    drop(req);
+    let s = state.lock().unwrap();
+    assert!(
+        !s.compare_cancels.contains_key("req-drop"),
+        "cancel entry should be removed on drop"
+    );
+    assert!(
+        !s.compare_progress.contains_key("req-drop"),
+        "progress entry should be removed on drop"
+    );
+}
+
+#[test]
+fn cancellable_request_guard_cleans_up_on_panic() {
+    let state = test_bridge_state(None);
+    let state2 = Arc::clone(&state);
+    let result = std::thread::spawn(move || {
+        let params = vec![("request_id".to_owned(), "req-panic".to_owned())];
+        let _req = register_cancellable_request(&params, &state2, "test", 1, "testing");
+        {
+            let s = state2.lock().unwrap();
+            assert!(s.compare_cancels.contains_key("req-panic"));
+            assert!(s.compare_progress.contains_key("req-panic"));
+        }
+        panic!("intentional panic to test RAII cleanup");
+    })
+    .join();
+    assert!(result.is_err(), "thread should have panicked");
+    let s = state.lock().unwrap();
+    assert!(
+        !s.compare_cancels.contains_key("req-panic"),
+        "cancel entry should be removed during panic unwinding"
+    );
+    assert!(
+        !s.compare_progress.contains_key("req-panic"),
+        "progress entry should be removed during panic unwinding"
+    );
+}
+
+#[test]
+fn bridge_rejects_over_limit_with_503() {
+    let paths = test_app_paths("bridge-limit");
+    let bridge = start_bridge_server(paths, None).expect("bridge server should start");
+    let base = bridge.base_url.strip_prefix("http://").unwrap();
+    let (addr, token_path) = base
+        .split_once('/')
+        .expect("base_url should contain token path");
+    let token = token_path.strip_prefix('/').unwrap_or(token_path);
+
+    // Open enough POST requests with an announced body that is never sent to
+    // occupy every concurrent handler slot. The handler will block reading the
+    // body, keeping the active-connection count high.
+    const LIMIT: usize = 16;
+    let mut hold: Vec<TcpStream> = Vec::with_capacity(LIMIT);
+    for _ in 0..LIMIT {
+        let mut stream = TcpStream::connect(addr).expect("should connect to bridge");
+        stream
+            .write_all(
+                format!(
+                    "POST /{token}/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100000\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        hold.push(stream);
+    }
+
+    // Give the accept loop a moment to spawn all holding handlers before
+    // probing the limit.
+    std::thread::sleep(Duration::from_millis(100));
+
+    // The next complete request must be rejected with a 503 instead of hanging.
+    let mut overflow = TcpStream::connect(addr).expect("should connect to bridge");
+    overflow
+        .write_all(format!("GET /{token}/health HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+        .unwrap();
+    overflow
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut buf = [0_u8; 1024];
+    let n = overflow
+        .read(&mut buf)
+        .expect("should receive 503 response bytes");
+    let resp = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        resp.starts_with("HTTP/1.1 503"),
+        "expected 503 when connection limit reached, got: {resp}"
+    );
+
+    // Clean up the holding connections so the server threads can exit.
+    drop(hold);
+}
+
 // ── Phase 5: Archive member edit bridge endpoints ────────────────────────
 fn make_test_zip(root: &Path, entries: &[(String, String)]) -> PathBuf {
     let zip_path = root.join("test.zip");

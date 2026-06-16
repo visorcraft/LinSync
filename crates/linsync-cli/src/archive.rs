@@ -224,6 +224,29 @@ impl Drop for ExtractedArchive {
     }
 }
 
+fn wait_for_child_with_timeout(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+) -> Result<std::process::ExitStatus, String> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(err) => return Err(format!("child wait failed: {err}")),
+        }
+        if start.elapsed() >= timeout {
+            if let Err(err) = child.kill() {
+                return Err(format!("extraction timed out and kill failed: {err}"));
+            }
+            // Reap the killed child so it does not become a zombie.
+            let _ = child.wait();
+            return Err(format!("extraction timed out after {timeout:?}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 pub(crate) fn extract_archive(
     archive: &Path,
     cache_root: &Path,
@@ -268,9 +291,10 @@ pub(crate) fn extract_archive(
             .arg(&extracted)
             .arg(archive);
         match SandboxedCommand::new(cmd, policy).spawn() {
-            Ok(mut child) => child
-                .wait()
-                .map_err(|err| format!("unzip wait failed: {err}"))?,
+            Ok(mut child) => {
+                wait_for_child_with_timeout(&mut child, std::time::Duration::from_secs(300))
+                    .map_err(|err| format!("unzip wait failed: {err}"))?
+            }
             Err(err) => {
                 return Err(format!(
                     "sandboxed unzip failed (set LINSYNC_SANDBOX_ALLOW_UNSANDBOXED=1 to bypass): {err}"
@@ -290,9 +314,10 @@ pub(crate) fn extract_archive(
         let mut cmd = Command::new("tar");
         cmd.arg("-xf").arg(archive).arg("-C").arg(&extracted);
         match SandboxedCommand::new(cmd, policy).spawn() {
-            Ok(mut child) => child
-                .wait()
-                .map_err(|err| format!("tar wait failed: {err}"))?,
+            Ok(mut child) => {
+                wait_for_child_with_timeout(&mut child, std::time::Duration::from_secs(300))
+                    .map_err(|err| format!("tar wait failed: {err}"))?
+            }
             Err(err) => {
                 return Err(format!(
                     "sandboxed tar failed (set LINSYNC_SANDBOX_ALLOW_UNSANDBOXED=1 to bypass): {err}"
@@ -323,3 +348,35 @@ pub(crate) fn extract_archive(
 }
 
 // ── Profile management ───────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn child_timeout_helper_kills_long_process() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("3600")
+            .spawn()
+            .expect("sleep should be available on unix");
+
+        let result = wait_for_child_with_timeout(&mut child, std::time::Duration::from_secs(1));
+        let err = result.expect_err("should return a timeout error");
+        assert!(
+            err.contains("timed out"),
+            "error should mention timeout: {err}"
+        );
+
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+        }
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "child should be reaped after timeout"
+        );
+    }
+}

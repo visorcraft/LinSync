@@ -62,7 +62,7 @@ pub(crate) fn start_bridge_server(
         let active = Arc::new(AtomicUsize::new(0));
         for stream in listener.incoming() {
             match stream {
-                Ok(stream) => {
+                Ok(mut stream) => {
                     // Handle each connection on its own thread so a `/cancel`
                     // request can be served while a `/compare` is still running
                     // (the accept loop must not block on a single request).
@@ -71,7 +71,14 @@ pub(crate) fn start_bridge_server(
                             concurrent = active.load(Ordering::Relaxed),
                             "LinSync GUI bridge connection limit reached, rejecting"
                         );
-                        // Drain and drop the stream so the client doesn't hang.
+                        // Return a 503 so the client sees a retry signal rather than
+                        // a silently dropped connection.
+                        let response = b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        if let Err(err) = stream.write_all(response) {
+                            tracing::warn!(error = %err, "failed to write 503 to rejected bridge connection");
+                        } else if let Err(err) = stream.flush() {
+                            tracing::warn!(error = %err, "failed to flush 503 to rejected bridge connection");
+                        }
                         drop(stream);
                         continue;
                     }
@@ -311,7 +318,7 @@ pub(crate) fn bridge_response_with_token(
             let req =
                 register_cancellable_request(&params, state, "extracting", 3, "Extracting text");
             set_progress(
-                &req.progress,
+                &req.progress(),
                 "extracting",
                 1,
                 3,
@@ -325,7 +332,6 @@ pub(crate) fn bridge_response_with_token(
             // If the user hit Stop during the (potentially slow) plugin
             // extraction, discard the result and report cancellation.
             if req.is_cancelled() {
-                remove_cancellable_request(&req, state);
                 return http_response(
                     200,
                     "OK",
@@ -334,7 +340,7 @@ pub(crate) fn bridge_response_with_token(
                 );
             }
             set_progress(
-                &req.progress,
+                &req.progress(),
                 "finalizing",
                 2,
                 3,
@@ -367,8 +373,7 @@ pub(crate) fn bridge_response_with_token(
                     }
                 }
             }
-            set_progress(&req.progress, "done", 3, 3, String::new());
-            remove_cancellable_request(&req, state);
+            set_progress(&req.progress(), "done", 3, 3, String::new());
             http_response(200, "OK", "application/json", body.into_bytes())
         }
         "/profiles/list" => profiles_list_bridge_response(paths),
@@ -387,11 +392,13 @@ pub(crate) fn bridge_response_with_token(
             };
             let req =
                 register_cancellable_request(&params, state, "comparing", 1, "Comparing images");
-            let (mut body, result) =
-                linsync::image_compare_bridge_response_with_profile(query, &profile.image);
+            let (mut body, result) = linsync::image_compare_bridge_response_with_profile_and_cancel(
+                query,
+                &profile.image,
+                req.cancel_checker(),
+            );
             // If the user hit Stop during the compare, discard the result.
             if req.is_cancelled() {
-                remove_cancellable_request(&req, state);
                 return http_response(
                     200,
                     "OK",
@@ -399,7 +406,6 @@ pub(crate) fn bridge_response_with_token(
                     br#"{"cancelled":true}"#.to_vec(),
                 );
             }
-            remove_cancellable_request(&req, state);
             let result_for_tab = result.clone();
             let overlay_path = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
@@ -447,7 +453,7 @@ pub(crate) fn bridge_response_with_token(
             let req =
                 register_cancellable_request(&params, state, "fetching", 3, "Fetching webpages");
             set_progress(
-                &req.progress,
+                &req.progress(),
                 "fetching",
                 1,
                 3,
@@ -461,7 +467,6 @@ pub(crate) fn bridge_response_with_token(
             // If the user hit Stop during the (potentially slow) fetch/render,
             // discard the result and report cancellation.
             if req.is_cancelled() {
-                remove_cancellable_request(&req, state);
                 return http_response(
                     200,
                     "OK",
@@ -470,7 +475,7 @@ pub(crate) fn bridge_response_with_token(
                 );
             }
             set_progress(
-                &req.progress,
+                &req.progress(),
                 "finalizing",
                 2,
                 3,
@@ -492,8 +497,7 @@ pub(crate) fn bridge_response_with_token(
                     state,
                 );
             }
-            set_progress(&req.progress, "done", 3, 3, String::new());
-            remove_cancellable_request(&req, state);
+            set_progress(&req.progress(), "done", 3, 3, String::new());
             http_response(200, "OK", "application/json", body.into_bytes())
         }
         "/compare/webpage/clear-cache" => {
@@ -1355,33 +1359,16 @@ pub(crate) fn compare_bridge_response(
     // cancel flag so a concurrent `/cancel?id=X` can abort this compare. The
     // flag is registered/removed under the state lock, but the long compare
     // below runs WITHOUT holding the lock, so `/cancel` is never blocked by it.
-    let (request_id, progress) =
-        register_progress_request(&params, state, "starting", 0, "Starting compare");
-    let should_cancel: Box<dyn Fn() -> bool> = if let Some(id) = &request_id {
-        let flag = Arc::new(AtomicBool::new(false));
-        if let Ok(mut state) = state.lock() {
-            state.compare_cancels.insert(id.clone(), Arc::clone(&flag));
-        }
-        Box::new(move || flag.load(Ordering::Relaxed))
-    } else {
-        Box::new(|| false)
-    };
+    let req = register_cancellable_request(&params, state, "starting", 0, "Starting compare");
 
     let maybe_tab = build_tab_for_paths_with_mode_cancellable_and_artifacts(
         Path::new(left),
         Path::new(right),
         query_value(&params, "mode"),
         &options,
-        &*should_cancel,
-        progress,
+        req.cancel_checker(),
+        req.progress(),
     );
-
-    if let Some(id) = &request_id
-        && let Ok(mut state) = state.lock()
-    {
-        state.compare_cancels.remove(id);
-    }
-    remove_progress_request(request_id.as_deref(), state);
 
     let Some((tab, artifact_dirs)) = maybe_tab else {
         // The compare was cancelled — leave the session state untouched.
@@ -3125,26 +3112,17 @@ pub(crate) fn sessions_save_bridge_response(
     session_file.selected_view = compare_view_mode(&tab.mode);
     persist_tab_snapshot(&mut session_file, &tab);
     let store = RecentSessionStore::new(paths.recent_sessions_file(), recent_limit(paths));
-    let mut recent: RecentSessions = match store.load_or_default() {
-        Ok(value) => value,
-        Err(err) => {
-            return bridge_error(
-                500,
-                "Internal Server Error",
-                &format!("failed to load sessions: {err}"),
-            );
+    match store.add(session_file) {
+        Ok(_) => {
+            let body = serde_json::json!({"ok":true}).to_string();
+            http_response(200, "OK", "application/json", body.into_bytes())
         }
-    };
-    recent.sessions.insert(0, session_file);
-    if let Err(err) = store.save(&recent) {
-        return bridge_error(
+        Err(err) => bridge_error(
             500,
             "Internal Server Error",
             &format!("failed to save session: {err}"),
-        );
+        ),
     }
-    let body = serde_json::json!({"ok":true}).to_string();
-    http_response(200, "OK", "application/json", body.into_bytes())
 }
 
 pub(crate) fn filters_list_bridge_response(paths: &AppPaths) -> Vec<u8> {

@@ -15,7 +15,8 @@
 //! everything it can; the kernel/runtime can't enforce the policy.
 
 use linsync_core::plugin::{
-    PluginClass, PluginExecutionOptions, PluginManifest, PluginSandbox, run_plugin_helper,
+    PluginClass, PluginError, PluginExecutionOptions, PluginManifest, PluginSandbox,
+    run_plugin_helper, run_streaming_plugin,
 };
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -195,4 +196,71 @@ fn fork_bomb_does_not_hang_the_test_runner() {
         elapsed < Duration::from_secs(15),
         "fork-bomb helper hung the runner for {elapsed:?}"
     );
+}
+
+fn streaming_manifest_for(entry: &str) -> PluginManifest {
+    PluginManifest {
+        streaming: true,
+        ..manifest_for(entry)
+    }
+}
+
+#[test]
+fn streaming_plugin_stall_after_header_times_out() {
+    // The fake streaming helper needs a language runtime that can flush a
+    // binary 4-byte header and then keep the process alive without writing
+    // the promised payload.
+    let python3 = std::process::Command::new("which")
+        .arg("python3")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if python3.is_empty() {
+        eprintln!("SKIP: python3 not available for fake streaming plugin");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let helper = tmp.path().join("helper.py");
+    // Emit a 4-byte little-endian length header declaring a 1 MiB chunk,
+    // flush it, then sleep forever so the payload never arrives.
+    std::fs::write(
+        &helper,
+        r#"#!/usr/bin/env python3
+import sys, time
+_ = sys.stdin.read()
+sys.stdout.buffer.write(b'\x00\x00\x10\x00')
+sys.stdout.buffer.flush()
+while True:
+    time.sleep(3600)
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&helper).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&helper, perms).unwrap();
+
+    let manifest = streaming_manifest_for("./helper.py");
+    let opts = PluginExecutionOptions {
+        timeout: Duration::from_millis(500),
+        max_total_bytes: 64 * 1024 * 1024,
+        ..Default::default()
+    };
+
+    let start = std::time::Instant::now();
+    let req = serde_json::json!({"op":"probe","source":tmp.path().to_str().unwrap()});
+    let result = run_streaming_plugin(tmp.path(), &manifest, &req.to_string(), &opts);
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "streaming helper hung the runner for {elapsed:?} despite 500 ms timeout"
+    );
+    match result {
+        Err(PluginError::TimedOut { .. }) => {}
+        other => panic!("expected PluginError::TimedOut, got {other:?}"),
+    }
 }

@@ -447,6 +447,32 @@ fn find_renderer_plugin(plugins_root: &Path) -> Option<DiscoveredPlugin> {
 /// a `pdf_renderer` plugin, then diff corresponding pages through the image
 /// engine. Requires the `image-compare` feature.
 #[cfg(feature = "image-compare")]
+/// RAII guard for the temporary directories created by the rendered document
+/// compare. On drop it removes both sides unless explicitly released, so error
+/// paths cannot leak the rendered-page PNG caches.
+struct RenderedPageDirs {
+    left: Option<PathBuf>,
+    right: Option<PathBuf>,
+}
+
+impl RenderedPageDirs {
+    fn release(&mut self) {
+        self.left.take();
+        self.right.take();
+    }
+}
+
+impl Drop for RenderedPageDirs {
+    fn drop(&mut self) {
+        if let Some(dir) = self.left.take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        if let Some(dir) = self.right.take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 fn compare_document_rendered(
     left: &Path,
     right: &Path,
@@ -479,6 +505,10 @@ fn compare_document_rendered(
     let right_dir = base.join(format!("{pid}-{}-right", path_tag(right)));
     std::fs::create_dir_all(&left_dir)?;
     std::fs::create_dir_all(&right_dir)?;
+    let mut dir_guard = RenderedPageDirs {
+        left: Some(left_dir.clone()),
+        right: Some(right_dir.clone()),
+    };
 
     let exec = PluginExecutionOptions {
         timeout: Duration::from_secs(options.timeout_secs),
@@ -568,9 +598,9 @@ fn compare_document_rendered(
         }
     }
 
-    if !options.retain_rendered_pages {
-        let _ = std::fs::remove_dir_all(&left_dir);
-        let _ = std::fs::remove_dir_all(&right_dir);
+    if options.retain_rendered_pages {
+        // Ownership transfers to the caller (via the page paths in the result).
+        dir_guard.release();
     }
 
     Ok(DocumentCompareResult {
@@ -859,5 +889,49 @@ mod rendered_tests {
             compare_document_files(&a, &a, &plugins_root, &rendered_options(&tmp)).unwrap_err();
         assert!(matches!(err, DocumentCompareError::NoSuitablePlugin { .. }));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rendered_page_dirs_are_removed_on_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = tmp.path().join("left");
+        let right = tmp.path().join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        {
+            let _guard = RenderedPageDirs {
+                left: Some(left.clone()),
+                right: Some(right.clone()),
+            };
+            assert!(left.exists() && right.exists());
+        }
+        assert!(
+            !left.exists(),
+            "left rendered-page temp dir should be removed on drop"
+        );
+        assert!(
+            !right.exists(),
+            "right rendered-page temp dir should be removed on drop"
+        );
+    }
+
+    #[test]
+    fn rendered_page_dirs_release_prevents_cleanup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = tmp.path().join("left");
+        let right = tmp.path().join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        {
+            let mut guard = RenderedPageDirs {
+                left: Some(left.clone()),
+                right: Some(right.clone()),
+            };
+            guard.release();
+        }
+        assert!(
+            left.exists() && right.exists(),
+            "released dirs must survive drop"
+        );
     }
 }

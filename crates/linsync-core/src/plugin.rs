@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -1483,6 +1483,7 @@ pub fn run_streaming_plugin(
         .ok_or_else(|| io::Error::other("streaming plugin stdout pipe missing"))?;
 
     let started = std::time::Instant::now();
+    let deadline = started + options.timeout;
     let mut chunks: Vec<PluginChunk> = Vec::new();
     let mut total_bytes: usize = 0;
 
@@ -1519,7 +1520,24 @@ pub fn run_streaming_plugin(
 
         // Read the 4-byte length header.
         let mut header = [0u8; 4];
-        match read_exact_or_eof(&mut stdout, &mut header)? {
+        let header_n = match read_exact_or_timeout(&mut stdout, &mut header, deadline) {
+            Ok(n) => n,
+            Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                kill_plugin_helper(&mut child);
+                let stderr = read_limited_text(
+                    &stderr_path,
+                    PluginOutputStream::Stderr,
+                    options.stderr_limit,
+                )
+                .unwrap_or_default();
+                return Err(PluginError::TimedOut {
+                    timeout: options.timeout,
+                    stderr,
+                });
+            }
+            Err(err) => return Err(PluginError::Io(err)),
+        };
+        match header_n {
             0 => break, // clean EOF — plugin finished
             4 => {}     // full header received
             n => {
@@ -1552,12 +1570,28 @@ pub fn run_streaming_plugin(
 
         // Read the chunk payload.
         let mut payload = vec![0u8; chunk_len];
-        let n = read_exact_or_eof(&mut stdout, &mut payload)?;
-        if n != chunk_len {
+        let payload_n = match read_exact_or_timeout(&mut stdout, &mut payload, deadline) {
+            Ok(n) => n,
+            Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                kill_plugin_helper(&mut child);
+                let stderr = read_limited_text(
+                    &stderr_path,
+                    PluginOutputStream::Stderr,
+                    options.stderr_limit,
+                )
+                .unwrap_or_default();
+                return Err(PluginError::TimedOut {
+                    timeout: options.timeout,
+                    stderr,
+                });
+            }
+            Err(err) => return Err(PluginError::Io(err)),
+        };
+        if payload_n != chunk_len {
             kill_plugin_helper(&mut child);
             return Err(PluginError::TruncatedChunk {
                 declared_len: chunk_len,
-                actual_len: n,
+                actual_len: payload_n,
             });
         }
 
@@ -1590,6 +1624,7 @@ pub fn run_streaming_plugin(
 /// Returns `Ok(0)` only if the very first byte read results in EOF.  Returns
 /// `Ok(buf.len())` on a complete fill.  Returns a short count if EOF arrives
 /// after at least one byte — the caller treats that as a truncated frame.
+#[cfg(not(unix))]
 fn read_exact_or_eof(reader: &mut impl io::Read, buf: &mut [u8]) -> io::Result<usize> {
     let mut filled = 0;
     while filled < buf.len() {
@@ -1601,6 +1636,84 @@ fn read_exact_or_eof(reader: &mut impl io::Read, buf: &mut [u8]) -> io::Result<u
         }
     }
     Ok(filled)
+}
+
+/// Read bytes into `buf` from `reader`, returning the number of bytes read.
+///
+/// On Unix this uses `libc::poll` to wait on the file descriptor with a
+/// deadline, so a stalled helper cannot block the host past `options.timeout`.
+/// On other platforms it falls back to `read_exact_or_eof` and relies on the
+/// between-frame timeout checks.
+#[cfg(unix)]
+fn read_exact_or_timeout(
+    reader: &mut ChildStdout,
+    buf: &mut [u8],
+    deadline: std::time::Instant,
+) -> io::Result<usize> {
+    use std::os::unix::io::AsRawFd;
+
+    let mut filled = 0;
+    let fd = reader.as_raw_fd();
+
+    while filled < buf.len() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "streaming read deadline exceeded",
+            ));
+        }
+
+        let timeout_ms = remaining.as_millis().try_into().unwrap_or(i32::MAX);
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+
+        if ret < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::Interrupted {
+                return Err(err);
+            }
+            continue;
+        }
+
+        if ret == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "streaming read deadline exceeded",
+            ));
+        }
+
+        if pollfd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+            return Err(io::Error::other("stdout poll error"));
+        }
+
+        if pollfd.revents & libc::POLLIN == 0 {
+            // Peer closed the pipe (POLLHUP) with no data left to read.
+            break;
+        }
+
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(filled)
+}
+
+#[cfg(not(unix))]
+fn read_exact_or_timeout(
+    reader: &mut ChildStdout,
+    buf: &mut [u8],
+    _deadline: std::time::Instant,
+) -> io::Result<usize> {
+    read_exact_or_eof(reader, buf)
 }
 
 /// Extract the source path from a plugin request JSON so the sandbox can grant
