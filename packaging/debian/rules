@@ -27,6 +27,7 @@ override_dh_auto_install:
 	install -Dm755 target/release/linsync-cli debian/linsync/usr/bin/linsync-cli
 	mkdir -p debian/linsync/usr/share/linsync
 	cp -R apps/linsync-gui/qml debian/linsync/usr/share/linsync/qml
+	cp -R packaging/plugins debian/linsync/usr/share/linsync/plugins
 	install -Dm644 packaging/distro/git-mergetool.gitconfig \
 	    debian/linsync/usr/share/linsync/git-mergetool.gitconfig
 	install -Dm644 packaging/com.visorcraft.LinSync.desktop      debian/linsync/usr/share/applications/com.visorcraft.LinSync.desktop

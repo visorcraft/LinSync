@@ -328,7 +328,7 @@ pub enum PluginClass {
     DocumentTextExtractor,
     /// Performs OCR to produce text from image or PDF inputs (used by tesseract-ocr plugin).
     OcrEngine,
-    /// Renders document pages to images for rendered-document compare (future use).
+    /// Renders document pages to images for rendered-document compare.
     PdfRenderer,
 }
 

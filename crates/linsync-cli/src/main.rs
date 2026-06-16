@@ -292,6 +292,20 @@ const REPORT_FLAGS: &[&str] = &[
 const PATCH_FLAGS: &[&str] = &["--output", "-o", "--format", "--context", "--preview"];
 const REVEAL_FLAGS: &[&str] = &["--wait"];
 const SELF_COMPARE_FLAGS: &[&str] = &["--json"];
+const ARCHIVE_FLAGS: &[&str] = &["--keep-temp", "--json", "--unpacker"];
+const CACHE_FLAGS: &[&str] = &["--scope"];
+const FILTER_FLAGS: &[&str] = &["--out", "--in-place"];
+const PROFILE_FLAGS: &[&str] = &["--output", "-o"];
+const PLUGIN_FLAGS: &[&str] = &["--json", "--input", "--timeout-ms"];
+const PROJECT_FLAGS: &[&str] = &["--json", "--output", "-o"];
+const SESSION_FLAGS: &[&str] = &["--base", "--title", "--profile", "--view"];
+const WEBPAGE_FLAGS: &[&str] = &[
+    "--sub-mode",
+    "--depth",
+    "--timeout",
+    "--max-requests",
+    "--accept-network-fetch",
+];
 const TABLE_FLAGS: &[&str] = &[
     "--header",
     "--delimiter",

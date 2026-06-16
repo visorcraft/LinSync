@@ -24,7 +24,8 @@ Depends:
  qml6-module-qtquick-dialogs,
  qml6-module-qtquick-controls,
  hicolor-icon-theme,
- bubblewrap
+ bubblewrap,
+ unzip
 Recommends: dolphin
 Description: Linux-native visual file and folder comparison
  LinSync is a Rust + Qt 6 desktop application for file and folder diffing.

@@ -909,14 +909,41 @@ pub fn compare_documents_cancellable(
                 )
             }
         }
-        DiffAlgorithm::Patience => patience_diff(
+        // Myers stores a full trace of V vectors — O((n+m)²) memory — which
+        // can OOM / hang on large inputs (e.g. 20k+20k lines → ~25 GB). Fall
+        // back to linear-space Hirschberg above the threshold, matching the
+        // LCS path's guard. The result is still a valid minimal edit script.
+        DiffAlgorithm::Myers if n > LCS_FULL_TABLE_THRESHOLD || m > LCS_FULL_TABLE_THRESHOLD => {
+            hirschberg_diff(
+                &left_document,
+                &right_document,
+                &left_lines,
+                &right_lines,
+                should_cancel,
+            )?
+        }
+        DiffAlgorithm::Myers => myers_diff(
             &left_document,
             &right_document,
             &left_lines,
             &right_lines,
             should_cancel,
         )?,
-        DiffAlgorithm::Myers => myers_diff(
+        // Patience recurses into LCS for inter-anchor gaps; the top-level
+        // guard keeps individual gaps under the LCS threshold but the
+        // anchor-finding scan itself is O(n×m) (see patience_diff). For very
+        // large inputs, fall back to Hirschberg to avoid both the scan cost
+        // and the memory pressure of many recursive LCS sub-problems.
+        DiffAlgorithm::Patience if n > LCS_FULL_TABLE_THRESHOLD || m > LCS_FULL_TABLE_THRESHOLD => {
+            hirschberg_diff(
+                &left_document,
+                &right_document,
+                &left_lines,
+                &right_lines,
+                should_cancel,
+            )?
+        }
+        DiffAlgorithm::Patience => patience_diff(
             &left_document,
             &right_document,
             &left_lines,
@@ -1979,10 +2006,17 @@ fn patience_diff(
     }
 
     let mut unique_pairs: Vec<(usize, usize)> = Vec::new();
+    // Build a map from right-line text → first index so the unique-line
+    // lookup is O(1) instead of O(m) per left line (which makes the whole
+    // anchor scan O(n×m) for files where most lines are unique).
+    let mut right_first_index: HashMap<&str, usize> = HashMap::new();
+    for (ri, r) in right.iter().enumerate() {
+        right_first_index.entry(r.text.as_str()).or_insert(ri);
+    }
     for (li, l) in left.iter().enumerate() {
         if left_counts[&l.text] == 1
             && right_counts.get(&l.text) == Some(&1)
-            && let Some(ri) = right.iter().position(|r| r.text == l.text)
+            && let Some(&ri) = right_first_index.get(l.text.as_str())
         {
             unique_pairs.push((li, ri));
         }

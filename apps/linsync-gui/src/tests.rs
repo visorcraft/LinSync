@@ -2881,6 +2881,7 @@ fn bridge_token_is_required_when_configured() {
     let state = test_bridge_state(None);
     let missing = String::from_utf8(bridge_response_with_token(
         "GET /health HTTP/1.1\r\n",
+        &[],
         &paths,
         &state,
         Some("secret-token"),
@@ -2888,6 +2889,7 @@ fn bridge_token_is_required_when_configured() {
     .expect("utf-8 response");
     let present = String::from_utf8(bridge_response_with_token(
         "GET /secret-token/health HTTP/1.1\r\n",
+        &[],
         &paths,
         &state,
         Some("secret-token"),

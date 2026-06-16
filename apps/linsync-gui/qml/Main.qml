@@ -15,6 +15,7 @@ Kirigami.ApplicationWindow {
 
     property int activeSection: 0
     property string statusText: "Ready"
+    property string statusSeverity: "info"
     // Announce status/error changes to assistive technology as they happen.
     // Accessible.announce() exists on Qt 6.8+; guarded so older Qt is a no-op.
     onStatusTextChanged: {
@@ -31,6 +32,9 @@ Kirigami.ApplicationWindow {
     property bool editRightMode: false
     property string editLeftDirtyText: ""
     property string editRightDirtyText: ""
+    property string pendingRemovePluginId: ""
+    property string pendingRemovePluginName: ""
+    property string pendingEditToggleSide: ""
     property string compareMode: "Text"
     property string differenceText: "0 differences"
     property var summaryItems: []
@@ -154,6 +158,23 @@ Kirigami.ApplicationWindow {
         id: folderSearchDebounce
         interval: 250
         onTriggered: root.applyFolderFilter()
+    }
+    // Debounce rapid compare retriggers — e.g. holding the context-lines
+    // spinbox up/down or scrolling it fires onValueModified per step, and
+    // without this each step kicks off a fresh /compare that piles onto the
+    // bridge (the prior ones get cancelled by requestCompare's cancel-before-
+    // fire, but skipping the storm entirely is cheaper). The last value wins.
+    // One-shot triggers (swap, reload, render-mode change) call requestCompare
+    // directly and fire immediately.
+    Timer {
+        id: compareRetriggerDebounce
+        interval: 250
+        property bool pendingNewTab: false
+        onTriggered: root.requestCompare(pendingNewTab)
+    }
+    function scheduleCompare(newTab) {
+        compareRetriggerDebounce.pendingNewTab = newTab
+        compareRetriggerDebounce.restart()
     }
     onFolderSearchChanged: {
         if (root.folderTotalEntries > 0)
@@ -475,6 +496,16 @@ Kirigami.ApplicationWindow {
         return root['zebra' + (index % 2)]
     }
 
+    function showStatus(msg) {
+        root.statusText = msg
+        root.statusSeverity = "info"
+    }
+
+    function showError(msg) {
+        root.statusText = msg
+        root.statusSeverity = "error"
+    }
+
     // Full-opacity change-bar color for a diff state, drawn as a thin marker at
     // the left edge of each changed row. The per-row background tint is only
     // 14–22% alpha — too faint under a high-contrast color scheme — so this
@@ -678,10 +709,20 @@ Kirigami.ApplicationWindow {
 
     function toggleEditMode(side) {
         if (side === "left") {
+            if (root.editLeftMode && root.editLeftDirtyText !== "") {
+                root.pendingEditToggleSide = side
+                editDiscardDialog.open()
+                return
+            }
             root.editLeftMode = !root.editLeftMode
             if (!root.editLeftMode)
                 root.editLeftDirtyText = ""
         } else {
+            if (root.editRightMode && root.editRightDirtyText !== "") {
+                root.pendingEditToggleSide = side
+                editDiscardDialog.open()
+                return
+            }
             root.editRightMode = !root.editRightMode
             if (!root.editRightMode)
                 root.editRightDirtyText = ""
@@ -695,7 +736,6 @@ Kirigami.ApplicationWindow {
             return
         const request = new XMLHttpRequest()
         const url = root.bridgeUrl + "/file/write?path=" + encodeURIComponent(path)
-            + "&content=" + encodeURIComponent(content)
         request.onreadystatechange = function () {
             if (request.readyState === XMLHttpRequest.DONE) {
                 if (request.status === 200) {
@@ -715,8 +755,8 @@ Kirigami.ApplicationWindow {
                 }
             }
         }
-        request.open("GET", url)
-        request.send()
+        request.open("POST", url)
+        request.send(content)
     }
 
     // `searchRe` is the regex compiled once per rebuild (or null for literal
@@ -1679,6 +1719,12 @@ Kirigami.ApplicationWindow {
         if (tabId === 0)
             return
 
+        // Closing the active tab while a compare is running: cancel it so
+        // the bridge stops the work instead of finishing it for a tab that
+        // is about to be gone.
+        if (tabId === root.activeTabId)
+            cancelActiveCompare()
+
         // Closing the tab that owns an in-flight archive edit would strand it
         // (no banner to reach commit/discard). Discard it first so its staging
         // and token are released rather than leaked to the startup sweep.
@@ -2124,6 +2170,12 @@ Kirigami.ApplicationWindow {
             return
         }
 
+        // Cancel any in-flight compare so its (now-superseded) work stops
+        // instead of running concurrently on the bridge. The stale-response
+        // guard below ensures the cancelled request's late response can't
+        // clobber this one's state.
+        cancelActiveCompare()
+
         root.statusText = "Comparing"
         root.requestCounter += 1
         var reqId = "req-" + root.requestCounter
@@ -2144,6 +2196,12 @@ Kirigami.ApplicationWindow {
             url += "&new_tab=1"
         request.onreadystatechange = function () {
             if (request.readyState === XMLHttpRequest.DONE) {
+                // Stale-response guard: if a newer compare was started (or
+                // this one was cancelled), reqId no longer matches the active
+                // id — drop the response without touching comparing/state so
+                // the in-flight request owns those flags.
+                if (reqId !== root.activeRequestId)
+                    return
                 root.comparing = false
                 root.activeRequestId = ""
                 if (request.status === 200) {
@@ -2154,7 +2212,11 @@ Kirigami.ApplicationWindow {
                         applyLaunchContext(payload, false)
                     }
                 } else {
-                    root.statusText = "Compare failed"
+                    var errPayload = null
+                    try { errPayload = JSON.parse(request.responseText) } catch (_e) {}
+                    root.statusText = (errPayload && errPayload.error)
+                        ? qsTr("Compare failed: %1").arg(errPayload.error)
+                        : qsTr("Compare failed")
                 }
             }
         }
@@ -2612,6 +2674,11 @@ Kirigami.ApplicationWindow {
         loadLaunchArguments()
         loadUiSettings()
     }
+
+    // On quit: cancel any in-flight compare so the bridge worker thread
+    // stops promptly instead of running to completion after the window is
+    // gone (the process waits on the bridge server thread to finish).
+    Component.onDestruction: cancelActiveCompare()
 
 
     Shortcut {
@@ -3497,6 +3564,105 @@ Kirigami.ApplicationWindow {
                     root.pendingCloseTabId = 0
                     closeDirtyDialog.close()
                 }
+            }
+        }
+    }
+
+    Controls.Dialog {
+        id: pluginRemoveDialog
+        modal: true
+        title: qsTr("Remove plugin?")
+        width: Math.min(root.width - 48, 400)
+        x: Math.round((root.width - width) / 2)
+        y: Math.round((root.height - height) / 2)
+        closePolicy: Controls.Popup.CloseOnEscape | Controls.Popup.CloseOnPressOutside
+
+        contentItem: Controls.Label {
+            text: qsTr("Uninstall \"%1\" from the user plugins folder? This cannot be undone.").arg(root.pendingRemovePluginName)
+            wrapMode: Text.WordWrap
+        }
+
+        footer: RowLayout {
+            spacing: Kirigami.Units.smallSpacing
+            Controls.Button {
+                icon.name: "edit-delete-remove"
+                icon.color: root.activeText
+                text: qsTr("Remove")
+                onClicked: {
+                    const id = root.pendingRemovePluginId
+                    const name = root.pendingRemovePluginName
+                    pluginRemoveDialog.close()
+                    root.bridgeGet("/plugins/remove?id=" + encodeURIComponent(id),
+                        function (ok, payload, status) {
+                            if (ok) {
+                                pluginsPage.showActionResult(qsTr("Removed %1").arg(name))
+                                root.loadPlugins(function (p) { pluginsPage.applyDiscovery(p) })
+                            } else if (status === 404) {
+                                pluginsPage.showActionResult(qsTr("%1 is not installed").arg(name))
+                            } else {
+                                pluginsPage.showActionResult(qsTr("Could not remove %1").arg(name))
+                            }
+                        })
+                }
+            }
+            Item { Layout.fillWidth: true }
+            Controls.Button {
+                icon.name: "dialog-cancel"
+                icon.color: root.activeText
+                text: qsTr("Cancel")
+                onClicked: pluginRemoveDialog.close()
+            }
+        }
+    }
+
+    Controls.Dialog {
+        id: editDiscardDialog
+        modal: true
+        title: qsTr("Discard unsaved edits?")
+        width: Math.min(root.width - 48, 420)
+        x: Math.round((root.width - width) / 2)
+        y: Math.round((root.height - height) / 2)
+        closePolicy: Controls.Popup.CloseOnEscape | Controls.Popup.CloseOnPressOutside
+
+        contentItem: Controls.Label {
+            text: qsTr("Exiting edit mode will discard your unsaved changes.")
+            wrapMode: Text.WordWrap
+        }
+
+        footer: RowLayout {
+            spacing: Kirigami.Units.smallSpacing
+            Controls.Button {
+                icon.name: "document-save"
+                icon.color: root.activeText
+                text: qsTr("Save then exit")
+                onClicked: {
+                    const side = root.pendingEditToggleSide
+                    editDiscardDialog.close()
+                    root.saveEdit(side)
+                }
+            }
+            Controls.Button {
+                icon.name: "edit-delete"
+                icon.color: root.activeText
+                text: qsTr("Discard")
+                onClicked: {
+                    const side = root.pendingEditToggleSide
+                    editDiscardDialog.close()
+                    if (side === "left") {
+                        root.editLeftMode = false
+                        root.editLeftDirtyText = ""
+                    } else {
+                        root.editRightMode = false
+                        root.editRightDirtyText = ""
+                    }
+                }
+            }
+            Item { Layout.fillWidth: true }
+            Controls.Button {
+                icon.name: "dialog-cancel"
+                icon.color: root.activeText
+                text: qsTr("Cancel")
+                onClicked: editDiscardDialog.close()
             }
         }
     }
@@ -4467,7 +4633,7 @@ Kirigami.ApplicationWindow {
                         onValueModified: {
                             root.contextLines = value
                             if (root.contextFolding)
-                                root.requestCompare(false)
+                                root.scheduleCompare(false)
                         }
                     }
 
@@ -5443,7 +5609,12 @@ Kirigami.ApplicationWindow {
                     Controls.Label {
                         id: statusBarLabel
                         text: root.statusText
-                        color: root.activeText
+                        color: {
+                            var lower = root.statusText.toLowerCase()
+                            if (lower.indexOf("failed") >= 0 || lower.indexOf("could not") >= 0 || lower.indexOf("unavailable") >= 0 || lower.indexOf("error") >= 0)
+                                return Kirigami.Theme.negativeTextColor
+                            return root.activeText
+                        }
                         // Expose the status line as a live region so screen
                         // readers announce status/error changes as they happen.
                         Accessible.role: Accessible.StaticText
@@ -5691,17 +5862,9 @@ Kirigami.ApplicationWindow {
                 }
                 onPluginInstallRequested: pluginInstallDialog.open()
                 onPluginRemoveRequested: function(id, name) {
-                    root.bridgeGet("/plugins/remove?id=" + encodeURIComponent(id),
-                        function (ok, payload, status) {
-                            if (ok) {
-                                pluginsPage.showActionResult(qsTr("Removed %1").arg(name))
-                                root.loadPlugins(function (p) { pluginsPage.applyDiscovery(p) })
-                            } else if (status === 404) {
-                                pluginsPage.showActionResult(qsTr("%1 is not installed").arg(name))
-                            } else {
-                                pluginsPage.showActionResult(qsTr("Could not remove %1").arg(name))
-                            }
-                        })
+                    root.pendingRemovePluginId = id
+                    root.pendingRemovePluginName = name
+                    pluginRemoveDialog.open()
                 }
                 onPluginOptionsRequested: function(id, name) {
                     if (root.bridgeUrl === "") return

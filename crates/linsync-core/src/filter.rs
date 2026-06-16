@@ -1,7 +1,9 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use regex::RegexBuilder;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -922,11 +924,41 @@ fn system_time_millis(time: SystemTime) -> Option<u128> {
         .map(|duration| duration.as_millis())
 }
 
+// Thread-local cache of compiled filter regexes, keyed by (pattern,
+// case_sensitive). The folder walk calls `regex_match` once per directory
+// entry × per regex filter rule — without this cache, a 100k-entry tree with
+// one regex filter recompiles the regex ~100k times (each compile is
+// µs–ms). The cache is bounded by the number of distinct filter rules × 2
+// (case-sensitive vs insensitive), which is a handful for typical usage.
+thread_local! {
+    static FILTER_REGEX_CACHE:
+        RefCell<HashMap<(String, bool), Option<Regex>>> =
+        RefCell::new(HashMap::new());
+}
+
 fn regex_match(pattern: &str, value: &str, case_sensitive: bool) -> bool {
-    RegexBuilder::new(pattern)
+    // Fast path: check the thread-local cache.
+    let cached = FILTER_REGEX_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        cache
+            .get(&(pattern.to_owned(), case_sensitive))
+            .map(|regex| regex.as_ref().map(|r| r.is_match(value)).unwrap_or(false))
+    });
+    if let Some(result) = cached {
+        return result;
+    }
+    // Slow path: compile, cache, then match.
+    let compiled = RegexBuilder::new(pattern)
         .case_insensitive(!case_sensitive)
         .build()
-        .is_ok_and(|regex| regex.is_match(value))
+        .ok();
+    let result = compiled.as_ref().is_some_and(|regex| regex.is_match(value));
+    FILTER_REGEX_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .insert((pattern.to_owned(), case_sensitive), compiled);
+    });
+    result
 }
 
 fn wildcard_match(pattern: &str, value: &str) -> bool {

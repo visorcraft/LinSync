@@ -356,9 +356,9 @@ fn extract_text_with_plugin(
 /// (e.g. `<workspace>/packaging/plugins` in development, or
 /// `/usr/share/linsync/plugins` in a system install).
 ///
-/// When `mode` is `Rendered`, this function currently returns
-/// `DocumentCompareError::NoSuitablePlugin` — Phase 7 integration is not
-/// implemented in v1.
+/// When `mode` is `Rendered`, pages are rasterized via a `pdf_renderer`
+/// plugin and diffed through the image engine (requires the `image-compare`
+/// feature). Without that feature, returns `DocumentCompareError::NoSuitablePlugin`.
 pub fn compare_document_files(
     left: &Path,
     right: &Path,

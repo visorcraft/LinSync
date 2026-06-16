@@ -15,4 +15,3 @@ seccompiler = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
-scopeguard = "1"

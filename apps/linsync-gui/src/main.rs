@@ -446,6 +446,17 @@ struct GuiBridgeState {
     /// Extracted archive cache directories, keyed by tab id. Cleaned up when
     /// the tab is closed.
     archive_extract_dirs: HashMap<u64, PathBuf>,
+    /// Cached folder compare result for the active folder tab, so `/folder/query`
+    /// and folder-op plan/execute can page/sort/filter without re-running the
+    /// comparison. Invalidated whenever a new compare is applied.
+    folder_compare_cache: Option<FolderCompareCache>,
+}
+
+struct FolderCompareCache {
+    left: PathBuf,
+    right: PathBuf,
+    options: linsync_core::FolderCompareOptions,
+    result: Arc<linsync_core::FolderCompareResult>,
 }
 
 struct CompareProgress {
@@ -504,7 +515,7 @@ fn remove_progress_request(request_id: Option<&str>, state: &Arc<Mutex<GuiBridge
     }
 }
 
-const GUI_HISTORY_LIMIT: usize = 32;
+const GUI_HISTORY_LIMIT: usize = 16;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct GuiCompareOptions {
@@ -598,6 +609,7 @@ impl GuiBridgeState {
             archive_edit_tokens: HashMap::new(),
             rendered_page_cache_dirs: HashMap::new(),
             archive_extract_dirs: HashMap::new(),
+            folder_compare_cache: None,
         }
     }
 
@@ -621,6 +633,7 @@ impl GuiBridgeState {
     }
 
     fn apply_compare(&mut self, mut tab: GuiCompareTab, new_tab: bool) -> GuiLaunchContext {
+        self.folder_compare_cache = None;
         if new_tab || self.session.tabs.is_empty() {
             tab.id = self.next_tab_id;
             self.next_tab_id += 1;
@@ -654,10 +667,14 @@ impl GuiBridgeState {
         self.undo_stacks.remove(&tab_id);
         self.redo_stacks.remove(&tab_id);
         if let Some(dir) = self.rendered_page_cache_dirs.remove(&tab_id) {
-            let _ = fs::remove_dir_all(dir);
+            std::thread::spawn(move || {
+                let _ = fs::remove_dir_all(dir);
+            });
         }
         if let Some(dir) = self.archive_extract_dirs.remove(&tab_id) {
-            let _ = fs::remove_dir_all(dir);
+            std::thread::spawn(move || {
+                let _ = fs::remove_dir_all(dir);
+            });
         }
         if self.session.active_tab_id == tab_id {
             self.session.active_tab_id = self
@@ -759,6 +776,7 @@ impl GuiBridgeState {
             .find(|tab| tab.id == active_tab_id)
             .ok_or_else(|| "no active compare tab".to_owned())?;
         *tab = snapshot;
+        rederive_syntax_spans(tab);
         tab.status = "Undid last merge action".to_owned();
         self.push_redo_snapshot(active_tab_id, current);
         Ok(self.context())
@@ -785,6 +803,7 @@ impl GuiBridgeState {
             .find(|tab| tab.id == active_tab_id)
             .ok_or_else(|| "no active compare tab".to_owned())?;
         *tab = snapshot;
+        rederive_syntax_spans(tab);
         tab.status = "Redid last merge action".to_owned();
         self.push_undo_snapshot(active_tab_id, current);
         Ok(self.context())
@@ -820,13 +839,63 @@ impl GuiBridgeState {
     fn push_undo_snapshot(&mut self, tab_id: u64, mut snapshot: GuiCompareTab) {
         snapshot.can_undo = false;
         snapshot.can_redo = false;
+        strip_syntax_spans(&mut snapshot);
         push_limited_snapshot(self.undo_stacks.entry(tab_id).or_default(), snapshot);
     }
 
     fn push_redo_snapshot(&mut self, tab_id: u64, mut snapshot: GuiCompareTab) {
         snapshot.can_undo = false;
         snapshot.can_redo = false;
+        strip_syntax_spans(&mut snapshot);
         push_limited_snapshot(self.redo_stacks.entry(tab_id).or_default(), snapshot);
+    }
+}
+
+/// Clear syntax-highlight spans from every row in a snapshot to keep undo/redo
+/// memory bounded — each `SyntaxSpan` carries a heap-allocated `class: String`,
+/// and with thousands of rows × dozens of spans/row, retaining 32 full-deep
+/// clones can consume hundreds of MB. Spans are cheaply re-derived from the
+/// row text + syntax mode on undo/redo via `rederive_syntax_spans`.
+fn strip_syntax_spans(snapshot: &mut GuiCompareTab) {
+    for row in &mut snapshot.left_rows {
+        row.syntax_spans.clear();
+    }
+    for row in &mut snapshot.right_rows {
+        row.syntax_spans.clear();
+    }
+}
+
+/// Re-derive syntax-highlight spans for a tab's rows after restoring from a
+/// stripped undo/redo snapshot. Skips quietly if the mode can't be resolved
+/// (rows will simply render without highlighting until the next recompare).
+fn rederive_syntax_spans(tab: &mut GuiCompareTab) {
+    let mode = tab
+        .options
+        .as_ref()
+        .map(|opts| opts.text.syntax_mode)
+        .unwrap_or_default();
+    // Resolve Auto using the tab's file paths, mirroring core's
+    // resolved_syntax_mode — syntax_spans(text, Auto) returns empty spans
+    // because Auto must be mapped to a concrete language via extension first.
+    let resolved = if matches!(mode, linsync_core::TextSyntaxMode::Auto) {
+        linsync_core::syntax_mode_from_path(Path::new(&tab.left_path))
+            .or_else(|| linsync_core::syntax_mode_from_path(Path::new(&tab.right_path)))
+            .unwrap_or(linsync_core::TextSyntaxMode::Plain)
+    } else {
+        mode
+    };
+    if matches!(resolved, linsync_core::TextSyntaxMode::Plain) {
+        return;
+    }
+    for row in &mut tab.left_rows {
+        if row.syntax_spans.is_empty() && !row.text.is_empty() {
+            row.syntax_spans = linsync_core::syntax_spans(&row.text, resolved);
+        }
+    }
+    for row in &mut tab.right_rows {
+        if row.syntax_spans.is_empty() && !row.text.is_empty() {
+            row.syntax_spans = linsync_core::syntax_spans(&row.text, resolved);
+        }
     }
 }
 
@@ -1379,18 +1448,52 @@ fn write_owner_only(path: &Path, data: &[u8]) -> std::io::Result<()> {
 /// when something actually needs windowing so the common small-diff path
 /// serializes the borrow directly with no extra allocation.
 fn context_to_value(context: &GuiLaunchContext) -> Result<serde_json::Value, serde_json::Error> {
-    if context.session.tabs.iter().any(tab_needs_windowing) {
-        let mut windowed = context.clone();
-        for tab in &mut windowed.session.tabs {
-            apply_text_windowing(tab);
-            apply_folder_windowing(tab);
-            apply_binary_windowing(tab);
-            apply_table_windowing(tab);
-        }
-        serde_json::to_value(&windowed)
-    } else {
-        serde_json::to_value(context)
+    let any_needs_windowing = context.session.tabs.iter().any(tab_needs_windowing);
+    if !any_needs_windowing {
+        return serde_json::to_value(context);
     }
+
+    let tab_values: Result<Vec<serde_json::Value>, _> = context
+        .session
+        .tabs
+        .iter()
+        .map(|tab| {
+            if tab_needs_windowing(tab) {
+                let mut w = tab.clone();
+                apply_text_windowing(&mut w);
+                apply_folder_windowing(&mut w);
+                apply_binary_windowing(&mut w);
+                apply_table_windowing(&mut w);
+                serde_json::to_value(&w)
+            } else {
+                serde_json::to_value(tab)
+            }
+        })
+        .collect();
+
+    let mut session_map = serde_json::Map::new();
+    session_map.insert(
+        "active_tab_id".into(),
+        serde_json::to_value(context.session.active_tab_id)?,
+    );
+    session_map.insert("tabs".into(), serde_json::Value::Array(tab_values?));
+    session_map.insert(
+        "recent_paths".into(),
+        serde_json::to_value(&context.session.recent_paths)?,
+    );
+
+    let mut value = serde_json::Map::new();
+    value.insert("session".into(), serde_json::Value::Object(session_map));
+    if let Some(ref section) = context.startup_section {
+        value.insert(
+            "startup_section".into(),
+            serde_json::Value::String(section.clone()),
+        );
+    }
+    if let Some(ref merge) = context.merge {
+        value.insert("merge".into(), serde_json::to_value(merge)?);
+    }
+    Ok(serde_json::Value::Object(value))
 }
 
 fn context_to_json(context: &GuiLaunchContext) -> Result<String, String> {

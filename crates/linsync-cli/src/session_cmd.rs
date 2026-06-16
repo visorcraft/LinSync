@@ -112,7 +112,7 @@ pub(crate) fn session_save(
     }
     if positionals.len() != 2 {
         return Err(
-            "usage: linsync-cli session save LEFT RIGHT [--base BASE] [--title T] [--view MODE] [--profile ID] [--profile ID]"
+            "usage: linsync-cli session save LEFT RIGHT [--base BASE] [--title T] [--view MODE] [--profile ID]"
                 .to_owned(),
         );
     }

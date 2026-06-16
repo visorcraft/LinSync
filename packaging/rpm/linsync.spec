@@ -39,6 +39,7 @@ Requires:       hicolor-icon-theme
 Requires:       qt6-qtwebengine
 # Fallback plugin sandbox backend for kernels without Landlock (< 5.13).
 Requires:       bubblewrap
+Requires:       unzip
 
 Recommends:     dolphin
 
@@ -65,6 +66,7 @@ install -Dm755 "${target_dir}/release/linsync-cli" %{buildroot}%{_bindir}/linsyn
 
 install -d %{buildroot}%{_datadir}/linsync
 cp -R apps/linsync-gui/qml %{buildroot}%{_datadir}/linsync/qml
+cp -R packaging/plugins %{buildroot}%{_datadir}/linsync/plugins
 install -Dm644 packaging/distro/git-mergetool.gitconfig \
     %{buildroot}%{_datadir}/linsync/git-mergetool.gitconfig
 
@@ -99,6 +101,7 @@ done
 %{_bindir}/linsync
 %{_bindir}/linsync-cli
 %{_datadir}/linsync/qml
+%{_datadir}/linsync/plugins
 %{_datadir}/linsync/i18n
 %{_datadir}/linsync/git-mergetool.gitconfig
 %{_datadir}/applications/com.visorcraft.LinSync.desktop

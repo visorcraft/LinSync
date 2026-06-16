@@ -53,16 +53,40 @@ pub(crate) fn start_bridge_server(
     sweep_orphaned_archive_edits(&paths);
 
     thread::spawn(move || {
+        // Cap concurrent handler threads. This is a local single-client bridge
+        // (one QML XMLHttpRequest at a time in normal use), but a retrigger
+        // storm or progress-poll flood could otherwise spawn unbounded OS
+        // threads. Each excess connection is rejected with a 503 so the client
+        // retries on the next tick rather than queuing indefinitely.
+        const MAX_CONCURRENT_BRIDGE_CONNECTIONS: usize = 16;
+        let active = Arc::new(AtomicUsize::new(0));
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
                     // Handle each connection on its own thread so a `/cancel`
                     // request can be served while a `/compare` is still running
                     // (the accept loop must not block on a single request).
+                    if active.load(Ordering::Relaxed) >= MAX_CONCURRENT_BRIDGE_CONNECTIONS {
+                        tracing::warn!(
+                            concurrent = active.load(Ordering::Relaxed),
+                            "LinSync GUI bridge connection limit reached, rejecting"
+                        );
+                        // Drain and drop the stream so the client doesn't hang.
+                        drop(stream);
+                        continue;
+                    }
                     let paths = paths.clone();
                     let state = Arc::clone(&state);
                     let token = server_token.clone();
+                    let active = Arc::clone(&active);
+                    active.fetch_add(1, Ordering::Relaxed);
                     thread::spawn(move || {
+                        // RAII guard ensures the permit is released even if the
+                        // handler panics (default unwind strategy). Without this,
+                        // a panic would leak a permit and after MAX_CONCURRENT
+                        // panics wedge the bridge — the exact session-
+                        // accumulating hang this cap exists to prevent.
+                        let _guard = PermitGuard(Arc::clone(&active));
                         if let Err(err) = handle_bridge_connection(stream, &paths, &state, &token) {
                             tracing::warn!(error = %err, "LinSync GUI bridge request failed");
                         }
@@ -77,6 +101,17 @@ pub(crate) fn start_bridge_server(
     });
 
     Ok(BridgeServer { base_url })
+}
+
+/// RAII guard that decrements the bridge connection counter on drop, including
+/// panic unwind. Prevents a panicking handler from permanently leaking a
+/// connection permit and wedging the bridge.
+struct PermitGuard(Arc<AtomicUsize>);
+
+impl Drop for PermitGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 pub(crate) const MAX_BRIDGE_REQUEST_BYTES: u64 = 256 * 1024; // 256 KB — bumped for raw-text paste via query params
@@ -95,9 +130,9 @@ pub(crate) fn handle_bridge_connection(
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
 
-    // Reject any Origin: header from a non-loopback page.
     let mut origin: Option<String> = None;
     let mut headers_seen: usize = 0;
+    let mut content_length: usize = 0;
     loop {
         if headers_seen > MAX_BRIDGE_HEADERS {
             return Ok(());
@@ -107,13 +142,22 @@ pub(crate) fn handle_bridge_connection(
         if reader.read_line(&mut header)? == 0 || header == "\r\n" {
             break;
         }
-        if let Some(value) = header
-            .split_once(':')
-            .and_then(|(name, value)| name.eq_ignore_ascii_case("origin").then_some(value))
-        {
-            origin = Some(value.trim().to_owned());
+        if let Some((name, value)) = header.split_once(':') {
+            if name.eq_ignore_ascii_case("origin") {
+                origin = Some(value.trim().to_owned());
+            } else if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse().unwrap_or(0);
+            }
         }
     }
+
+    let body = if content_length > 0 && content_length <= MAX_BRIDGE_REQUEST_BYTES as usize {
+        let mut buf = Vec::with_capacity(content_length);
+        reader.take(content_length as u64).read_to_end(&mut buf)?;
+        buf
+    } else {
+        Vec::new()
+    };
 
     if let Some(value) = origin.as_deref()
         && !origin_is_loopback(value)
@@ -123,7 +167,7 @@ pub(crate) fn handle_bridge_connection(
         return stream.flush();
     }
 
-    let response = bridge_response_with_token(&request_line, paths, state, Some(token));
+    let response = bridge_response_with_token(&request_line, &body, paths, state, Some(token));
     stream.write_all(&response)?;
     stream.flush()
 }
@@ -157,11 +201,12 @@ pub(crate) fn bridge_response(
     paths: &AppPaths,
     state: &Arc<Mutex<GuiBridgeState>>,
 ) -> Vec<u8> {
-    bridge_response_with_token(request_line, paths, state, None)
+    bridge_response_with_token(request_line, &[], paths, state, None)
 }
 
 pub(crate) fn bridge_response_with_token(
     request_line: &str,
+    body: &[u8],
     paths: &AppPaths,
     state: &Arc<Mutex<GuiBridgeState>>,
     required_token: Option<&str>,
@@ -174,7 +219,7 @@ pub(crate) fn bridge_response_with_token(
         return http_response(204, "No Content", "application/json", b"{}".to_vec());
     }
 
-    if method != "GET" {
+    if method != "GET" && method != "POST" {
         return bridge_error(405, "Method Not Allowed", "unsupported method");
     }
 
@@ -195,7 +240,7 @@ pub(crate) fn bridge_response_with_token(
         "/settings/set" => settings_set_bridge_response(query, paths),
         "/settings/reset" => settings_reset_bridge_response(paths),
         "/file/read" => file_read_bridge_response(query, state),
-        "/file/write" => file_write_bridge_response(query, state),
+        "/file/write" => file_write_bridge_response(query, body, state),
         "/compare" => compare_bridge_response(query, paths, state),
         "/cancel" => cancel_bridge_response(query, state),
         "/progress" => progress_bridge_response(query, state),
@@ -244,7 +289,7 @@ pub(crate) fn bridge_response_with_token(
         "/plugins/remove" => plugins_remove_bridge_response(query, paths),
         "/plugins/trust" => plugins_trust_bridge_response(query, paths),
         "/capabilities" => capabilities_bridge_response(),
-        "/folder/query" => folder_query_bridge_response(query, paths),
+        "/folder/query" => folder_query_bridge_response(query, paths, state),
         "/compare/text/window" => text_window_bridge_response(query, paths),
         "/compare/table/window" => table_window_bridge_response(query, state),
         "/binary/window" => binary_window_bridge_response(query, state),
@@ -302,7 +347,9 @@ pub(crate) fn bridge_response_with_token(
                 {
                     let tab_id = state.session.active_tab_id;
                     if let Some(old) = state.rendered_page_cache_dirs.remove(&tab_id) {
-                        let _ = fs::remove_dir_all(old);
+                        std::thread::spawn(move || {
+                            let _ = fs::remove_dir_all(old);
+                        });
                     }
                     if let Some(dir) = artifacts.into_iter().next() {
                         state.rendered_page_cache_dirs.insert(tab_id, dir);
@@ -1316,7 +1363,9 @@ pub(crate) fn compare_bridge_response(
             let context = state.apply_compare(tab, new_tab);
             let tab_id = context.session.active_tab_id;
             if let Some(old) = state.rendered_page_cache_dirs.remove(&tab_id) {
-                let _ = fs::remove_dir_all(old);
+                std::thread::spawn(move || {
+                    let _ = fs::remove_dir_all(old);
+                });
             }
             if let Some(dir) = artifact_dirs.into_iter().next() {
                 state.rendered_page_cache_dirs.insert(tab_id, dir);
@@ -1616,8 +1665,11 @@ pub(crate) fn file_read_bridge_response(
 }
 
 /// Write raw text content to a file path. Used by the GUI inline editor.
+/// Accepts the file content via POST body (preferred) or the `content=` query
+/// parameter (legacy fallback for older QML clients).
 pub(crate) fn file_write_bridge_response(
     query: &str,
+    body: &[u8],
     state: &Arc<Mutex<GuiBridgeState>>,
 ) -> Vec<u8> {
     let params = query_params(query);
@@ -1627,10 +1679,14 @@ pub(crate) fn file_write_bridge_response(
     if !path_is_active_tab_path(path, state) {
         return bridge_error(403, "Forbidden", "path is not an active compare path");
     }
-    let Some(content) = query_value(&params, "content") else {
+    let content: Vec<u8> = if !body.is_empty() {
+        body.to_vec()
+    } else if let Some(content) = query_value(&params, "content") {
+        content.as_bytes().to_vec()
+    } else {
         return bridge_error(400, "Bad Request", "missing content");
     };
-    match std::fs::write(path, content) {
+    match std::fs::write(path, &content) {
         Ok(()) => http_response(200, "OK", "application/json", br#"{"ok":true}"#.to_vec()),
         Err(err) => bridge_error(
             500,
@@ -1780,10 +1836,51 @@ pub(crate) fn folder_query_from_params(params: &[(String, String)]) -> linsync_c
     query
 }
 
+/// Get a cached `FolderCompareResult` for the given paths + options, or compute
+/// and cache it. The cache lives on `GuiBridgeState` and is invalidated on every
+/// new `/compare`. This lets `/folder/query` and folder-op plan/execute reuse the
+/// result instead of re-walking both directory trees on every request.
+fn get_or_cache_folder_compare(
+    left: &str,
+    right: &str,
+    options: &FolderCompareOptions,
+    state: &Arc<Mutex<GuiBridgeState>>,
+) -> Result<Arc<linsync_core::FolderCompareResult>, String> {
+    let left_path = Path::new(left);
+    let right_path = Path::new(right);
+
+    if let Ok(s) = state.lock()
+        && let Some(ref cache) = s.folder_compare_cache
+        && cache.left == left_path
+        && cache.right == right_path
+        && &cache.options == options
+    {
+        return Ok(Arc::clone(&cache.result));
+    }
+
+    let result = compare_folders(left_path, right_path, options).map_err(|e| e.to_string())?;
+    let arc = Arc::new(result);
+    if let Ok(mut s) = state.lock() {
+        s.folder_compare_cache = Some(FolderCompareCache {
+            left: left_path.to_path_buf(),
+            right: right_path.to_path_buf(),
+            options: options.clone(),
+            result: Arc::clone(&arc),
+        });
+    }
+    Ok(arc)
+}
+
 /// `/folder/query?left=&right=&search=&types=&offset=&limit=&state=&sort=&descending=&group_by=` — compare two
 /// folders and return the entries filtered/paged through the core `FolderQuery`,
 /// so the GUI folder table can search + type-filter + paginate via the core API.
-pub(crate) fn folder_query_bridge_response(query: &str, paths: &AppPaths) -> Vec<u8> {
+/// Reuses the cached `FolderCompareResult` when paths + options match the active
+/// folder tab, avoiding a full re-walk on every page/sort/filter request.
+pub(crate) fn folder_query_bridge_response(
+    query: &str,
+    paths: &AppPaths,
+    state: &Arc<Mutex<GuiBridgeState>>,
+) -> Vec<u8> {
     let params = query_params(query);
     let (Some(left), Some(right)) = (query_value(&params, "left"), query_value(&params, "right"))
     else {
@@ -1793,9 +1890,9 @@ pub(crate) fn folder_query_bridge_response(query: &str, paths: &AppPaths) -> Vec
         Ok(opts) => opts,
         Err(err) => return bridge_error(400, "Bad Request", &err),
     };
-    let result = match compare_folders(Path::new(left), Path::new(right), &folder_options) {
-        Ok(result) => result,
-        Err(err) => return bridge_error(500, "Internal Server Error", &err.to_string()),
+    let result = match get_or_cache_folder_compare(left, right, &folder_options, state) {
+        Ok(r) => r,
+        Err(err) => return bridge_error(500, "Internal Server Error", &err),
     };
     let folder_query = folder_query_from_params(&params);
     let page = result.query(&folder_query);
@@ -3323,21 +3420,26 @@ pub(crate) fn plugins_toggle_bridge_response(
     let enabled = matches!(enabled_str, "true" | "1" | "yes");
     // Acquire the lock for the full load-modify-save sequence so concurrent
     // toggles cannot interleave and produce a partial write.
-    let mut guard = match plugin_enabled.lock() {
-        Ok(g) => g,
-        Err(_) => return bridge_error(500, "Internal Server Error", "plugin state unavailable"),
+    let text = {
+        let mut guard = match plugin_enabled.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                return bridge_error(500, "Internal Server Error", "plugin state unavailable");
+            }
+        };
+        guard.insert(id.to_owned(), enabled);
+        serde_json::to_string_pretty(&*guard)
     };
-    guard.insert(id.to_owned(), enabled);
+    let text = match text {
+        Ok(t) => t,
+        Err(err) => return bridge_error(500, "Internal Server Error", &err.to_string()),
+    };
     let file = paths.plugins_enabled_file();
     if let Some(parent) = file.parent()
         && let Err(err) = fs::create_dir_all(parent)
     {
         return bridge_error(500, "Internal Server Error", &err.to_string());
     }
-    let text = match serde_json::to_string_pretty(&*guard) {
-        Ok(t) => t,
-        Err(err) => return bridge_error(500, "Internal Server Error", &err.to_string()),
-    };
     match fs::write(&file, text) {
         Ok(()) => {
             let body = serde_json::json!({ "ok": true }).to_string();
@@ -3633,12 +3735,13 @@ pub(crate) fn folder_op_plan_bridge_response(
         Ok(opts) => opts,
         Err(err) => return bridge_error(400, "Bad Request", &err),
     };
-    let compare = match compare_folders(
-        Path::new(&tab.left_path),
-        Path::new(&tab.right_path),
+    let compare = match get_or_cache_folder_compare(
+        &tab.left_path,
+        &tab.right_path,
         &folder_options,
+        state,
     ) {
-        Ok(result) => result,
+        Ok(r) => r,
         Err(err) => {
             return bridge_error(
                 500,
@@ -3727,12 +3830,13 @@ pub(crate) fn folder_op_execute_bridge_response(
         Ok(opts) => opts,
         Err(err) => return bridge_error(400, "Bad Request", &err),
     };
-    let compare = match compare_folders(
-        Path::new(&tab.left_path),
-        Path::new(&tab.right_path),
+    let compare = match get_or_cache_folder_compare(
+        &tab.left_path,
+        &tab.right_path,
         &folder_options,
+        state,
     ) {
-        Ok(result) => result,
+        Ok(r) => r,
         Err(err) => {
             return bridge_error(
                 500,
@@ -4281,16 +4385,17 @@ pub(crate) fn save_three_way_merge_output(
     path: &str,
     state: &Arc<Mutex<GuiBridgeState>>,
 ) -> Result<(), String> {
-    let guard = state
-        .lock()
-        .map_err(|_| "session state unavailable".to_owned())?;
-    let session = guard
-        .three_way_session
-        .as_ref()
-        .ok_or_else(|| "no active three-way merge session".to_owned())?;
-    session
-        .save_to(std::path::Path::new(path))
-        .map_err(|err| format!("failed to save merged output: {err}"))
+    let text = {
+        let guard = state
+            .lock()
+            .map_err(|_| "session state unavailable".to_owned())?;
+        let session = guard
+            .three_way_session
+            .as_ref()
+            .ok_or_else(|| "no active three-way merge session".to_owned())?;
+        session.output().text()
+    };
+    std::fs::write(path, text).map_err(|err| format!("failed to save merged output: {err}"))
 }
 
 pub(crate) fn validate_merge_session(session: &ThreeWayMergeState) -> Result<(), usize> {
@@ -4527,6 +4632,17 @@ pub(crate) fn run_cxxqt_host(
         .parent()
         .ok_or_else(|| format!("invalid QML file path '{}'", qml_file.display()))?;
 
+    // Set QML/Qt environment variables BEFORE spawning any threads.
+    // Rust 2024 requires `unsafe` for env::set_var because POSIX setenv is
+    // not guaranteed thread-safe vs concurrent getenv. Setting these here
+    // (before start_bridge_server spawns the listener thread) avoids the race.
+    unsafe {
+        env::set_var("QML_XHR_ALLOW_FILE_READ", "1");
+        if env::var_os("QT_QUICK_CONTROLS_STYLE").is_none() {
+            env::set_var("QT_QUICK_CONTROLS_STYLE", "Fusion");
+        }
+    }
+
     // Start the HTTP bridge so Main.qml can read bridgeUrl as soon as
     // Component.onCompleted fires. Both the external qml6 host and the
     // in-process cxx-qt host drive the UI over this single HTTP transport.
@@ -4542,16 +4658,13 @@ pub(crate) fn run_cxxqt_host(
     if bridge_info_path.is_none() {
         tracing::warn!("bridge info sidecar not written; GUI will run without the HTTP bridge");
     }
-    // SAFETY: edition 2024 requires `unsafe` for env::set_var. We are still
-    // single-threaded here — QGuiApplication and the bridge worker threads
-    // are spun up below.
+    // SAFETY: LINSYNC_BRIDGE_INFO is only read by the QML layer (which runs
+    // later), never by bridge worker threads, so there is no concurrent
+    // getenv on this variable. The other env vars were already set above,
+    // before any threads were spawned.
     unsafe {
         if let Some(ref path) = bridge_info_path {
             env::set_var("LINSYNC_BRIDGE_INFO", path.display().to_string());
-        }
-        env::set_var("QML_XHR_ALLOW_FILE_READ", "1");
-        if env::var_os("QT_QUICK_CONTROLS_STYLE").is_none() {
-            env::set_var("QT_QUICK_CONTROLS_STYLE", "Fusion");
         }
     }
 

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, BufReader, Read};
 #[cfg(unix)]
@@ -581,7 +581,7 @@ impl FolderCompareResult {
             .map(str::to_lowercase)
             .filter(|s| !s.is_empty());
 
-        let mut matched: Vec<&FolderEntryDiff> = self
+        let matched: Vec<&FolderEntryDiff> = self
             .entries
             .iter()
             .filter(|entry| query.state.matches(entry.state))
@@ -596,9 +596,17 @@ impl FolderCompareResult {
             })
             .collect();
 
-        matched.sort_by(|a, b| {
+        // Schwartzian transform: precompute the sort key once per entry so the
+        // comparator doesn't re-derive it O(n log n) times. The big win is
+        // avoiding `name.to_lowercase()` (a String allocation) per comparison
+        // — for a 100k-entry folder that's ~1.7M eliminated allocations.
+        let name_keys: Vec<String> = matched.iter().map(|e| e.name.to_lowercase()).collect();
+        let mut sort_indices: Vec<usize> = (0..matched.len()).collect();
+        sort_indices.sort_by(|&ia, &ib| {
+            let a = &matched[ia];
+            let b = &matched[ib];
             let primary = match query.sort {
-                FolderSortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                FolderSortKey::Name => name_keys[ia].cmp(&name_keys[ib]),
                 FolderSortKey::Path => a.relative_path.cmp(&b.relative_path),
                 FolderSortKey::State => folder_state_rank(a.state).cmp(&folder_state_rank(b.state)),
                 FolderSortKey::Type => {
@@ -614,6 +622,7 @@ impl FolderCompareResult {
                 ordered
             }
         });
+        let matched: Vec<&FolderEntryDiff> = sort_indices.iter().map(|&i| matched[i]).collect();
 
         let total_matched = matched.len();
         let offset = query.offset.min(total_matched);
@@ -634,15 +643,22 @@ impl FolderCompareResult {
                 }]
             }
         } else {
+            // Use a HashMap label → group index alongside the Vec so each
+            // entry lookup is O(1) instead of a linear scan over groups.
+            // Preserves first-appearance order (the documented grouping
+            // semantics) because new groups are pushed in iteration order.
             let mut groups: Vec<FolderQueryGroup<'_>> = Vec::new();
+            let mut group_index: HashMap<String, usize> = HashMap::new();
             for &entry in page {
                 let label = folder_group_label(entry, query.group_by);
-                match groups.iter_mut().find(|group| group.label == label) {
-                    Some(group) => group.entries.push(entry),
-                    None => groups.push(FolderQueryGroup {
+                if let Some(&idx) = group_index.get(&label) {
+                    groups[idx].entries.push(entry);
+                } else {
+                    group_index.insert(label.clone(), groups.len());
+                    groups.push(FolderQueryGroup {
                         label,
                         entries: vec![entry],
-                    }),
+                    });
                 }
             }
             groups
@@ -1625,8 +1641,46 @@ where
         return Err(FolderCompareError::NotDirectory(right.to_path_buf()));
     }
 
-    let left_entries = collect_entries(left, options)?;
-    let right_entries = collect_entries(right, options)?;
+    // Walk both trees. The walk callback reports each discovered entry via
+    // on_event and returns Cancel if the caller wants to abort — this makes a
+    // huge / slow-mount folder walk interruptible instead of blocking the
+    // bridge thread (and freezing the GUI) until the entire tree is read.
+    let (left_entries, left_cancelled) = collect_entries(left, options, &mut |rel| {
+        on_event(FolderCompareEvent::Discovered {
+            relative_path: rel.to_path_buf(),
+        })
+    })?;
+    let (right_entries, right_cancelled) = if left_cancelled {
+        // Left walk was cancelled — skip the right walk entirely; the partial
+        // result is irrelevant since we'll report a cancelled compare.
+        (BTreeMap::new(), false)
+    } else {
+        collect_entries(right, options, &mut |rel| {
+            on_event(FolderCompareEvent::Discovered {
+                relative_path: rel.to_path_buf(),
+            })
+        })?
+    };
+
+    if left_cancelled || right_cancelled {
+        let elapsed = started.elapsed();
+        let summary = summarize_entries(&[], elapsed, FolderCompareStatus::Cancelled);
+        on_event(FolderCompareEvent::Cancelled {
+            completed: 0,
+            aborted: 0,
+        });
+        on_event(FolderCompareEvent::Completed {
+            summary: summary.clone(),
+        });
+        return Ok(FolderCompareResult {
+            left_root: left.to_path_buf(),
+            right_root: right.to_path_buf(),
+            entries: Vec::new(),
+            summary,
+            sandbox: None,
+        });
+    }
+
     let mut all_paths = BTreeSet::new();
     all_paths.extend(left_entries.keys().cloned());
     all_paths.extend(right_entries.keys().cloned());
@@ -1634,23 +1688,19 @@ where
 
     let mut entries = Vec::new();
     let mut cancelled = false;
+    let mut owner_cache = OwnerNameCache::default();
     for (index, relative_path) in all_paths.iter().cloned().enumerate() {
-        if on_event(FolderCompareEvent::Discovered {
-            relative_path: relative_path.clone(),
-        }) == FolderCompareControl::Cancel
-        {
-            entries.extend(aborted_entries(
-                &all_paths[index..],
-                &left_entries,
-                &right_entries,
-            ));
-            cancelled = true;
-            break;
-        }
-
         let left_meta = left_entries.get(&relative_path);
         let right_meta = right_entries.get(&relative_path);
-        let entry = build_folder_entry(relative_path, left, right, left_meta, right_meta, options);
+        let entry = build_folder_entry(
+            relative_path,
+            left,
+            right,
+            left_meta,
+            right_meta,
+            options,
+            &mut owner_cache,
+        );
         let event = match entry.state {
             FolderEntryState::Skipped => FolderCompareEvent::Skipped {
                 relative_path: entry.relative_path.clone(),
@@ -1722,7 +1772,9 @@ fn build_folder_entry(
     left_meta: Option<&EntryMeta>,
     right_meta: Option<&EntryMeta>,
     options: &FolderCompareOptions,
+    owner_cache: &mut OwnerNameCache,
 ) -> FolderEntryDiff {
+    let mut match_error: Option<String> = None;
     let state = match (left_meta, right_meta) {
         (Some(left_meta), Some(right_meta))
             if left_meta.error.is_some() || right_meta.error.is_some() =>
@@ -1740,7 +1792,10 @@ fn build_folder_entry(
             match entries_match(left, right, &relative_path, left_meta, right_meta, options) {
                 Ok(true) => FolderEntryState::Identical,
                 Ok(false) => FolderEntryState::Different,
-                Err(_) => FolderEntryState::Error,
+                Err(err) => {
+                    match_error = Some(err.to_string());
+                    FolderEntryState::Error
+                }
             }
         }
         (Some(_), None) => FolderEntryState::LeftOnly,
@@ -1752,12 +1807,7 @@ fn build_folder_entry(
             .error
             .clone()
             .or_else(|| right_meta.error.clone())
-            .or_else(|| {
-                match entries_match(left, right, &relative_path, left_meta, right_meta, options) {
-                    Ok(_) => None,
-                    Err(err) => Some(err.to_string()),
-                }
-            }),
+            .or_else(|| match_error.take()),
         (FolderEntryState::Error, Some(left_meta), None) => left_meta.error.clone(),
         (FolderEntryState::Error, None, Some(right_meta)) => right_meta.error.clone(),
         _ => None,
@@ -1769,44 +1819,42 @@ fn build_folder_entry(
         .is_some_and(|meta| meta.kind == EntryKind::File);
 
     let (left_permissions, right_permissions) = if options.compare_permissions && is_file {
-        let lp = left_meta.and_then(|_| {
-            fs::symlink_metadata(left.join(&relative_path))
-                .ok()
-                .map(|m| extract_permissions(&m))
-        });
-        let rp = right_meta.and_then(|_| {
-            fs::symlink_metadata(right.join(&relative_path))
-                .ok()
-                .map(|m| extract_permissions(&m))
-        });
-        (lp, rp)
+        (
+            left_meta.map(|m| m.permissions),
+            right_meta.map(|m| m.permissions),
+        )
     } else {
         (None, None)
     };
 
     let (left_owner, right_owner, left_group, right_group) = if options.compare_ownership && is_file
     {
-        let lo = left_meta.and_then(|_| {
-            fs::symlink_metadata(left.join(&relative_path))
-                .ok()
-                .and_then(|m| extract_owner(&m))
-        });
-        let ro = right_meta.and_then(|_| {
-            fs::symlink_metadata(right.join(&relative_path))
-                .ok()
-                .and_then(|m| extract_owner(&m))
-        });
-        let lg = left_meta.and_then(|_| {
-            fs::symlink_metadata(left.join(&relative_path))
-                .ok()
-                .and_then(|m| extract_group(&m))
-        });
-        let rg = right_meta.and_then(|_| {
-            fs::symlink_metadata(right.join(&relative_path))
-                .ok()
-                .and_then(|m| extract_group(&m))
-        });
-        (lo, ro, lg, rg)
+        let left_uid = left_meta.map(|m| m.uid);
+        let right_uid = right_meta.map(|m| m.uid);
+        let left_gid = left_meta.map(|m| m.gid);
+        let right_gid = right_meta.map(|m| m.gid);
+        (
+            left_uid.map(|uid| {
+                owner_cache
+                    .user_name(uid)
+                    .unwrap_or_else(|| uid.to_string())
+            }),
+            right_uid.map(|uid| {
+                owner_cache
+                    .user_name(uid)
+                    .unwrap_or_else(|| uid.to_string())
+            }),
+            left_gid.map(|gid| {
+                owner_cache
+                    .group_name(gid)
+                    .unwrap_or_else(|| gid.to_string())
+            }),
+            right_gid.map(|gid| {
+                owner_cache
+                    .group_name(gid)
+                    .unwrap_or_else(|| gid.to_string())
+            }),
+        )
     } else {
         (None, None, None, None)
     };
@@ -1905,6 +1953,9 @@ struct EntryMeta {
     modified: Option<SystemTime>,
     skipped: bool,
     error: Option<String>,
+    permissions: u32,
+    uid: u32,
+    gid: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1999,21 +2050,11 @@ fn entries_match(
         return Ok(false);
     }
 
-    if options.compare_permissions
-        && !file_permissions_match(
-            &left_root.join(relative_path),
-            &right_root.join(relative_path),
-        )?
-    {
+    if options.compare_permissions && left.permissions != right.permissions {
         return Ok(false);
     }
 
-    if options.compare_ownership
-        && !file_ownership_match(
-            &left_root.join(relative_path),
-            &right_root.join(relative_path),
-        )?
-    {
+    if options.compare_ownership && (left.uid != right.uid || left.gid != right.gid) {
         return Ok(false);
     }
 
@@ -2126,92 +2167,92 @@ fn compute_file_hash(path: &Path, algorithm: HashAlgorithm) -> io::Result<String
     }
 }
 
-fn file_permissions_match(left: &Path, right: &Path) -> io::Result<bool> {
-    let left_meta = fs::symlink_metadata(left)?;
-    let right_meta = fs::symlink_metadata(right)?;
-    Ok(extract_permissions(&left_meta) == extract_permissions(&right_meta))
-}
-
 #[cfg(unix)]
-fn file_ownership_match(left: &Path, right: &Path) -> io::Result<bool> {
-    let left_meta = fs::symlink_metadata(left)?;
-    let right_meta = fs::symlink_metadata(right)?;
-    Ok(left_meta.uid() == right_meta.uid() && left_meta.gid() == right_meta.gid())
+fn entry_meta_unix_fields(metadata: &fs::Metadata) -> (u32, u32, u32) {
+    (
+        metadata.permissions().mode() & 0o7777,
+        metadata.uid(),
+        metadata.gid(),
+    )
 }
 
 #[cfg(not(unix))]
-fn file_ownership_match(_left: &Path, _right: &Path) -> io::Result<bool> {
-    Ok(true)
+fn entry_meta_unix_fields(_metadata: &fs::Metadata) -> (u32, u32, u32) {
+    (0, 0, 0)
+}
+
+#[derive(Default)]
+struct OwnerNameCache {
+    users: HashMap<u32, Option<String>>,
+    groups: HashMap<u32, Option<String>>,
+}
+
+impl OwnerNameCache {
+    fn user_name(&mut self, uid: u32) -> Option<String> {
+        self.users
+            .entry(uid)
+            .or_insert_with(|| lookup_user_name(uid))
+            .clone()
+    }
+
+    fn group_name(&mut self, gid: u32) -> Option<String> {
+        self.groups
+            .entry(gid)
+            .or_insert_with(|| lookup_group_name(gid))
+            .clone()
+    }
 }
 
 #[cfg(unix)]
-fn extract_permissions(meta: &std::fs::Metadata) -> u32 {
-    meta.permissions().mode() & 0o7777
-}
-
-#[cfg(not(unix))]
-fn extract_permissions(_meta: &std::fs::Metadata) -> u32 {
-    0
-}
-
-#[cfg(unix)]
-fn extract_owner(meta: &std::fs::Metadata) -> Option<String> {
-    let uid = meta.uid();
-    match nix_get_username(uid) {
-        Some(name) => Some(name),
-        None => Some(uid.to_string()),
+fn lookup_user_name(uid: u32) -> Option<String> {
+    unsafe {
+        let mut pwd: libc::passwd = std::mem::zeroed();
+        let mut buf = vec![0u8; 4096];
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let ret = libc::getpwuid_r(
+            uid,
+            &mut pwd,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            &mut result,
+        );
+        if ret != 0 || result.is_null() {
+            return None;
+        }
+        let name = std::ffi::CStr::from_ptr(pwd.pw_name);
+        Some(name.to_string_lossy().into_owned())
     }
 }
 
 #[cfg(not(unix))]
-fn extract_owner(_meta: &std::fs::Metadata) -> Option<String> {
+fn lookup_user_name(_uid: u32) -> Option<String> {
     None
 }
 
 #[cfg(unix)]
-fn extract_group(meta: &std::fs::Metadata) -> Option<String> {
-    let gid = meta.gid();
-    match nix_get_groupname(gid) {
-        Some(name) => Some(name),
-        None => Some(gid.to_string()),
+fn lookup_group_name(gid: u32) -> Option<String> {
+    unsafe {
+        let mut grp: libc::group = std::mem::zeroed();
+        let mut buf = vec![0u8; 4096];
+        let mut result: *mut libc::group = std::ptr::null_mut();
+        let ret = libc::getgrgid_r(
+            gid,
+            &mut grp,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            &mut result,
+        );
+        if ret != 0 || result.is_null() {
+            return None;
+        }
+        let name = std::ffi::CStr::from_ptr(grp.gr_name);
+        Some(name.to_string_lossy().into_owned())
     }
 }
 
 #[cfg(not(unix))]
-fn extract_group(_meta: &std::fs::Metadata) -> Option<String> {
+fn lookup_group_name(_gid: u32) -> Option<String> {
     None
-}
-
-#[cfg(unix)]
-fn nix_get_username(uid: u32) -> Option<String> {
-    use std::process::Command;
-    let output = Command::new("getent")
-        .arg("passwd")
-        .arg(uid.to_string())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let line = String::from_utf8_lossy(&output.stdout);
-    let mut parts = line.split(':');
-    parts.next().map(|name| name.to_owned())
-}
-
-#[cfg(unix)]
-fn nix_get_groupname(gid: u32) -> Option<String> {
-    use std::process::Command;
-    let output = Command::new("getent")
-        .arg("group")
-        .arg(gid.to_string())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let line = String::from_utf8_lossy(&output.stdout);
-    let mut parts = line.split(':');
-    parts.next().map(|name| name.to_owned())
 }
 
 fn binary_files_equal_until_first_difference(left: &Path, right: &Path) -> io::Result<bool> {
@@ -2341,15 +2382,23 @@ fn modified_times_match(
 fn collect_entries(
     root: &Path,
     options: &FolderCompareOptions,
-) -> io::Result<BTreeMap<PathBuf, EntryMeta>> {
+    on_event: &mut dyn FnMut(&Path) -> FolderCompareControl,
+) -> io::Result<(BTreeMap<PathBuf, EntryMeta>, bool)> {
     let mut entries = BTreeMap::new();
     let mut visited_dirs = BTreeSet::new();
     let metadata = fs::metadata(root)?;
     if metadata.is_dir() {
         visited_dirs.insert(directory_identity(root, &metadata)?);
     }
-    collect_entries_inner(root, root, options, &mut entries, &mut visited_dirs)?;
-    Ok(entries)
+    let cancelled = collect_entries_inner(
+        root,
+        root,
+        options,
+        &mut entries,
+        &mut visited_dirs,
+        on_event,
+    )?;
+    Ok((entries, cancelled))
 }
 
 fn collect_entries_inner(
@@ -2358,13 +2407,23 @@ fn collect_entries_inner(
     options: &FolderCompareOptions,
     entries: &mut BTreeMap<PathBuf, EntryMeta>,
     visited_dirs: &mut BTreeSet<DirectoryIdentity>,
-) -> io::Result<()> {
+    on_event: &mut dyn FnMut(&Path) -> FolderCompareControl,
+) -> io::Result<bool> {
     for entry in fs::read_dir(current)? {
         let entry = entry?;
         let path = entry.path();
         let Ok(relative_path) = path.strip_prefix(root) else {
             continue;
         };
+
+        // Cooperative cancellation: check the callback on every discovered
+        // entry so a huge/network mount walk stops promptly when the user
+        // cancels or closes the tab. Without this the walk runs to completion
+        // and blocks the bridge thread (and thus the GUI) until the entire
+        // tree is enumerated.
+        if on_event(relative_path) == FolderCompareControl::Cancel {
+            return Ok(true);
+        }
 
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
@@ -2375,7 +2434,17 @@ fn collect_entries_inner(
         };
 
         if file_type.is_symlink() {
-            collect_symlink_entry(root, relative_path, &path, options, entries, visited_dirs)?;
+            if collect_symlink_entry(
+                root,
+                relative_path,
+                &path,
+                options,
+                entries,
+                visited_dirs,
+                on_event,
+            )? {
+                return Ok(true);
+            }
             continue;
         }
 
@@ -2404,12 +2473,16 @@ fn collect_entries_inner(
         {
             let identity = directory_identity(&path, &metadata)?;
             visited_dirs.insert(identity.clone());
-            collect_entries_inner(root, &path, options, entries, visited_dirs)?;
+            let cancelled =
+                collect_entries_inner(root, &path, options, entries, visited_dirs, on_event)?;
             visited_dirs.remove(&identity);
+            if cancelled {
+                return Ok(true);
+            }
         }
     }
 
-    Ok(())
+    Ok(false)
 }
 
 fn collect_symlink_entry(
@@ -2419,7 +2492,8 @@ fn collect_symlink_entry(
     options: &FolderCompareOptions,
     entries: &mut BTreeMap<PathBuf, EntryMeta>,
     visited_dirs: &mut BTreeSet<DirectoryIdentity>,
-) -> io::Result<()> {
+    on_event: &mut dyn FnMut(&Path) -> FolderCompareControl,
+) -> io::Result<bool> {
     match options.symlink_policy {
         SymlinkPolicy::CompareTarget => match fs::read_link(path) {
             Ok(target) => {
@@ -2435,6 +2509,9 @@ fn collect_symlink_entry(
                         modified: None,
                         skipped,
                         error: None,
+                        permissions: 0,
+                        uid: 0,
+                        gid: 0,
                     },
                 );
             }
@@ -2453,6 +2530,9 @@ fn collect_symlink_entry(
                     modified: None,
                     skipped,
                     error: None,
+                    permissions: 0,
+                    uid: 0,
+                    gid: 0,
                 },
             );
         }
@@ -2461,7 +2541,7 @@ fn collect_symlink_entry(
                 Ok(metadata) => metadata,
                 Err(err) => {
                     insert_error_entry(entries, relative_path, err.to_string());
-                    return Ok(());
+                    return Ok(false);
                 }
             };
             collect_metadata_entry(
@@ -2480,13 +2560,17 @@ fn collect_symlink_entry(
             {
                 let identity = directory_identity(path, &metadata)?;
                 visited_dirs.insert(identity.clone());
-                collect_entries_inner(root, path, options, entries, visited_dirs)?;
+                let cancelled =
+                    collect_entries_inner(root, path, options, entries, visited_dirs, on_event)?;
                 visited_dirs.remove(&identity);
+                if cancelled {
+                    return Ok(true);
+                }
             }
         }
     }
 
-    Ok(())
+    Ok(false)
 }
 
 fn collect_metadata_entry(
@@ -2532,6 +2616,8 @@ fn collect_metadata_entry(
         None
     };
 
+    let (permissions, uid, gid) = entry_meta_unix_fields(metadata);
+
     entries.insert(
         relative_path.to_path_buf(),
         EntryMeta {
@@ -2542,6 +2628,9 @@ fn collect_metadata_entry(
             modified: metadata.modified().ok(),
             skipped,
             error,
+            permissions,
+            uid,
+            gid,
         },
     );
 
@@ -2563,6 +2652,9 @@ fn insert_error_entry(
             modified: None,
             skipped: false,
             error: Some(error),
+            permissions: 0,
+            uid: 0,
+            gid: 0,
         },
     );
 }

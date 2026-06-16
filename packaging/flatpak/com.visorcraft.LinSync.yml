@@ -97,6 +97,7 @@ modules:
       - install -Dm755 target/release/linsync-cli /app/bin/linsync-cli
       - mkdir -p /app/share/linsync
       - cp -R apps/linsync-gui/qml /app/share/linsync/qml
+      - cp -R packaging/plugins /app/share/linsync/plugins
       # Compile + install UI translation catalogs next to the qml tree (the
       # in-process host loads linsync_<locale>.qm from qml's sibling i18n/).
       - mkdir -p /app/share/linsync/i18n

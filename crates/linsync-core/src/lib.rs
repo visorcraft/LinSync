@@ -103,7 +103,7 @@ pub use storage::{
     StoreError, ThemePreference, WindowSize, artifact_dir, cleanup_artifacts,
     relativize_session_paths_against, save_artifact,
 };
-pub use syntax::{SyntaxSpan, TextSyntaxMode};
+pub use syntax::{SyntaxSpan, TextSyntaxMode, syntax_mode_from_path, syntax_spans};
 pub use table::{
     TableCellDiff, TableCellState, TableColumnRule, TableCompareOptions, TableCompareResult,
     TableError, TableParseError, TableRowDiff, compare_table_files, compare_tables,

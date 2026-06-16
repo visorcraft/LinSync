@@ -85,7 +85,7 @@ pub struct SyntaxSpan {
     pub class: String,
 }
 
-pub(crate) fn syntax_mode_from_path(path: &Path) -> Option<TextSyntaxMode> {
+pub fn syntax_mode_from_path(path: &Path) -> Option<TextSyntaxMode> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "rs" => Some(TextSyntaxMode::Rust),
         "json" => Some(TextSyntaxMode::Json),
@@ -106,7 +106,7 @@ pub(crate) fn syntax_mode_from_path(path: &Path) -> Option<TextSyntaxMode> {
     }
 }
 
-pub(crate) fn syntax_spans(text: &str, mode: TextSyntaxMode) -> Vec<SyntaxSpan> {
+pub fn syntax_spans(text: &str, mode: TextSyntaxMode) -> Vec<SyntaxSpan> {
     #[cfg(feature = "syntax-rich")]
     if let Some(spans) = rich::spans(text, mode) {
         return spans;

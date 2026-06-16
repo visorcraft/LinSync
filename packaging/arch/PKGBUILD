@@ -25,6 +25,7 @@ depends=(
     'kirigami'
     'hicolor-icon-theme'
     'bubblewrap'
+    'unzip'
     # Provides the QtWebEngine QML module the rendered/screenshot webpage modes
     # render through (the binary is built with the web-engine feature).
     'qt6-webengine'
@@ -66,6 +67,7 @@ package() {
     # Bundled QML + distro config snippets
     install -d "${pkgdir}/usr/share/linsync"
     cp -R apps/linsync-gui/qml "${pkgdir}/usr/share/linsync/qml"
+    cp -R packaging/plugins "${pkgdir}/usr/share/linsync/plugins"
     install -Dm644 packaging/distro/git-mergetool.gitconfig \
         "${pkgdir}/usr/share/linsync/git-mergetool.gitconfig"
 

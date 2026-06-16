@@ -46,6 +46,7 @@ if qml6_bin="$(command -v qml6 2>/dev/null)"; then
 fi
 mkdir -p "${appdir}/usr/share/linsync"
 cp -R "${root}/apps/linsync-gui/qml" "${appdir}/usr/share/linsync/qml"
+cp -R "${root}/packaging/plugins" "${appdir}/usr/share/linsync/plugins"
 
 # Compile + bundle UI translation catalogs next to the qml tree (the in-process
 # host loads linsync_<locale>.qm from qml's sibling i18n/ dir).
