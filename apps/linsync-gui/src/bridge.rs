@@ -308,10 +308,10 @@ pub(crate) fn bridge_response_with_token(
                 Ok(p) => p,
                 Err(err) => return bridge_error(400, "Bad Request", &err),
             };
-            let (request_id, progress) =
-                register_progress_request(&params, state, "extracting", 3, "Extracting text");
+            let req =
+                register_cancellable_request(&params, state, "extracting", 3, "Extracting text");
             set_progress(
-                &progress,
+                &req.progress,
                 "extracting",
                 1,
                 3,
@@ -322,8 +322,19 @@ pub(crate) fn bridge_response_with_token(
                     query,
                     &profile.document,
                 );
+            // If the user hit Stop during the (potentially slow) plugin
+            // extraction, discard the result and report cancellation.
+            if req.is_cancelled() {
+                remove_cancellable_request(&req, state);
+                return http_response(
+                    200,
+                    "OK",
+                    "application/json",
+                    br#"{"cancelled":true}"#.to_vec(),
+                );
+            }
             set_progress(
-                &progress,
+                &req.progress,
                 "finalizing",
                 2,
                 3,
@@ -356,8 +367,8 @@ pub(crate) fn bridge_response_with_token(
                     }
                 }
             }
-            set_progress(&progress, "done", 3, 3, String::new());
-            remove_progress_request(request_id.as_deref(), state);
+            set_progress(&req.progress, "done", 3, 3, String::new());
+            remove_cancellable_request(&req, state);
             http_response(200, "OK", "application/json", body.into_bytes())
         }
         "/profiles/list" => profiles_list_bridge_response(paths),
@@ -374,8 +385,21 @@ pub(crate) fn bridge_response_with_token(
                 Ok(p) => p,
                 Err(err) => return bridge_error(400, "Bad Request", &err),
             };
+            let req =
+                register_cancellable_request(&params, state, "comparing", 1, "Comparing images");
             let (mut body, result) =
                 linsync::image_compare_bridge_response_with_profile(query, &profile.image);
+            // If the user hit Stop during the compare, discard the result.
+            if req.is_cancelled() {
+                remove_cancellable_request(&req, state);
+                return http_response(
+                    200,
+                    "OK",
+                    "application/json",
+                    br#"{"cancelled":true}"#.to_vec(),
+                );
+            }
+            remove_cancellable_request(&req, state);
             let result_for_tab = result.clone();
             let overlay_path = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
@@ -420,10 +444,10 @@ pub(crate) fn bridge_response_with_token(
                 Ok(p) => p,
                 Err(err) => return bridge_error(400, "Bad Request", &err),
             };
-            let (request_id, progress) =
-                register_progress_request(&params, state, "fetching", 3, "Fetching webpages");
+            let req =
+                register_cancellable_request(&params, state, "fetching", 3, "Fetching webpages");
             set_progress(
-                &progress,
+                &req.progress,
                 "fetching",
                 1,
                 3,
@@ -434,8 +458,19 @@ pub(crate) fn bridge_response_with_token(
                 paths,
                 &profile.webpage,
             );
+            // If the user hit Stop during the (potentially slow) fetch/render,
+            // discard the result and report cancellation.
+            if req.is_cancelled() {
+                remove_cancellable_request(&req, state);
+                return http_response(
+                    200,
+                    "OK",
+                    "application/json",
+                    br#"{"cancelled":true}"#.to_vec(),
+                );
+            }
             set_progress(
-                &progress,
+                &req.progress,
                 "finalizing",
                 2,
                 3,
@@ -457,8 +492,8 @@ pub(crate) fn bridge_response_with_token(
                     state,
                 );
             }
-            set_progress(&progress, "done", 3, 3, String::new());
-            remove_progress_request(request_id.as_deref(), state);
+            set_progress(&req.progress, "done", 3, 3, String::new());
+            remove_cancellable_request(&req, state);
             http_response(200, "OK", "application/json", body.into_bytes())
         }
         "/compare/webpage/clear-cache" => {
@@ -3869,6 +3904,13 @@ pub(crate) fn folder_op_execute_bridge_response(
         linsync_core::PermanentDeleteConfirmation::NotConfirmed
     };
     let outcomes = execute_folder_operation_plan(&plan, &paths.data_dir, use_trash, confirmation);
+    // The filesystem changed — invalidate the cached folder compare so the
+    // next /folder/query doesn't serve pre-operation results. (The GUI
+    // normally calls requestCompare after execute, which also clears it,
+    // but this is defense-in-depth against stale-cache reads.)
+    if let Ok(mut state) = state.lock() {
+        state.folder_compare_cache = None;
+    }
     let body = folder_outcomes_to_json(&plan, &outcomes).to_string();
     http_response(200, "OK", "application/json", body.into_bytes())
 }

@@ -515,6 +515,61 @@ fn remove_progress_request(request_id: Option<&str>, state: &Arc<Mutex<GuiBridge
     }
 }
 
+/// A registered cancellable compare request: holds the request id (for
+/// cleanup), a should_cancel closure (polled by the compare), and a progress
+/// tracker (updated by the compare, read by `/progress`).
+struct CancellableRequest {
+    request_id: Option<String>,
+    should_cancel: Box<dyn Fn() -> bool>,
+    progress: Option<Arc<Mutex<CompareProgress>>>,
+}
+
+impl CancellableRequest {
+    /// Polls the cancellation flag. Returns `false` when no `request_id`
+    /// was supplied (nothing to cancel).
+    fn is_cancelled(&self) -> bool {
+        (self.should_cancel)()
+    }
+}
+
+/// Register both a progress tracker and a cancellation flag for a compare
+/// request. Call [`CancellableRequest::remove`] (or
+/// [`remove_cancellable_request`]) when the compare finishes or is cancelled.
+fn register_cancellable_request(
+    params: &[(String, String)],
+    state: &Arc<Mutex<GuiBridgeState>>,
+    phase: &str,
+    total: usize,
+    message: &str,
+) -> CancellableRequest {
+    let (request_id, progress) = register_progress_request(params, state, phase, total, message);
+    let should_cancel: Box<dyn Fn() -> bool> = if let Some(id) = &request_id {
+        let flag = Arc::new(AtomicBool::new(false));
+        if let Ok(mut state) = state.lock() {
+            state.compare_cancels.insert(id.clone(), Arc::clone(&flag));
+        }
+        Box::new(move || flag.load(Ordering::Relaxed))
+    } else {
+        Box::new(|| false)
+    };
+    CancellableRequest {
+        request_id,
+        should_cancel,
+        progress,
+    }
+}
+
+/// Remove the cancel flag and progress tracker registered by
+/// [`register_cancellable_request`].
+fn remove_cancellable_request(req: &CancellableRequest, state: &Arc<Mutex<GuiBridgeState>>) {
+    if let Some(id) = &req.request_id
+        && let Ok(mut state) = state.lock()
+    {
+        state.compare_cancels.remove(id);
+    }
+    remove_progress_request(req.request_id.as_deref(), state);
+}
+
 const GUI_HISTORY_LIMIT: usize = 16;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2233,7 +2288,11 @@ fn folder_tab_cancellable(
                 {
                     p.phase = "comparing".to_owned();
                     p.current = compared_count;
-                    p.total = discovered_total.max(compared_count);
+                    // Discovered fires per-side (left walk + right walk), so
+                    // the unique entry count is roughly half. Use that as the
+                    // compare-phase total estimate; .max() self-corrects for
+                    // asymmetric trees where one side dominates.
+                    p.total = (discovered_total / 2).max(compared_count);
                     p.message = relative_path.display().to_string();
                 }
             }
@@ -2243,7 +2302,7 @@ fn folder_tab_cancellable(
                 {
                     p.phase = "done".to_owned();
                     p.current = compared_count;
-                    p.total = discovered_total.max(compared_count);
+                    p.total = compared_count;
                     p.message.clear();
                 }
             }
