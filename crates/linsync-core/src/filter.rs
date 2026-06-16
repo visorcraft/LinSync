@@ -1669,7 +1669,10 @@ d!:^target/tmp$
         for i in 0..=FILTER_REGEX_CACHE_MAX_SIZE {
             let pattern = format!("^{}$", i);
             let text = i.to_string();
-            assert!(regex_match(&pattern, &text, true), "pattern {i} should match");
+            assert!(
+                regex_match(&pattern, &text, true),
+                "pattern {i} should match"
+            );
         }
         // A pattern that was evicted still works when re-encountered.
         assert!(regex_match("^0$", "0", true));

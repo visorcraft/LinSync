@@ -12,8 +12,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::plugin::{
-    DiscoveredPlugin, PluginExecutionOptions, PluginInputDescriptor, PluginTextOperationOptions,
-    discover_plugins, run_unpack_text_plugin_with_options,
+    DiscoveredPlugin, PluginCancellationToken, PluginExecutionOptions, PluginInputDescriptor,
+    PluginTextOperationOptions, discover_plugins, run_unpack_text_plugin_with_options,
 };
 use crate::text::{TextCompareOptions, compare_text};
 
@@ -53,6 +53,10 @@ pub struct DocumentCompareOptions {
     /// Used in tests to isolate temp-dir cleanup assertions.
     #[serde(skip, default)]
     pub temp_root: Option<std::path::PathBuf>,
+    /// Optional cancellation token propagated into plugin executions and the
+    /// image engine during rendered-page diffing.
+    #[serde(skip, default)]
+    pub cancellation: Option<PluginCancellationToken>,
 }
 
 impl Default for DocumentCompareOptions {
@@ -64,6 +68,7 @@ impl Default for DocumentCompareOptions {
             timeout_secs: 30,
             page_range: None,
             temp_root: None,
+            cancellation: None,
         }
     }
 }
@@ -320,6 +325,7 @@ fn extractor_name(plugin: &DiscoveredPlugin) -> String {
 /// reported (`None` when it returned none).
 type ExtractedText = (String, Option<Vec<Vec<crate::plugin::WordPosition>>>);
 
+#[allow(clippy::too_many_arguments)]
 fn extract_text_with_plugin(
     plugin: &DiscoveredPlugin,
     path: &Path,
@@ -328,10 +334,12 @@ fn extract_text_with_plugin(
     language: &str,
     want_positions: bool,
     temp_root: Option<&Path>,
+    cancellation: Option<PluginCancellationToken>,
 ) -> Result<ExtractedText, DocumentCompareError> {
     let opts = PluginExecutionOptions {
         timeout: Duration::from_secs(timeout_secs),
         temp_root: temp_root.map(Path::to_path_buf),
+        cancellation,
         ..PluginExecutionOptions::default()
     };
     let operation_options = PluginTextOperationOptions {
@@ -398,6 +406,7 @@ pub fn compare_document_files(
         &options.ocr_language,
         want_positions,
         temp_root,
+        options.cancellation.clone(),
     )?;
     let (right_text, right_word_positions) = extract_text_with_plugin(
         &right_plugin,
@@ -407,6 +416,7 @@ pub fn compare_document_files(
         &options.ocr_language,
         want_positions,
         temp_root,
+        options.cancellation.clone(),
     )?;
 
     let left_display = left.file_name().and_then(|n| n.to_str()).unwrap_or("left");
@@ -513,6 +523,7 @@ fn compare_document_rendered(
     let exec = PluginExecutionOptions {
         timeout: Duration::from_secs(options.timeout_secs),
         temp_root: options.temp_root.clone(),
+        cancellation: options.cancellation.clone(),
         ..PluginExecutionOptions::default()
     };
     let render = |doc: &Path, out: &Path| -> Result<Vec<String>, DocumentCompareError> {
@@ -540,7 +551,12 @@ fn compare_document_rendered(
     let left_pages = render(left, &left_dir)?;
     let right_pages = render(right, &right_dir)?;
 
-    let img_opts = crate::image::ImageCompareOptions::default();
+    let mut img_opts = crate::image::ImageCompareOptions::default();
+    if img_opts.timeout_secs == 0 {
+        img_opts.timeout_secs = 300;
+    }
+    let cancellation = options.cancellation.clone();
+    let is_cancelled = move || cancellation.as_ref().is_some_and(|t| t.is_cancelled());
     let page_count = left_pages.len().max(right_pages.len());
     // Restrict the compared pages to the requested 1-based inclusive range
     // (clamped to the rendered page count); `None` compares every page.
@@ -556,8 +572,13 @@ fn compare_document_rendered(
     for index in start..end {
         match (left_pages.get(index), right_pages.get(index)) {
             (Some(lp), Some(rp)) => {
-                let cmp = crate::image::compare_images(Path::new(lp), Path::new(rp), &img_opts)
-                    .map_err(|e| DocumentCompareError::Io(std::io::Error::other(e.to_string())))?;
+                let cmp = crate::image::compare_images_cancellable(
+                    Path::new(lp),
+                    Path::new(rp),
+                    &img_opts,
+                    &is_cancelled,
+                )
+                .map_err(|e| DocumentCompareError::Io(std::io::Error::other(e.to_string())))?;
                 rendered_pages.push(RenderedPageSummary {
                     page: index,
                     equal: cmp.equal,

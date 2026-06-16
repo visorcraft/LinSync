@@ -2,6 +2,8 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ::image::{DynamicImage, GenericImageView, ImageReader, RgbaImage};
 use lab::Lab;
@@ -217,6 +219,17 @@ const MAX_ANIMATED_FRAMES: usize = 1_000;
 /// already limits a single frame; this limits the aggregate across frames.
 const DEFAULT_MAX_ANIMATED_PIXELS: u64 = 256 * 1024 * 1024;
 
+/// Shared flag used by the non-cancellable public entry points. It is never
+/// flipped, so internal checks are effectively no-ops.
+static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+fn check_cancelled(cancelled: &AtomicBool) -> Result<(), ImageCompareError> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(ImageCompareError::Cancelled);
+    }
+    Ok(())
+}
+
 pub fn compare_images(
     left: &Path,
     right: &Path,
@@ -225,7 +238,7 @@ pub fn compare_images(
     // Fast path: no timeout and no cancellation means we can avoid the
     // overhead of spawning a monitoring thread.
     if options.timeout_secs == 0 {
-        return compare_images_impl(left, right, options);
+        return compare_images_impl(left, right, options, &NEVER_CANCELLED);
     }
     let never = || false;
     compare_images_cancellable(left, right, options, &never)
@@ -234,6 +247,10 @@ pub fn compare_images(
 /// Cancellable/timeout variant of [`compare_images`]. The compare runs on a
 /// dedicated thread so the host can return [`ImageCompareError::Cancelled`] or
 /// [`ImageCompareError::TimedOut`] without being blocked by decode/compare work.
+///
+/// In addition to the host returning early, a shared cancellation flag is
+/// passed into the worker so that long pixel-comparison loops stop promptly
+/// once the host decides to cancel or the deadline expires.
 pub fn compare_images_cancellable(
     left: &Path,
     right: &Path,
@@ -256,15 +273,24 @@ pub fn compare_images_cancellable(
     let left = left.to_path_buf();
     let right = right.to_path_buf();
     let options = options.clone();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = cancelled.clone();
     thread::spawn(move || {
-        let _ = tx.send(compare_images_impl(&left, &right, &options));
+        let _ = tx.send(compare_images_impl(
+            &left,
+            &right,
+            &options,
+            &worker_cancelled,
+        ));
     });
 
     loop {
         if should_cancel() {
+            cancelled.store(true, Ordering::Relaxed);
             return Err(ImageCompareError::Cancelled);
         }
         if deadline.is_some_and(|d| Instant::now() >= d) {
+            cancelled.store(true, Ordering::Relaxed);
             return Err(ImageCompareError::TimedOut { timeout_secs });
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -283,17 +309,20 @@ fn compare_images_impl(
     left: &Path,
     right: &Path,
     options: &ImageCompareOptions,
+    cancelled: &AtomicBool,
 ) -> Result<ImageCompareResult, ImageCompareError> {
     // Animated comparison is its own path (it decodes every frame and cannot use
     // the large-image streaming shortcut).
     if matches!(options.frame_mode, FrameCompareMode::AllFrames) {
-        return compare_images_all_frames(left, right, options);
+        return compare_images_all_frames_cancellable(left, right, options, cancelled);
     }
     if should_stream(left, right) {
-        return compare_images_streaming(left, right, options);
+        return compare_images_streaming_cancellable(left, right, options, cancelled);
     }
 
+    check_cancelled(cancelled)?;
     let left_img = open_image(left)?;
+    check_cancelled(cancelled)?;
     let right_img = open_image(right)?;
 
     let color_left = format!("{:?}", left_img.color());
@@ -309,12 +338,12 @@ fn compare_images_impl(
     };
 
     let mut result = match &options.mode {
-        ImageCompareMode::Exact => compare_exact(&left_img, &right_img),
+        ImageCompareMode::Exact => compare_exact(&left_img, &right_img, cancelled),
         ImageCompareMode::Tolerance { tolerance } => {
-            compare_tolerance(&left_img, &right_img, *tolerance)
+            compare_tolerance(&left_img, &right_img, *tolerance, cancelled)
         }
         ImageCompareMode::Perceptual => {
-            compare_perceptual(&left_img, &right_img, options.delta_e_threshold)
+            compare_perceptual(&left_img, &right_img, options.delta_e_threshold, cancelled)
         }
     }?;
 
@@ -337,7 +366,18 @@ pub fn compare_images_streaming(
     right: &Path,
     options: &ImageCompareOptions,
 ) -> Result<ImageCompareResult, ImageCompareError> {
+    compare_images_streaming_cancellable(left, right, options, &NEVER_CANCELLED)
+}
+
+fn compare_images_streaming_cancellable(
+    left: &Path,
+    right: &Path,
+    options: &ImageCompareOptions,
+    cancelled: &AtomicBool,
+) -> Result<ImageCompareResult, ImageCompareError> {
+    check_cancelled(cancelled)?;
     let left_img = open_image(left)?;
+    check_cancelled(cancelled)?;
     let right_img = open_image(right)?;
 
     let color_left = format!("{:?}", left_img.color());
@@ -365,6 +405,7 @@ pub fn compare_images_streaming(
 
     let mut y_start = 0;
     while y_start < height {
+        check_cancelled(cancelled)?;
         let y_end = y_start.saturating_add(stripe).min(height);
         for y in y_start..y_end {
             for x in 0..width {
@@ -407,7 +448,15 @@ pub fn compare_images_streaming(
 /// Decode every frame of an animated image (GIF, APNG, animated WebP) to RGBA8.
 /// Still images (or formats/files without animation) yield a single frame, so a
 /// caller in `AllFrames` mode degrades gracefully to a one-frame comparison.
-fn decode_image_frames(path: &Path) -> Result<Vec<DynamicImage>, ImageCompareError> {
+///
+/// Frames are decoded one at a time and capped by `MAX_ANIMATED_FRAMES` and
+/// `max_total_pixels` so a malicious animation cannot force a full decode into
+/// memory before the limits are checked.
+fn decode_image_frames(
+    path: &Path,
+    cancelled: &AtomicBool,
+    max_total_pixels: u64,
+) -> Result<Vec<DynamicImage>, ImageCompareError> {
     use ::image::{AnimationDecoder, ImageFormat};
 
     let format = ImageReader::open(path)
@@ -415,35 +464,101 @@ fn decode_image_frames(path: &Path) -> Result<Vec<DynamicImage>, ImageCompareErr
         .and_then(|reader| reader.with_guessed_format().ok())
         .and_then(|reader| reader.format());
 
-    let collected: Option<Vec<::image::Frame>> = match format {
-        Some(ImageFormat::Gif) => std::fs::File::open(path).ok().and_then(|file| {
-            ::image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file))
-                .ok()
-                .and_then(|decoder| decoder.into_frames().collect_frames().ok())
-        }),
-        Some(ImageFormat::WebP) => std::fs::File::open(path).ok().and_then(|file| {
-            ::image::codecs::webp::WebPDecoder::new(std::io::BufReader::new(file))
-                .ok()
-                .filter(|decoder| decoder.has_animation())
-                .and_then(|decoder| decoder.into_frames().collect_frames().ok())
-        }),
-        Some(ImageFormat::Png) => std::fs::File::open(path).ok().and_then(|file| {
-            ::image::codecs::png::PngDecoder::new(std::io::BufReader::new(file))
-                .ok()
-                .filter(|decoder| decoder.is_apng().unwrap_or(false))
-                .and_then(|decoder| decoder.apng().ok())
-                .and_then(|decoder| decoder.into_frames().collect_frames().ok())
-        }),
-        _ => None,
-    };
+    let mut frames: Vec<DynamicImage> = Vec::new();
+    let mut total_pixels: u64 = 0;
 
-    if let Some(frames) = collected
-        && !frames.is_empty()
-    {
-        return Ok(frames
-            .into_iter()
-            .map(|frame| DynamicImage::ImageRgba8(frame.into_buffer()))
-            .collect());
+    match format {
+        Some(ImageFormat::Gif) => {
+            if let Ok(file) = std::fs::File::open(path)
+                && let Ok(decoder) =
+                    ::image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file))
+            {
+                for frame in decoder.into_frames() {
+                    check_cancelled(cancelled)?;
+                    let frame = frame.map_err(|e| ImageCompareError::DecodeError(e.to_string()))?;
+                    let buf = DynamicImage::ImageRgba8(frame.into_buffer());
+                    let (w, h) = buf.dimensions();
+                    total_pixels += w as u64 * h as u64;
+                    if total_pixels > max_total_pixels {
+                        return Err(ImageCompareError::TooLarge {
+                            pixels: total_pixels,
+                            limit: max_total_pixels,
+                        });
+                    }
+                    frames.push(buf);
+                    if frames.len() > MAX_ANIMATED_FRAMES {
+                        return Err(ImageCompareError::TooManyFrames {
+                            count: frames.len(),
+                            limit: MAX_ANIMATED_FRAMES,
+                        });
+                    }
+                }
+            }
+        }
+        Some(ImageFormat::WebP) => {
+            if let Ok(file) = std::fs::File::open(path)
+                && let Ok(decoder) =
+                    ::image::codecs::webp::WebPDecoder::new(std::io::BufReader::new(file))
+                && decoder.has_animation()
+            {
+                for frame in decoder.into_frames() {
+                    check_cancelled(cancelled)?;
+                    let frame = frame.map_err(|e| ImageCompareError::DecodeError(e.to_string()))?;
+                    let buf = DynamicImage::ImageRgba8(frame.into_buffer());
+                    let (w, h) = buf.dimensions();
+                    total_pixels += w as u64 * h as u64;
+                    if total_pixels > max_total_pixels {
+                        return Err(ImageCompareError::TooLarge {
+                            pixels: total_pixels,
+                            limit: max_total_pixels,
+                        });
+                    }
+                    frames.push(buf);
+                    if frames.len() > MAX_ANIMATED_FRAMES {
+                        return Err(ImageCompareError::TooManyFrames {
+                            count: frames.len(),
+                            limit: MAX_ANIMATED_FRAMES,
+                        });
+                    }
+                }
+            }
+        }
+        Some(ImageFormat::Png) => {
+            if let Ok(file) = std::fs::File::open(path)
+                && let Ok(decoder) =
+                    ::image::codecs::png::PngDecoder::new(std::io::BufReader::new(file))
+                && decoder.is_apng().unwrap_or(false)
+            {
+                let apng = decoder
+                    .apng()
+                    .map_err(|e| ImageCompareError::DecodeError(e.to_string()))?;
+                for frame in apng.into_frames() {
+                    check_cancelled(cancelled)?;
+                    let frame = frame.map_err(|e| ImageCompareError::DecodeError(e.to_string()))?;
+                    let buf = DynamicImage::ImageRgba8(frame.into_buffer());
+                    let (w, h) = buf.dimensions();
+                    total_pixels += w as u64 * h as u64;
+                    if total_pixels > max_total_pixels {
+                        return Err(ImageCompareError::TooLarge {
+                            pixels: total_pixels,
+                            limit: max_total_pixels,
+                        });
+                    }
+                    frames.push(buf);
+                    if frames.len() > MAX_ANIMATED_FRAMES {
+                        return Err(ImageCompareError::TooManyFrames {
+                            count: frames.len(),
+                            limit: MAX_ANIMATED_FRAMES,
+                        });
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if !frames.is_empty() {
+        return Ok(frames);
     }
     // Not animated (or a single-frame source): decode the one image.
     Ok(vec![open_image(path)?])
@@ -455,19 +570,20 @@ fn compare_decoded(
     left: &DynamicImage,
     right: &DynamicImage,
     options: &ImageCompareOptions,
+    cancelled: &AtomicBool,
 ) -> Result<ImageCompareResult, ImageCompareError> {
     let orig_left = left.dimensions();
     let orig_right = right.dimensions();
     if orig_left != orig_right {
         let (l, r) = pad_to_common_canvas(left.clone(), right.clone());
-        let mut result = compare_decoded_same_size(&l, &r, options)?;
+        let mut result = compare_decoded_same_size(&l, &r, options, cancelled)?;
         result.left_dims = orig_left;
         result.right_dims = orig_right;
         result.padded = true;
         result.equal = false;
         Ok(result)
     } else {
-        compare_decoded_same_size(left, right, options)
+        compare_decoded_same_size(left, right, options, cancelled)
     }
 }
 
@@ -475,11 +591,16 @@ fn compare_decoded_same_size(
     left: &DynamicImage,
     right: &DynamicImage,
     options: &ImageCompareOptions,
+    cancelled: &AtomicBool,
 ) -> Result<ImageCompareResult, ImageCompareError> {
     match &options.mode {
-        ImageCompareMode::Exact => compare_exact(left, right),
-        ImageCompareMode::Tolerance { tolerance } => compare_tolerance(left, right, *tolerance),
-        ImageCompareMode::Perceptual => compare_perceptual(left, right, options.delta_e_threshold),
+        ImageCompareMode::Exact => compare_exact(left, right, cancelled),
+        ImageCompareMode::Tolerance { tolerance } => {
+            compare_tolerance(left, right, *tolerance, cancelled)
+        }
+        ImageCompareMode::Perceptual => {
+            compare_perceptual(left, right, options.delta_e_threshold, cancelled)
+        }
     }
 }
 
@@ -494,8 +615,23 @@ pub fn compare_images_all_frames(
     right: &Path,
     options: &ImageCompareOptions,
 ) -> Result<ImageCompareResult, ImageCompareError> {
-    let left_frames = decode_image_frames(left)?;
-    let right_frames = decode_image_frames(right)?;
+    compare_images_all_frames_cancellable(left, right, options, &NEVER_CANCELLED)
+}
+
+fn compare_images_all_frames_cancellable(
+    left: &Path,
+    right: &Path,
+    options: &ImageCompareOptions,
+    cancelled: &AtomicBool,
+) -> Result<ImageCompareResult, ImageCompareError> {
+    let max_pixels = if options.max_total_pixels > 0 {
+        options.max_total_pixels
+    } else {
+        DEFAULT_MAX_ANIMATED_PIXELS
+    };
+    let left_frames = decode_image_frames(left, cancelled, max_pixels)?;
+    check_cancelled(cancelled)?;
+    let right_frames = decode_image_frames(right, cancelled, max_pixels)?;
 
     let left_count = left_frames.len();
     let right_count = right_frames.len();
@@ -556,9 +692,10 @@ pub fn compare_images_all_frames(
     let mut any_padded = left_dims != right_dims;
 
     for index in 0..frame_count {
+        check_cancelled(cancelled)?;
         match (left_frames.get(index), right_frames.get(index)) {
             (Some(l), Some(r)) => {
-                let cmp = compare_decoded(l, r, &inner)?;
+                let cmp = compare_decoded(l, r, &inner, cancelled)?;
                 total_pixels += cmp.total_pixels;
                 differing_pixels += cmp.differing_pixels;
                 if !cmp.equal {
@@ -700,6 +837,7 @@ fn pad_to_common_canvas(left: DynamicImage, right: DynamicImage) -> (DynamicImag
 fn compare_exact(
     left: &DynamicImage,
     right: &DynamicImage,
+    cancelled: &AtomicBool,
 ) -> Result<ImageCompareResult, ImageCompareError> {
     let left_dims = left.dimensions();
     let right_dims = right.dimensions();
@@ -714,6 +852,7 @@ fn compare_exact(
     let mut diff_mask = vec![vec![false; width as usize]; height as usize];
 
     for y in 0..height {
+        check_cancelled(cancelled)?;
         for x in 0..width {
             let lp = left_rgba.get_pixel(x, y);
             let rp = right_rgba.get_pixel(x, y);
@@ -742,6 +881,7 @@ fn compare_tolerance(
     left: &DynamicImage,
     right: &DynamicImage,
     tolerance: u8,
+    cancelled: &AtomicBool,
 ) -> Result<ImageCompareResult, ImageCompareError> {
     let left_dims = left.dimensions();
     let right_dims = right.dimensions();
@@ -756,6 +896,7 @@ fn compare_tolerance(
     let mut diff_mask = vec![vec![false; width as usize]; height as usize];
 
     for y in 0..height {
+        check_cancelled(cancelled)?;
         for x in 0..width {
             let lp = left_rgba.get_pixel(x, y).0;
             let rp = right_rgba.get_pixel(x, y).0;
@@ -788,6 +929,7 @@ fn compare_perceptual(
     left: &DynamicImage,
     right: &DynamicImage,
     delta_e_threshold: f32,
+    cancelled: &AtomicBool,
 ) -> Result<ImageCompareResult, ImageCompareError> {
     let left_dims = left.dimensions();
     let right_dims = right.dimensions();
@@ -802,6 +944,7 @@ fn compare_perceptual(
     let mut diff_mask = vec![vec![false; width as usize]; height as usize];
 
     for y in 0..height {
+        check_cancelled(cancelled)?;
         for x in 0..width {
             let lp = left_rgba.get_pixel(x, y).0;
             let rp = right_rgba.get_pixel(x, y).0;
@@ -881,6 +1024,15 @@ pub fn generate_overlay(
     right: &Path,
     options: &ImageCompareOptions,
 ) -> Result<ImageCompareResult, ImageCompareError> {
+    generate_overlay_cancellable(left, right, options, &NEVER_CANCELLED)
+}
+
+fn generate_overlay_cancellable(
+    left: &Path,
+    right: &Path,
+    options: &ImageCompareOptions,
+    cancelled: &AtomicBool,
+) -> Result<ImageCompareResult, ImageCompareError> {
     let left_img = open_image(left)?;
     let right_img = open_image(right)?;
     let orig_left_dims = left_img.dimensions();
@@ -905,6 +1057,7 @@ pub fn generate_overlay(
     let mut diff_mask = vec![vec![false; width as usize]; height as usize];
 
     for y in 0..height {
+        check_cancelled(cancelled)?;
         for x in 0..width {
             let lp = left_rgba.get_pixel(x, y).0;
             let rp = right_rgba.get_pixel(x, y).0;

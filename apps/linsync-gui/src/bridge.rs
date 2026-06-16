@@ -328,6 +328,7 @@ pub(crate) fn bridge_response_with_token(
                 linsync::document_compare_bridge_response_with_profile_and_artifacts(
                     query,
                     &profile.document,
+                    Some(req.cancellation_token()),
                 );
             // If the user hit Stop during the (potentially slow) plugin
             // extraction, discard the result and report cancellation.

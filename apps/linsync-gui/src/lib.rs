@@ -398,15 +398,20 @@ pub fn document_compare_bridge_response_with_profile(
     query: &str,
     profile_options: &linsync_core::DocumentCompareOptions,
 ) -> String {
-    document_compare_bridge_response_with_profile_and_artifacts(query, profile_options).0
+    document_compare_bridge_response_with_profile_and_artifacts(query, profile_options, None).0
 }
 
 /// Same as [`document_compare_bridge_response_with_profile`], but also returns
 /// paths to temporary artifacts that must be cleaned up when the compare tab is
 /// closed (e.g. rendered page PNG caches).
+///
+/// When `cancellation` is `Some`, the token is propagated into the document
+/// plugin executions and the rendered-page image compares so that a bridge
+/// `/cancel` request stops the underlying work promptly.
 pub fn document_compare_bridge_response_with_profile_and_artifacts(
     query: &str,
     profile_options: &linsync_core::DocumentCompareOptions,
+    cancellation: Option<linsync_core::plugin::PluginCancellationToken>,
 ) -> (String, Vec<std::path::PathBuf>) {
     use linsync_core::document::{DocumentCompareError, compare_document_files};
 
@@ -427,6 +432,10 @@ pub fn document_compare_bridge_response_with_profile_and_artifacts(
 
     // Locate the plugins root (same logic as the CLI helper).
     let plugins_root = detect_document_plugins_root();
+
+    if let Some(token) = cancellation {
+        opts.cancellation = Some(token);
+    }
 
     let result = match compare_document_files(&left, &right, &plugins_root, &opts) {
         Ok(r) => r,

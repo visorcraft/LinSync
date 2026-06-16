@@ -413,6 +413,13 @@ impl PluginCancellationToken {
         Self::default()
     }
 
+    /// Construct a token that shares the same backing flag as `cancelled`.
+    /// Useful when a caller already owns the atomic (e.g. a GUI cancel map)
+    /// and wants to hand a token-shaped handle to a plugin or engine.
+    pub fn from_arc(cancelled: Arc<AtomicBool>) -> Self {
+        Self { cancelled }
+    }
+
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
     }
@@ -421,6 +428,14 @@ impl PluginCancellationToken {
         self.cancelled.load(Ordering::SeqCst)
     }
 }
+
+impl PartialEq for PluginCancellationToken {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cancelled, &other.cancelled)
+    }
+}
+
+impl Eq for PluginCancellationToken {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginExecutionResult {

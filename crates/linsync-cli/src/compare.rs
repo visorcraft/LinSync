@@ -664,6 +664,8 @@ pub(crate) fn compare_image_command(
         tolerance: args.image_options.tolerance,
         delta_e_threshold: args.image_options.delta_e,
         frame_mode,
+        // Bound the CLI compare so a pathological image cannot hang the process.
+        timeout_secs: 300,
         ..ImageCompareOptions::default()
     };
 

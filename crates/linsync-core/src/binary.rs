@@ -1133,8 +1133,8 @@ mod tests {
         f.set_len(MAX_BINARY_CONTENT_BYTES + 1).unwrap();
         drop(f);
         std::fs::write(&right, b"x").unwrap();
-        let err = compare_binary_files(&left, &right, &BinaryCompareOptions::default())
-            .unwrap_err();
+        let err =
+            compare_binary_files(&left, &right, &BinaryCompareOptions::default()).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 }

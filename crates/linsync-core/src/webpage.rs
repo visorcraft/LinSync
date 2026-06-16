@@ -202,15 +202,18 @@ pub fn clear_webcompare_cache(cache_dir: &Path) -> Result<(), WebpageCompareErro
 
 /// Returns the webcompare cache directory, creating it if needed.
 pub fn webcompare_cache_dir(cache_dir: &Path) -> Result<PathBuf, WebpageCompareError> {
-    let dir = cache_dir.join("webcompare").join("fetched");
+    let webcompare_dir = cache_dir.join("webcompare");
+    let dir = webcompare_dir.join("fetched");
     std::fs::create_dir_all(&dir)?;
     prune_stale_webcompare_files(&dir, Duration::from_secs(7 * 24 * 60 * 60));
+    // Also prune leaked one-off WebEngine profile directories at the root.
+    prune_stale_webcompare_files(&webcompare_dir, Duration::from_secs(7 * 24 * 60 * 60));
     Ok(dir)
 }
 
-/// Remove files in `dir` older than `max_age`. This keeps the webcompare fetched
-/// temp directory from growing without bound when individual temp-file guards
-/// are leaked by panic/early-return paths. Directories are left untouched.
+/// Remove files and stale profile-* directories in `dir` older than `max_age`.
+/// This keeps the webcompare fetched temp directory from growing without bound
+/// when individual temp-file guards are leaked by panic/early-return paths.
 fn prune_stale_webcompare_files(dir: &Path, max_age: Duration) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -220,16 +223,23 @@ fn prune_stale_webcompare_files(dir: &Path, max_age: Duration) {
         let Ok(meta) = entry.metadata() else {
             continue;
         };
-        if !meta.is_file() {
-            continue;
-        }
         let stale = meta
             .modified()
             .ok()
             .and_then(|modified| now.duration_since(modified).ok())
             .is_some_and(|age| age > max_age);
-        if stale {
-            let _ = std::fs::remove_file(entry.path());
+        if !stale {
+            continue;
+        }
+        let path = entry.path();
+        if meta.is_file()
+            && let Err(e) = std::fs::remove_file(&path)
+        {
+            tracing::warn!(?path, error = %e, "failed to remove stale webcompare file");
+        } else if meta.is_dir()
+            && let Err(e) = std::fs::remove_dir_all(&path)
+        {
+            tracing::warn!(?path, error = %e, "failed to remove stale webcompare directory");
         }
     }
 }
@@ -262,7 +272,9 @@ impl WebProfileDir {
 impl Drop for WebProfileDir {
     fn drop(&mut self) {
         if let Some(dir) = self.path.take() {
-            let _ = std::fs::remove_dir_all(dir);
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                tracing::warn!(?dir, error = %e, "failed to remove webengine profile directory");
+            }
         }
     }
 }
@@ -1247,15 +1259,22 @@ mod tests {
     }
 
     #[test]
-    fn prune_stale_webcompare_files_removes_old_files() {
+    fn prune_stale_webcompare_files_removes_old_files_and_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let fetched = tmp.path().join("fetched");
         std::fs::create_dir_all(&fetched).unwrap();
         let file = fetched.join("old.txt");
         std::fs::write(&file, b"data").unwrap();
+        let stale_dir = tmp.path().join("profile-0");
+        std::fs::create_dir_all(stale_dir.join("sub")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
         prune_stale_webcompare_files(&fetched, std::time::Duration::from_millis(10));
+        prune_stale_webcompare_files(tmp.path(), std::time::Duration::from_millis(10));
         assert!(!file.exists(), "stale fetched temp file should be pruned");
+        assert!(
+            !stale_dir.exists(),
+            "stale webengine profile directory should be pruned"
+        );
     }
 
     #[cfg(feature = "web-engine")]

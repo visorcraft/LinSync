@@ -13,6 +13,7 @@ fn document_compare_types_are_accessible() {
         timeout_secs: 30,
         page_range: None,
         temp_root: None,
+        cancellation: None,
     };
     assert_eq!(opts.ocr_language, "eng");
     assert!(!opts.retain_rendered_pages);

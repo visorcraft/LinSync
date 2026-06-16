@@ -426,6 +426,7 @@ Item {{
     WebEngineView {{
         id: view
         anchors.fill: parent
+        profile: WebEngineProfile {{ offTheRecord: true }}
         url: "{url}"
         onLoadingChanged: function(info) {{
             if (info.status === WebEngineView.LoadSucceededStatus) {{

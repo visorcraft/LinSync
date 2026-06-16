@@ -25,10 +25,11 @@ use linsync_core::{
     TextDocument, TextFindOptions, TextInputEncoding, TextRenderMode, TextSyntaxMode,
     ThemePreference, ThreeWayMergeState, TwoWayMergeState, TypedValueKind, builtin_profiles,
     cleanup_artifacts, compare_binary, compare_binary_files, compare_documents,
-    compare_documents_cancellable, compare_folders, compare_folders_with_progress, compare_images,
-    compare_table_files, compare_text, compare_text_files_with_prediffer, create_save_plan,
-    discover_installed_plugins, execute_folder_operation_plan, find_builtin, is_likely_binary,
-    permanent_delete_warning, plan_folder_operation, save_artifact, write_encoded_text_with_plan,
+    compare_documents_cancellable, compare_folders, compare_folders_with_progress,
+    compare_images_cancellable, compare_table_files, compare_text,
+    compare_text_files_with_prediffer, create_save_plan, discover_installed_plugins,
+    execute_folder_operation_plan, find_builtin, is_likely_binary, permanent_delete_warning,
+    plan_folder_operation, save_artifact, write_encoded_text_with_plan,
 };
 use serde::{Deserialize, Serialize};
 
@@ -550,6 +551,7 @@ fn register_progress_request(
 struct CancellableRequest {
     progress_guard: ProgressGuard,
     should_cancel: Box<dyn Fn() -> bool>,
+    cancellation_token: linsync_core::plugin::PluginCancellationToken,
 }
 
 impl CancellableRequest {
@@ -565,6 +567,10 @@ impl CancellableRequest {
 
     fn cancel_checker(&self) -> &dyn Fn() -> bool {
         &*self.should_cancel
+    }
+
+    fn cancellation_token(&self) -> linsync_core::plugin::PluginCancellationToken {
+        self.cancellation_token.clone()
     }
 }
 
@@ -588,18 +594,24 @@ fn register_cancellable_request(
     message: &str,
 ) -> CancellableRequest {
     let progress_guard = register_progress_request(params, state, phase, total, message);
-    let should_cancel: Box<dyn Fn() -> bool> = if let Some(id) = &progress_guard.request_id {
-        let flag = Arc::new(AtomicBool::new(false));
-        if let Ok(mut state) = state.lock() {
-            state.compare_cancels.insert(id.clone(), Arc::clone(&flag));
-        }
-        Box::new(move || flag.load(Ordering::Relaxed))
-    } else {
-        Box::new(|| false)
-    };
+    let (should_cancel, cancellation_token): (Box<dyn Fn() -> bool>, _) =
+        if let Some(id) = &progress_guard.request_id {
+            let flag = Arc::new(AtomicBool::new(false));
+            let token = linsync_core::plugin::PluginCancellationToken::from_arc(Arc::clone(&flag));
+            if let Ok(mut state) = state.lock() {
+                state.compare_cancels.insert(id.clone(), Arc::clone(&flag));
+            }
+            (Box::new(move || flag.load(Ordering::Relaxed)), token)
+        } else {
+            (
+                Box::new(|| false),
+                linsync_core::plugin::PluginCancellationToken::new(),
+            )
+        };
     CancellableRequest {
         progress_guard,
         should_cancel,
+        cancellation_token,
     }
 }
 
@@ -2163,7 +2175,14 @@ fn explicit_tab_for_paths_cancellable(
                 Vec::new(),
             ),
             GuiCompareMode::Image => (
-                Some(image_tab(left, right, left_path, right_path, options)),
+                Some(image_tab(
+                    left,
+                    right,
+                    left_path,
+                    right_path,
+                    options,
+                    should_cancel,
+                )),
                 Vec::new(),
             ),
             GuiCompareMode::Document => document_tab(
@@ -3243,9 +3262,13 @@ fn image_tab(
     left_path: String,
     right_path: String,
     options: &GuiCompareOptions,
+    should_cancel: &dyn Fn() -> bool,
 ) -> GuiCompareTab {
-    let image_options = &options.image;
-    match compare_images(left, right, image_options) {
+    let mut image_options = options.image.clone();
+    if image_options.timeout_secs == 0 {
+        image_options.timeout_secs = 300;
+    }
+    match compare_images_cancellable(left, right, &image_options, should_cancel) {
         Ok(result) => {
             let diff_count = if result.equal { 0 } else { 1 };
             compare_tab(
@@ -3348,6 +3371,7 @@ fn document_tab(
         linsync::document_compare_bridge_response_with_profile_and_artifacts(
             &query,
             document_options,
+            None,
         );
     set_progress(
         &progress,
