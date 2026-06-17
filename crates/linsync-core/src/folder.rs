@@ -2161,8 +2161,16 @@ fn compute_file_hash(path: &Path, algorithm: HashAlgorithm) -> io::Result<String
         }
         HashAlgorithm::Sha256 => {
             let mut hasher = Sha256::new();
-            io::copy(&mut reader, &mut hasher)?;
-            Ok(format!("{:x}", hasher.finalize()))
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = reader.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+            }
+            // digest 0.11's Output is no longer io::Write / LowerHex; hex by hand.
+            Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
         }
         HashAlgorithm::Crc32 => {
             let mut hasher = Crc32Hasher::new();
