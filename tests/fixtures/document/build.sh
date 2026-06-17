@@ -143,14 +143,21 @@ manifest_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
   <manifest:file-entry manifest:media-type="application/vnd.oasis.opendocument.text" manifest:full-path="/"/>
   <manifest:file-entry manifest:media-type="text/xml" manifest:full-path="content.xml"/>
 </manifest:manifest>"""
+# Fixed timestamps so regeneration is byte-stable and never churns the
+# committed fixture. A bare writestr(name, data) stamps each entry with the
+# current local time (time.localtime), making the zip differ on every run;
+# an explicit ZipInfo defaults date_time to 1980-01-01, like mimetype below.
 buf = io.BytesIO()
 with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
     # mimetype must be first and uncompressed per ODF spec
     info = zipfile.ZipInfo("mimetype")
     info.compress_type = zipfile.ZIP_STORED
     zf.writestr(info, mimetype)
-    zf.writestr("content.xml", content_xml)
-    zf.writestr("META-INF/manifest.xml", manifest_xml)
+    for name, data in (("content.xml", content_xml),
+                       ("META-INF/manifest.xml", manifest_xml)):
+        entry = zipfile.ZipInfo(name)
+        entry.compress_type = zipfile.ZIP_DEFLATED
+        zf.writestr(entry, data)
 with open(path, "wb") as f:
     f.write(buf.getvalue())
 print(f"Built: {path}")
