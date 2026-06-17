@@ -111,18 +111,19 @@ pub(crate) fn archive_command(args: &[String]) -> Result<ExitCode, String> {
     Ok(code)
 }
 
-/// Archive name suffixes the built-in tar/unzip extractor handles.
+/// Archive name suffixes the built-in extractor handles.
+///
+/// This is kept as documentation; [`builtin_archive_supported`] now derives the
+/// same set from [`ArchiveFormat::detect`] so the CLI and core agree.
+#[allow(dead_code)]
 pub(crate) const BUILTIN_ARCHIVE_SUFFIXES: &[&str] = &[
     ".zip", ".jar", ".war", ".apk", ".ipa", ".tar", ".tgz", ".tar.gz", ".tbz2", ".tar.bz2", ".txz",
-    ".tar.xz", ".tzst", ".tar.zst",
+    ".tar.xz", ".tzst", ".tar.zst", ".7z",
 ];
 
 /// Whether the built-in extractor recognizes this archive name's extension.
 pub(crate) fn builtin_archive_supported(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    BUILTIN_ARCHIVE_SUFFIXES
-        .iter()
-        .any(|suffix| lower.ends_with(suffix))
+    ArchiveFormat::detect(Path::new(name)).is_some()
 }
 
 /// Compare two archives by routing each through a folder-virtualizer / unpacker
@@ -324,10 +325,27 @@ pub(crate) fn extract_archive(
                 ));
             }
         }
+    } else if lower.ends_with(".7z") {
+        let mut cmd = Command::new("7z");
+        cmd.arg("x")
+            .arg("-y")
+            .arg(archive)
+            .arg(format!("-o{}", extracted.display()));
+        match SandboxedCommand::new(cmd, policy).spawn() {
+            Ok(mut child) => {
+                wait_for_child_with_timeout(&mut child, std::time::Duration::from_secs(300))
+                    .map_err(|err| format!("7z wait failed: {err}"))?
+            }
+            Err(err) => {
+                return Err(format!(
+                    "sandboxed 7z failed (set LINSYNC_SANDBOX_ALLOW_UNSANDBOXED=1 to bypass): {err}"
+                ));
+            }
+        }
     } else {
         let _ = fs::remove_dir_all(&temp_root);
         return Err(format!(
-            "unsupported archive extension for '{}'; install a plugin or use a supported type (zip, jar, tar, tgz, tar.xz, tar.zst, ...)",
+            "unsupported archive extension for '{}'; install a plugin or use a supported type (zip, jar, tar, tgz, tar.xz, tar.zst, 7z, ...)",
             archive.display()
         ));
     };

@@ -3,11 +3,12 @@
 
 //! Built-in archive extraction for archive-as-folder comparison.
 //!
-//! Supports ZIP-family archives (`.zip`, `.jar`, `.war`, `.apk`, `.ipa`) and
-//! tar archives (`.tar`, `.tgz`/`.tar.gz`, `.tbz2`/`.tar.bz2`, `.txz`/`.tar.xz`,
-//! `.tzst`/`.tar.zst`). Extraction is performed by the host's `unzip` or `tar`
-//! binary inside the Phase 6 sandbox (`linsync_sandbox`). The extracted trees
-//! are then compared with the standard folder engine.
+//! Supports ZIP-family archives (`.zip`, `.jar`, `.war`, `.apk`, `.ipa`), tar
+//! archives (`.tar`, `.tgz`/`.tar.gz`, `.tbz2`/`.tar.bz2`, `.txz`/`.tar.xz`,
+//! `.tzst`/`.tar.zst`), and 7z archives (`.7z`). Extraction is performed by the
+//! host's `unzip`, `tar`, or `7z` binary inside the Phase 6 sandbox
+//! (`linsync_sandbox`). The extracted trees are then compared with the standard
+//! folder engine.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -52,10 +53,7 @@ impl std::error::Error for ArchiveError {}
 
 /// Return `true` if `path` has a built-in archive extension.
 pub fn is_builtin_archive_format(path: &Path) -> bool {
-    matches!(
-        ArchiveFormat::detect(path),
-        Some(ArchiveFormat::Zip) | Some(ArchiveFormat::Tar { .. })
-    )
+    ArchiveFormat::detect(path).is_some()
 }
 
 /// Compare two archives by extracting both to caller-supplied directories and
@@ -128,6 +126,13 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<(), ArchiveError> {
         let mut cmd = std::process::Command::new("tar");
         cmd.arg("-xf").arg(archive).arg("-C").arg(dest);
         run_sandboxed(cmd, policy, "tar")?;
+    } else if looks_like_7z(archive) {
+        let mut cmd = std::process::Command::new("7z");
+        cmd.arg("x")
+            .arg(archive)
+            .arg("-y")
+            .arg(format!("-o{}", dest.display()));
+        run_sandboxed(cmd, policy, "7z")?;
     } else {
         return Err(ArchiveError::UnsupportedFormat(archive.to_path_buf()));
     }
@@ -202,6 +207,10 @@ fn looks_like_zip(path: &Path) -> bool {
 
 fn looks_like_tar(path: &Path) -> bool {
     matches!(ArchiveFormat::detect(path), Some(ArchiveFormat::Tar { .. }))
+}
+
+fn looks_like_7z(path: &Path) -> bool {
+    matches!(ArchiveFormat::detect(path), Some(ArchiveFormat::SevenZip))
 }
 
 #[cfg(test)]
@@ -313,15 +322,16 @@ mod tests {
         assert!(is_builtin_archive_format(Path::new("/tmp/x.tar.gz")));
         assert!(is_builtin_archive_format(Path::new("x.tar.bz2")));
         assert!(is_builtin_archive_format(Path::new("x.txz")));
+        assert!(is_builtin_archive_format(Path::new("x.7z")));
         assert!(!is_builtin_archive_format(Path::new("x.txt")));
-        assert!(!is_builtin_archive_format(Path::new("x.7z")));
+        assert!(!is_builtin_archive_format(Path::new("x.rar")));
     }
 
     #[test]
     fn unsupported_format_returns_error() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let left = tmp.path().join("left.7z");
-        let right = tmp.path().join("right.7z");
+        let left = tmp.path().join("left.rar");
+        let right = tmp.path().join("right.rar");
         fs::write(&left, b"x").unwrap();
         fs::write(&right, b"y").unwrap();
         let err =

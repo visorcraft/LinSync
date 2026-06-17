@@ -577,10 +577,10 @@ fn archive_unpacker_compares_virtual_trees() {
 #[test]
 fn archive_auto_routes_unsupported_extension_to_virtualizer() {
     let home = temp_home("archive-auto");
-    // The built-in extractor has no idea about ".7z"; a virtualizer declares it.
-    install_virtualizer_plugin(&home, "test.sevenz", "sevenz", "7z");
-    let a = home.join("a.7z");
-    let b = home.join("b.7z");
+    // The built-in extractor has no idea about ".rar"; a virtualizer declares it.
+    install_virtualizer_plugin(&home, "test.rar", "rar", "rar");
+    let a = home.join("a.rar");
+    let b = home.join("b.rar");
     fs::write(&a, "SAME").unwrap();
     fs::write(&b, "SAME").unwrap();
     let (a, b) = (a.to_str().unwrap(), b.to_str().unwrap());
@@ -597,7 +597,7 @@ fn archive_auto_routes_unsupported_extension_to_virtualizer() {
 
     // With the plugin disabled, there is no fallback: the built-in extractor
     // rejects the unsupported extension (exit 2).
-    run_isolated(&home, &["plugin", "disable", "test.sevenz"]);
+    run_isolated(&home, &["plugin", "disable", "test.rar"]);
     let out = run_isolated_unsandboxed(&home, &["archive", a, b]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("unsupported archive extension"));

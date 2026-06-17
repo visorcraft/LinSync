@@ -23,9 +23,9 @@ pub mod webpage;
 #[cfg(feature = "sandbox")]
 pub use archive::{ArchiveError, compare_builtin_archives_with_dirs, is_builtin_archive_format};
 pub use archive_write::{
-    ArchiveEditCaps, ArchiveWriteError, CommitOptions, CommitOutcome, MemberEditContext,
-    commit_member_edit, extract_member_for_edit, extract_member_for_edit_with_caps,
-    validate_member_path, verify_post_repack_listing,
+    ArchiveEditCaps, ArchiveFormat, ArchiveWriteError, CommitOptions, CommitOutcome,
+    MemberEditContext, TarCompression, commit_member_edit, extract_member_for_edit,
+    extract_member_for_edit_with_caps, validate_member_path, verify_post_repack_listing,
 };
 pub use binary::{
     BinaryCompareOptions, BinaryCompareResult, BinaryFileMetadata, BinaryMetadataCompare,
