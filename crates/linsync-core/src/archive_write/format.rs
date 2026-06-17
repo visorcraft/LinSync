@@ -128,6 +128,123 @@ pub trait ArchiveEditor: Send + Sync {
 #[derive(Debug, Clone, Copy)]
 pub struct ZipEditor;
 
+/// Format-specific editor for tar archives (plain or compressed).
+#[derive(Debug, Clone, Copy)]
+pub struct TarEditor {
+    compression: TarCompression,
+}
+
+impl TarEditor {
+    pub fn new(compression: TarCompression) -> Self {
+        Self { compression }
+    }
+}
+
+/// Format-specific editor for 7z archives.
+#[derive(Debug, Clone, Copy)]
+pub struct SevenZipEditor;
+
+/// Parse a tar `-tv` listing line. Returns `(type_char, size, mode)`.
+///
+/// GNU tar output looks like:
+/// `-rw-r--r-- 0/0               6 2000-01-01 00:00 ./alpha.txt`
+/// We require `--numeric-owner` so the owner field is not a bare numeric UID
+/// that could be mistaken for the size.
+fn parse_tar_tv_line(line: &str) -> Option<(char, u64, u32)> {
+    let line = line.trim_end();
+    if line.len() < 10 {
+        return None;
+    }
+    let type_char = line.chars().next()?;
+    let perms = &line[1..10];
+    let rest = &line[10..];
+    // The first all-digit token after the permissions is the size.
+    let size_token = rest
+        .split_whitespace()
+        .find(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))?;
+    let size: u64 = size_token.parse().ok()?;
+    let mode = parse_tar_mode(perms)?;
+    Some((type_char, size, mode))
+}
+
+/// Convert a tar permission string (e.g. `rw-r--r--`) into a Unix mode.
+fn parse_tar_mode(perms: &str) -> Option<u32> {
+    if perms.len() != 9 {
+        return None;
+    }
+    let mut mode = 0u32;
+    let bytes = perms.as_bytes();
+    if bytes[0] == b'r' {
+        mode |= 0o400;
+    }
+    if bytes[1] == b'w' {
+        mode |= 0o200;
+    }
+    match bytes[2] {
+        b'x' => mode |= 0o100,
+        b's' => mode |= 0o4100,
+        b'S' => mode |= 0o4000,
+        b'-' => {}
+        _ => return None,
+    }
+    if bytes[3] == b'r' {
+        mode |= 0o040;
+    }
+    if bytes[4] == b'w' {
+        mode |= 0o020;
+    }
+    match bytes[5] {
+        b'x' => mode |= 0o010,
+        b's' => mode |= 0o2010,
+        b'S' => mode |= 0o2000,
+        b'-' => {}
+        _ => return None,
+    }
+    if bytes[6] == b'r' {
+        mode |= 0o004;
+    }
+    if bytes[7] == b'w' {
+        mode |= 0o002;
+    }
+    match bytes[8] {
+        b'x' => mode |= 0o001,
+        b't' => mode |= 0o1001,
+        b'T' => mode |= 0o1000,
+        b'-' => {}
+        _ => return None,
+    }
+    Some(mode)
+}
+
+/// Parse a 7z `-slt` listing block into key/value pairs.
+fn parse_sevenzip_block(block: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for line in block.lines() {
+        if let Some((k, v)) = line.split_once(" = ") {
+            map.insert(k.trim().to_owned(), v.trim().to_owned());
+        }
+    }
+    map
+}
+
+/// Whether the 7z listing block describes a regular file.
+fn sevenzip_block_is_regular(block: &std::collections::HashMap<String, String>) -> bool {
+    // Directories are reported as `Folder = +`.
+    if block.get("Folder").map(|s| s.as_str()) == Some("+") {
+        return false;
+    }
+    if let Some(attrs) = block.get("Attributes") {
+        // 7z Attributes look like `A -rw-r--r--` or `A lrwxrwxrwx`. The
+        // optional leading Windows attribute letter is followed by a space and
+        // then the Unix permission string.
+        let perm = attrs.split_whitespace().nth(1).unwrap_or(attrs);
+        if !perm.starts_with('-') {
+            return false;
+        }
+    }
+    true
+}
+
 /// Sanity cap on the zip central directory size the host will parse.
 const MAX_CENTRAL_DIRECTORY_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -453,4 +570,544 @@ impl ArchiveEditor for ZipEditor {
 
         Ok(())
     }
+}
+
+impl ArchiveEditor for TarEditor {
+    fn format(&self) -> ArchiveFormat {
+        ArchiveFormat::Tar {
+            compression: self.compression,
+        }
+    }
+
+    fn locate_member(
+        &self,
+        archive: &Path,
+        member: &str,
+        caps: &ArchiveEditCaps,
+    ) -> Result<LocatedMember, ArchiveWriteError> {
+        let metadata =
+            fs::symlink_metadata(archive).map_err(|_| ArchiveWriteError::ArchiveNotFound {
+                archive: archive.to_path_buf(),
+            })?;
+        let archive_size = metadata.len();
+
+        // Resolve the user-facing name to the stored name (e.g. `alpha.txt` →
+        // `./alpha.txt`) before asking tar for metadata.
+        let stored = resolve_tar_member(archive, member, &grants_read_archive(archive))?;
+
+        // `--numeric-owner` keeps the owner field from looking like a size.
+        let mut cmd = Command::new("tar");
+        cmd.arg("-tvf")
+            .arg(archive)
+            .arg("--numeric-owner")
+            .arg(&stored);
+        let (ok, stdout, stderr) = run_helper(cmd, &grants_read_archive(archive), "tar -tv")?;
+        let stdout = String::from_utf8_lossy(&stdout);
+        if !ok {
+            return Err(ArchiveWriteError::ExtractFailed {
+                detail: format!("tar listing failed: {}", stderr.trim()),
+            });
+        }
+
+        let lines: Vec<&str> = stdout.lines().collect();
+        if lines.is_empty() {
+            return Err(ArchiveWriteError::MemberNotFound {
+                member: member.to_owned(),
+            });
+        }
+        // Multiple matching lines means the member is ambiguous (e.g. both a
+        // directory and a file with the same prefix). Treat as non-regular.
+        if lines.len() > 1 {
+            return Err(ArchiveWriteError::NonRegularMember {
+                member: member.to_owned(),
+            });
+        }
+        let (type_char, uncompressed_size, mode) =
+            parse_tar_tv_line(lines[0]).ok_or_else(|| ArchiveWriteError::UnsupportedArchive {
+                detail: format!("cannot parse tar listing line: {}", lines[0]),
+            })?;
+        if type_char != '-' {
+            return Err(ArchiveWriteError::NonRegularMember {
+                member: member.to_owned(),
+            });
+        }
+
+        // Apply caps to the declared uncompressed size.
+        if uncompressed_size > caps.max_member_size {
+            return Err(ArchiveWriteError::CapsExceeded {
+                member: member.to_owned(),
+                detail: format!(
+                    "declared size {} exceeds the {} byte cap",
+                    uncompressed_size, caps.max_member_size
+                ),
+            });
+        }
+        // Tar does not record a per-member compressed size; use the whole
+        // archive size as a conservative ratio denominator.
+        if super::exceeds_ratio(uncompressed_size, archive_size, caps.max_compression_ratio) {
+            return Err(ArchiveWriteError::CapsExceeded {
+                member: member.to_owned(),
+                detail: format!(
+                    "declared size {} exceeds the {}:1 ratio cap against archive size {}",
+                    uncompressed_size, caps.max_compression_ratio, archive_size
+                ),
+            });
+        }
+
+        // Count members for the post-repack assertion.
+        let member_count = count_tar_members(archive, &grants_read_archive(archive))?;
+
+        Ok(LocatedMember {
+            uncompressed_size,
+            compressed_size: archive_size,
+            mode: Some(mode),
+            is_regular: true,
+            member_count,
+        })
+    }
+
+    fn extract_member(
+        &self,
+        archive: &Path,
+        member: &str,
+        extract_root: &Path,
+        grants: &SandboxGrants,
+    ) -> Result<PathBuf, ArchiveWriteError> {
+        let stored = resolve_tar_member(archive, member, grants)?;
+        let mut cmd = Command::new("tar");
+        cmd.arg("-xf")
+            .arg(archive)
+            .arg("-C")
+            .arg(extract_root)
+            .arg(&stored);
+        let (ok, _stdout, stderr) = run_helper(cmd, grants, "tar -x")?;
+        if !ok {
+            return Err(ArchiveWriteError::ExtractFailed {
+                detail: format!("tar extraction failed: {}", stderr.trim()),
+            });
+        }
+        // `tar` strips a leading `./` on extraction, so the staged file lives
+        // at the user-facing path.
+        Ok(extract_root.join(member))
+    }
+
+    fn repack(
+        &self,
+        archive: &Path,
+        member: &str,
+        staged_path: &Path,
+        work_dir: &Path,
+        work_archive_path: &Path,
+        grants: &SandboxGrants,
+    ) -> Result<(), ArchiveWriteError> {
+        // Whole-archive rewrite: extract everything, overwrite the member, then
+        // repack with the matching compression flag.
+        let extract_dir = work_dir.join("extract");
+        fs::create_dir_all(&extract_dir)
+            .map_err(|e| io_err("creating tar work extract dir failed", e))?;
+
+        let mut cmd = Command::new("tar");
+        cmd.arg("-xf").arg(archive).arg("-C").arg(&extract_dir);
+        let (ok, _stdout, stderr) = run_helper(cmd, grants, "tar work extract")?;
+        if !ok {
+            return Err(ArchiveWriteError::RepackFailed {
+                detail: format!("tar work extraction failed: {}", stderr.trim()),
+            });
+        }
+
+        let dest = extract_dir.join(member);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| io_err("creating parent dir for staged member failed", e))?;
+        }
+        fs::copy(staged_path, &dest)
+            .map_err(|e| io_err("copying staged file into tar work dir failed", e))?;
+
+        let mut cmd = Command::new("tar");
+        match self.compression {
+            TarCompression::None => cmd.arg("-cf"),
+            TarCompression::Gzip => cmd.arg("-czf"),
+            TarCompression::Bzip2 => cmd.arg("-cjf"),
+            TarCompression::Xz => cmd.arg("-cJf"),
+            TarCompression::Zstd => cmd.arg("--zstd").arg("-cf"),
+        };
+        cmd.arg(work_archive_path)
+            .arg("-C")
+            .arg(&extract_dir)
+            .arg(".");
+        let (ok, _stdout, stderr) = run_helper(cmd, grants, "tar repack")?;
+        if !ok {
+            return Err(ArchiveWriteError::RepackFailed {
+                detail: format!("tar repack failed: {}", stderr.trim()),
+            });
+        }
+
+        // Post-repack assertion: the target member exists exactly once and the
+        // member count is unchanged.
+        let expected_count = count_tar_members(archive, grants)?;
+        let actual_count = count_tar_members(work_archive_path, grants)?;
+        if actual_count != expected_count {
+            return Err(ArchiveWriteError::PostRepackAssertion {
+                detail: format!(
+                    "member count changed: expected {expected_count}, working copy has {actual_count}"
+                ),
+            });
+        }
+        // The repack creates entries with a `./` prefix; resolve the member
+        // name against the new archive before asserting.
+        let stored = resolve_tar_member(work_archive_path, member, grants)?;
+        let mut cmd = Command::new("tar");
+        cmd.arg("-tf").arg(work_archive_path).arg(&stored);
+        let (ok, stdout, stderr) = run_helper(cmd, grants, "tar post-repack list")?;
+        if !ok {
+            return Err(ArchiveWriteError::PostRepackAssertion {
+                detail: format!("post-repack tar listing failed: {}", stderr.trim()),
+            });
+        }
+        let occurrences = stdout
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .count();
+        if occurrences != 1 {
+            return Err(ArchiveWriteError::PostRepackAssertion {
+                detail: format!(
+                    "member '{member}' appears {occurrences} times in the working copy, expected exactly once"
+                ),
+            });
+        }
+
+        Ok(())
+    }
+}
+
+impl ArchiveEditor for SevenZipEditor {
+    fn format(&self) -> ArchiveFormat {
+        ArchiveFormat::SevenZip
+    }
+
+    fn locate_member(
+        &self,
+        archive: &Path,
+        member: &str,
+        caps: &ArchiveEditCaps,
+    ) -> Result<LocatedMember, ArchiveWriteError> {
+        if !sevenzip_available() {
+            return Err(ArchiveWriteError::UnsupportedArchive {
+                detail: "7z command not found".to_owned(),
+            });
+        }
+
+        let metadata =
+            fs::symlink_metadata(archive).map_err(|_| ArchiveWriteError::ArchiveNotFound {
+                archive: archive.to_path_buf(),
+            })?;
+        let archive_size = metadata.len();
+
+        let mut cmd = Command::new("7z");
+        cmd.arg("l").arg("-slt").arg(archive).arg(member);
+        let (ok, stdout, stderr) = run_helper(cmd, &grants_read_archive(archive), "7z l")?;
+        if !ok {
+            if stderr.to_ascii_lowercase().contains("can not open")
+                || stderr.to_ascii_lowercase().contains("errors: 1")
+            {
+                return Err(ArchiveWriteError::ArchiveNotFound {
+                    archive: archive.to_path_buf(),
+                });
+            }
+            return Err(ArchiveWriteError::ExtractFailed {
+                detail: format!("7z listing failed: {}", stderr.trim()),
+            });
+        }
+
+        let text = String::from_utf8_lossy(&stdout);
+        let block = find_sevenzip_block(&text, member).ok_or_else(|| {
+            ArchiveWriteError::MemberNotFound {
+                member: member.to_owned(),
+            }
+        })?;
+        let props = parse_sevenzip_block(block);
+
+        if !sevenzip_block_is_regular(&props) {
+            return Err(ArchiveWriteError::NonRegularMember {
+                member: member.to_owned(),
+            });
+        }
+
+        let uncompressed_size = props
+            .get("Size")
+            .and_then(|s| s.parse::<u64>().ok())
+            .ok_or_else(|| unsupported("7z listing missing Size"))?;
+        let compressed_size = props
+            .get("Packed Size")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(archive_size);
+        let mode = props.get("Attributes").and_then(|s| parse_sevenzip_mode(s));
+
+        if uncompressed_size > caps.max_member_size {
+            return Err(ArchiveWriteError::CapsExceeded {
+                member: member.to_owned(),
+                detail: format!(
+                    "declared size {} exceeds the {} byte cap",
+                    uncompressed_size, caps.max_member_size
+                ),
+            });
+        }
+        if super::exceeds_ratio(
+            uncompressed_size,
+            compressed_size,
+            caps.max_compression_ratio,
+        ) {
+            return Err(ArchiveWriteError::CapsExceeded {
+                member: member.to_owned(),
+                detail: format!(
+                    "declared compression ratio {}:{} exceeds the {}:1 cap",
+                    uncompressed_size, compressed_size, caps.max_compression_ratio
+                ),
+            });
+        }
+
+        let member_count = count_sevenzip_members(archive, &grants_read_archive(archive))?;
+
+        Ok(LocatedMember {
+            uncompressed_size,
+            compressed_size,
+            mode,
+            is_regular: true,
+            member_count,
+        })
+    }
+
+    fn extract_member(
+        &self,
+        archive: &Path,
+        member: &str,
+        extract_root: &Path,
+        grants: &SandboxGrants,
+    ) -> Result<PathBuf, ArchiveWriteError> {
+        let mut cmd = Command::new("7z");
+        // 7z expects `-o<outdir>` without a space.
+        cmd.arg("x")
+            .arg(format!("-o{}", extract_root.display()))
+            .arg(archive)
+            .arg(member);
+        let (ok, _stdout, stderr) = run_helper(cmd, grants, "7z x")?;
+        if !ok {
+            return Err(ArchiveWriteError::ExtractFailed {
+                detail: format!("7z extraction failed: {}", stderr.trim()),
+            });
+        }
+        Ok(extract_root.join(member))
+    }
+
+    fn repack(
+        &self,
+        archive: &Path,
+        member: &str,
+        staged_path: &Path,
+        work_dir: &Path,
+        work_archive_path: &Path,
+        grants: &SandboxGrants,
+    ) -> Result<(), ArchiveWriteError> {
+        let extract_dir = work_dir.join("extract");
+        fs::create_dir_all(&extract_dir)
+            .map_err(|e| io_err("creating 7z work extract dir failed", e))?;
+
+        let mut cmd = Command::new("7z");
+        cmd.arg("x")
+            .arg(format!("-o{}", extract_dir.display()))
+            .arg(archive);
+        let (ok, _stdout, stderr) = run_helper(cmd, grants, "7z work extract")?;
+        if !ok {
+            return Err(ArchiveWriteError::RepackFailed {
+                detail: format!("7z work extraction failed: {}", stderr.trim()),
+            });
+        }
+
+        let dest = extract_dir.join(member);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| io_err("creating parent dir for staged member failed", e))?;
+        }
+        fs::copy(staged_path, &dest)
+            .map_err(|e| io_err("copying staged file into 7z work dir failed", e))?;
+
+        // Build the new archive from the extracted tree, running 7z inside the
+        // extract dir so stored paths are relative to the archive root.
+        let mut cmd = Command::new("7z");
+        cmd.arg("a")
+            .arg(work_archive_path)
+            .current_dir(&extract_dir);
+        let entries: Vec<_> = fs::read_dir(&extract_dir)
+            .map_err(|e| io_err("reading 7z work extract dir failed", e))?
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        if entries.is_empty() {
+            return Err(ArchiveWriteError::RepackFailed {
+                detail: "7z work extract dir is empty".to_owned(),
+            });
+        }
+        cmd.args(&entries);
+        let (ok, _stdout, stderr) = run_helper(cmd, grants, "7z repack")?;
+        if !ok {
+            return Err(ArchiveWriteError::RepackFailed {
+                detail: format!("7z repack failed: {}", stderr.trim()),
+            });
+        }
+
+        let expected_count = count_sevenzip_members(archive, grants)?;
+        let actual_count = count_sevenzip_members(work_archive_path, grants)?;
+        if actual_count != expected_count {
+            return Err(ArchiveWriteError::PostRepackAssertion {
+                detail: format!(
+                    "member count changed: expected {expected_count}, working copy has {actual_count}"
+                ),
+            });
+        }
+        let mut cmd = Command::new("7z");
+        cmd.arg("l").arg("-slt").arg(work_archive_path).arg(member);
+        let (ok, stdout, stderr) = run_helper(cmd, grants, "7z post-repack list")?;
+        if !ok {
+            return Err(ArchiveWriteError::PostRepackAssertion {
+                detail: format!("post-repack 7z listing failed: {}", stderr.trim()),
+            });
+        }
+        let text = String::from_utf8_lossy(&stdout);
+        let occurrences = text
+            .split("----------")
+            .filter(|b| !b.trim().is_empty())
+            .filter(|b| {
+                let props = parse_sevenzip_block(b.trim());
+                props.get("Path").map(|s| s.as_str()) == Some(member)
+            })
+            .count();
+        if occurrences != 1 {
+            return Err(ArchiveWriteError::PostRepackAssertion {
+                detail: format!(
+                    "member '{member}' appears {occurrences} times in the working copy, expected exactly once"
+                ),
+            });
+        }
+
+        Ok(())
+    }
+}
+
+/// Grants that only read the original archive.
+fn grants_read_archive(archive: &Path) -> SandboxGrants {
+    SandboxGrants {
+        read: vec![archive.to_path_buf()],
+        write: Vec::new(),
+    }
+}
+
+/// Possible stored names for a tar member. GNU tar commonly stores paths with
+/// a leading `./` when the archive is created from `.`, but archives created
+/// from explicit file lists omit the prefix.
+fn tar_member_variants(member: &str) -> Vec<String> {
+    let mut variants = vec![member.to_owned()];
+    if !member.starts_with("./") {
+        variants.push(format!("./{member}"));
+    }
+    variants
+}
+
+/// Resolve a user-facing member name to the name actually stored in the tar
+/// archive.
+fn resolve_tar_member(
+    archive: &Path,
+    member: &str,
+    grants: &SandboxGrants,
+) -> Result<String, ArchiveWriteError> {
+    for variant in tar_member_variants(member) {
+        let mut cmd = Command::new("tar");
+        cmd.arg("-tf").arg(archive).arg(&variant);
+        let (ok, stdout, stderr) = run_helper(cmd, grants, "tar resolve")?;
+        if ok && !stdout.is_empty() {
+            return Ok(variant);
+        }
+        if !ok && !stderr.contains("Not found in archive") {
+            return Err(ArchiveWriteError::ExtractFailed {
+                detail: format!("tar resolve failed: {}", stderr.trim()),
+            });
+        }
+    }
+    Err(ArchiveWriteError::MemberNotFound {
+        member: member.to_owned(),
+    })
+}
+
+/// Cached answer to whether the `7z` binary is available.
+fn sevenzip_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        Command::new("7z")
+            .arg("--help")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Count regular/non-directory entries in a tar archive (used for the
+/// post-repack assertion).
+fn count_tar_members(archive: &Path, grants: &SandboxGrants) -> Result<usize, ArchiveWriteError> {
+    let mut cmd = Command::new("tar");
+    cmd.arg("-tf").arg(archive);
+    let (ok, stdout, stderr) = run_helper(cmd, grants, "tar -tf")?;
+    if !ok {
+        return Err(ArchiveWriteError::ExtractFailed {
+            detail: format!("tar member count failed: {}", stderr.trim()),
+        });
+    }
+    Ok(stdout
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .count())
+}
+
+/// Count entries in a 7z archive (used for the post-repack assertion).
+fn count_sevenzip_members(
+    archive: &Path,
+    grants: &SandboxGrants,
+) -> Result<usize, ArchiveWriteError> {
+    let mut cmd = Command::new("7z");
+    cmd.arg("l").arg("-slt").arg(archive);
+    let (ok, stdout, stderr) = run_helper(cmd, grants, "7z l count")?;
+    if !ok {
+        return Err(ArchiveWriteError::ExtractFailed {
+            detail: format!("7z member count failed: {}", stderr.trim()),
+        });
+    }
+    let text = String::from_utf8_lossy(&stdout);
+    Ok(text
+        .split("----------")
+        .filter(|b| !b.trim().is_empty())
+        .filter(|b| {
+            let props = parse_sevenzip_block(b.trim());
+            props.contains_key("Path") && sevenzip_block_is_regular(&props)
+        })
+        .count())
+}
+
+/// Find the `-slt` block whose `Path` property equals `member`.
+fn find_sevenzip_block<'a>(text: &'a str, member: &str) -> Option<&'a str> {
+    text.split("----------").map(|b| b.trim()).find(|b| {
+        let props = parse_sevenzip_block(b);
+        props.get("Path").map(|s| s.as_str()) == Some(member)
+    })
+}
+
+/// Parse a 7z `Attributes` string (e.g. `-rw-r--r--`) into a Unix mode.
+fn parse_sevenzip_mode(attrs: &str) -> Option<u32> {
+    // 7z Attributes are the Windows/Unix attribute string. When created on
+    // Unix they look like a standard permission string. Ignore a leading
+    // directory/symlink marker and parse the rest as a tar mode.
+    let rest = attrs
+        .strip_prefix('-')
+        .or_else(|| attrs.strip_prefix('D'))
+        .or_else(|| attrs.strip_prefix('L'))
+        .unwrap_or(attrs);
+    parse_tar_mode(rest)
 }

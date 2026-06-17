@@ -284,11 +284,13 @@ struct ArchiveFingerprint {
 }
 
 /// Format-specific metadata carried in [`MemberEditContext`] for verification
-/// at commit time. In Task 1 only the zip variant is populated; tar and 7z
-/// variants will be added when their editors are implemented.
+/// at commit time. Each variant stores the member count captured at extract
+/// time so the post-repack assertion can detect additions or deletions.
 #[derive(Debug, Clone)]
 pub enum EditorMetadata {
     Zip { member_count: usize },
+    Tar { member_count: usize },
+    SevenZip { member_count: usize },
 }
 
 /// Server-side state for one outstanding member edit. Produced by
@@ -647,19 +649,29 @@ pub(crate) fn run_helper(
     ))
 }
 
+/// Pick a working-copy path inside the staging `work_dir` with the right
+/// extension so format helpers (tar compression flags, 7z) behave predictably.
+fn repack_work_path(work_dir: &Path, format: ArchiveFormat) -> PathBuf {
+    let suffix = match format {
+        ArchiveFormat::Zip => "zip",
+        ArchiveFormat::Tar { compression } => match compression {
+            TarCompression::None => "tar",
+            TarCompression::Gzip => "tar.gz",
+            TarCompression::Bzip2 => "tar.bz2",
+            TarCompression::Xz => "tar.xz",
+            TarCompression::Zstd => "tar.zst",
+        },
+        ArchiveFormat::SevenZip => "7z",
+    };
+    work_dir.join(format!("repack.{suffix}"))
+}
+
 /// Select the concrete editor for a detected archive format.
-///
-/// Tar and 7z editors are not implemented yet; they will be added in Task 2
-/// and Task 3 respectively.
 fn editor_for_format(format: ArchiveFormat) -> Result<Box<dyn ArchiveEditor>, ArchiveWriteError> {
     match format {
         ArchiveFormat::Zip => Ok(Box::new(ZipEditor)),
-        ArchiveFormat::Tar { .. } => Err(unsupported(
-            "tar archive member editing is not implemented yet",
-        )),
-        ArchiveFormat::SevenZip => Err(unsupported(
-            "7z archive member editing is not implemented yet",
-        )),
+        ArchiveFormat::Tar { compression } => Ok(Box::new(TarEditor::new(compression))),
+        ArchiveFormat::SevenZip => Ok(Box::new(SevenZipEditor)),
     }
 }
 
@@ -812,8 +824,16 @@ pub fn extract_member_for_edit_with_caps(
         });
     }
 
-    let editor_metadata = EditorMetadata::Zip {
-        member_count: located.member_count,
+    let editor_metadata = match format {
+        ArchiveFormat::Zip => EditorMetadata::Zip {
+            member_count: located.member_count,
+        },
+        ArchiveFormat::Tar { .. } => EditorMetadata::Tar {
+            member_count: located.member_count,
+        },
+        ArchiveFormat::SevenZip => EditorMetadata::SevenZip {
+            member_count: located.member_count,
+        },
     };
 
     // Portal backup is only *recorded* here; the full-archive copy is made by
@@ -934,12 +954,12 @@ pub fn commit_member_edit(
     }
 
     // §3 step 1 + 3: ask the format editor to produce a verified working copy
-    // inside the staging dir. The helper never receives a grant near the
-    // archive's directory; the host alone writes there.
-    let work_archive_path = ctx.work_dir.join("repack.zip");
+    // inside the staging dir. The host alone writes to the archive's directory;
+    // helpers only read the original archive and write inside the staging root.
+    let work_archive_path = repack_work_path(&ctx.work_dir, ctx.format);
     let editor = editor_for_format(ctx.format)?;
     let grants = SandboxGrants {
-        read: Vec::new(),
+        read: vec![archive.clone()],
         write: vec![ctx.staging_root.clone()],
     };
     editor.repack(

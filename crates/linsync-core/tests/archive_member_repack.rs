@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //
 // Integration tests for the writable archive-member editing path
-// (`linsync_core::archive_write`): single-member zip repack per
+// (`linsync_core::archive_write`): single-member zip/tar/7z repack per
 // docs/archive-write-safety-design.md.
 //
-// Requirements: zip, unzip on PATH. Tests skip automatically when either
-// tool is absent so CI without those tools does not fail.
+// Requirements: zip, unzip, tar, 7z on PATH. Tests skip automatically when
+// the tools needed for a particular format are absent.
 
 mod common;
 
@@ -604,4 +604,439 @@ fn archive_edit_commit_handles_listing_larger_than_pipe_buffer() {
     commit_member_edit(&ctx, &CommitOptions::default())
         .expect("commit must not deadlock on a large member listing");
     assert_eq!(member_bytes(&archive, "target.txt"), b"after\n");
+}
+
+// ── Tar helpers ─────────────────────────────────────────────────────────────
+
+/// Build a tar archive at `dir/test.<ext>` from `(member, content, mode)` triples.
+fn make_tar(dir: &Path, compression: &str, entries: &[(&str, &[u8], u32)]) -> PathBuf {
+    let src = dir.join("tar-src");
+    fs::create_dir_all(&src).unwrap();
+    for (member, content, mode) in entries {
+        let path = src.join(member);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, content).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(*mode)).unwrap();
+    }
+    let ext = match compression {
+        "gz" => "tar.gz",
+        "bz2" => "tar.bz2",
+        "xz" => "tar.xz",
+        "zst" => "tar.zst",
+        _ => "tar",
+    };
+    let archive = dir.join(format!("test.{ext}"));
+    let mut cmd = Command::new("tar");
+    match compression {
+        "gz" => cmd.arg("-czf"),
+        "bz2" => cmd.arg("-cjf"),
+        "xz" => cmd.arg("-cJf"),
+        "zst" => cmd.arg("--zstd").arg("-cf"),
+        _ => cmd.arg("-cf"),
+    };
+    cmd.arg(&archive)
+        .arg("--sort=name")
+        .arg("--owner=0")
+        .arg("--group=0")
+        .arg("--mtime=2000-01-01 00:00:00 UTC")
+        .arg("-C")
+        .arg(&src)
+        .arg(".");
+    let status = cmd.status().expect("failed to launch tar");
+    assert!(status.success(), "tar fixture build failed: {status}");
+    archive
+}
+
+/// Extract one member's bytes via `tar -xf` to a temp dir.
+fn tar_member_bytes(archive: &Path, member: &str) -> Vec<u8> {
+    let tmp = tempfile::TempDir::new().unwrap();
+    // tar may store the member as `./member`; try the dotted form first.
+    let dotted = if member.starts_with("./") {
+        member.to_owned()
+    } else {
+        format!("./{member}")
+    };
+    let output = Command::new("tar")
+        .arg("-xf")
+        .arg(archive)
+        .arg("-C")
+        .arg(tmp.path())
+        .arg(&dotted)
+        .output()
+        .expect("failed to launch tar");
+    assert!(
+        output.status.success(),
+        "tar extraction of {member} from {} failed: {}",
+        archive.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::read(tmp.path().join(member)).unwrap()
+}
+
+/// Build a 7z archive at `dir/test.7z` from `(member, content, mode)` triples.
+fn make_7z(dir: &Path, entries: &[(&str, &[u8], u32)]) -> PathBuf {
+    let src = dir.join("7z-src");
+    fs::create_dir_all(&src).unwrap();
+    for (member, content, mode) in entries {
+        let path = src.join(member);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, content).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(*mode)).unwrap();
+    }
+    let archive = dir.join("test.7z");
+    let status = Command::new("7z")
+        .arg("a")
+        .arg("-r")
+        .arg("-mx=0")
+        .arg(&archive)
+        .arg(".")
+        .current_dir(&src)
+        .status()
+        .expect("failed to launch 7z");
+    assert!(status.success(), "7z fixture build failed: {status}");
+    archive
+}
+
+/// Extract one member's bytes via `7z x` to a temp dir.
+fn sevenzip_member_bytes(archive: &Path, member: &str) -> Vec<u8> {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let output = Command::new("7z")
+        .arg("x")
+        .arg(format!("-o{}", tmp.path().display()))
+        .arg(archive)
+        .arg(member)
+        .output()
+        .expect("failed to launch 7z");
+    assert!(
+        output.status.success(),
+        "7z extraction of {member} from {} failed: {}",
+        archive.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::read(tmp.path().join(member)).unwrap()
+}
+
+// ── Tar tests ───────────────────────────────────────────────────────────────
+
+#[test]
+fn tar_edit_commit_replaces_member_atomically() {
+    if !common::tools_available(&["tar"]) {
+        eprintln!("SKIP: tar not on PATH");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let archive = make_tar(
+        dir.path(),
+        "",
+        &[
+            ("a.txt", b"alpha\n", 0o644),
+            ("dir/b.txt", b"bravo\n", 0o755),
+            ("c.bin", b"\x00\x01\x02binary", 0o600),
+        ],
+    );
+    let _original_bytes = fs::read(&archive).unwrap();
+
+    let ctx = extract_member_for_edit(&archive, "dir/b.txt", &dir.path().join("staging"), None)
+        .expect("extract_member_for_edit failed");
+    assert_eq!(fs::read(ctx.staged_path()).unwrap(), b"bravo\n");
+    fs::write(ctx.staged_path(), b"BRAVO EDITED\n").unwrap();
+    let outcome = commit_member_edit(&ctx, &CommitOptions::default()).expect("commit failed");
+    assert_eq!(outcome.bak_path, None);
+    assert!(!bak_sibling(&archive).exists());
+    assert!(!tmp_sibling(&archive).exists());
+    assert_eq!(tar_member_bytes(&archive, "dir/b.txt"), b"BRAVO EDITED\n");
+    assert_eq!(tar_member_bytes(&archive, "a.txt"), b"alpha\n");
+    assert_eq!(tar_member_bytes(&archive, "c.bin"), b"\x00\x01\x02binary");
+
+    // Mode round-trip: extract and check permissions.
+    let modecheck = dir.path().join("modecheck");
+    fs::create_dir_all(&modecheck).unwrap();
+    Command::new("tar")
+        .arg("-xf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&modecheck)
+        .arg("./dir/b.txt")
+        .status()
+        .unwrap();
+    let mode = fs::metadata(modecheck.join("dir/b.txt"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o755, "member mode must round-trip");
+
+    // Second commit with keep_backup.
+    let before_second = fs::read(&archive).unwrap();
+    let ctx2 = extract_member_for_edit(&archive, "a.txt", &dir.path().join("staging-2"), None)
+        .expect("second extract");
+    fs::write(ctx2.staged_path(), b"ALPHA v2\n").unwrap();
+    let outcome2 = commit_member_edit(&ctx2, &CommitOptions { keep_backup: true })
+        .expect("second commit failed");
+    let bak = outcome2.bak_path.expect("keep_backup must report bak path");
+    assert_eq!(bak, bak_sibling(&archive));
+    assert_eq!(fs::read(&bak).unwrap(), before_second);
+    assert_eq!(tar_member_bytes(&archive, "a.txt"), b"ALPHA v2\n");
+}
+
+#[test]
+fn tar_compressed_variants_edit_round_trip() {
+    if !common::tools_available(&["tar"]) {
+        eprintln!("SKIP: tar not on PATH");
+        return;
+    }
+    for compression in ["gz", "bz2", "xz", "zst"] {
+        let dir = TempDir::new().unwrap();
+        let archive = make_tar(
+            dir.path(),
+            compression,
+            &[
+                ("a.txt", b"alpha\n", 0o644),
+                ("sub/b.txt", b"beta\n", 0o644),
+            ],
+        );
+        let ctx = extract_member_for_edit(&archive, "sub/b.txt", &dir.path().join("staging"), None)
+            .unwrap_or_else(|_| panic!("extract failed for {compression}"));
+        fs::write(ctx.staged_path(), b"BETA EDITED\n").unwrap();
+        commit_member_edit(&ctx, &CommitOptions::default())
+            .unwrap_or_else(|_| panic!("commit failed for {compression}"));
+        assert_eq!(tar_member_bytes(&archive, "sub/b.txt"), b"BETA EDITED\n");
+        assert_eq!(tar_member_bytes(&archive, "a.txt"), b"alpha\n");
+    }
+}
+
+#[test]
+fn tar_edit_rejects_symlink_member() {
+    if !common::tools_available(&["tar"]) {
+        eprintln!("SKIP: tar not on PATH");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("tar-src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("target.txt"), b"real\n").unwrap();
+    std::os::unix::fs::symlink("target.txt", src.join("link.txt")).unwrap();
+    let archive = dir.path().join("symlinks.tar");
+    let status = Command::new("tar")
+        .arg("-cf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&src)
+        .arg(".")
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let staging = dir.path().join("staging");
+    let err = extract_member_for_edit(&archive, "link.txt", &staging, None)
+        .expect_err("symlink member must be rejected");
+    assert!(
+        matches!(err, ArchiveWriteError::NonRegularMember { .. }),
+        "expected NonRegularMember, got {err:?}"
+    );
+    assert!(!staging.exists());
+}
+
+#[test]
+fn tar_edit_commit_rejects_stale_fingerprint() {
+    if !common::tools_available(&["tar"]) {
+        eprintln!("SKIP: tar not on PATH");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let archive = make_tar(
+        dir.path(),
+        "",
+        &[("a.txt", b"alpha\n", 0o644), ("b.txt", b"bravo\n", 0o644)],
+    );
+    let ctx = extract_member_for_edit(&archive, "a.txt", &dir.path().join("staging"), None)
+        .expect("extract failed");
+    fs::write(ctx.staged_path(), b"edited\n").unwrap();
+
+    // Rewrite the archive between extract and commit.
+    fs::write(
+        dir.path().join("tar-src").join("a.txt"),
+        b"externally changed\n",
+    )
+    .unwrap();
+    let status = Command::new("tar")
+        .arg("-cf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(dir.path().join("tar-src"))
+        .arg(".")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let modified_bytes = fs::read(&archive).unwrap();
+
+    let err = commit_member_edit(&ctx, &CommitOptions::default())
+        .expect_err("commit against a rewritten archive must fail");
+    assert!(
+        matches!(err, ArchiveWriteError::StaleArchive { .. }),
+        "expected StaleArchive, got {err:?}"
+    );
+    assert_eq!(fs::read(&archive).unwrap(), modified_bytes);
+    assert!(!tmp_sibling(&archive).exists());
+    assert!(!bak_sibling(&archive).exists());
+}
+
+#[test]
+fn tar_edit_member_not_found() {
+    if !common::tools_available(&["tar"]) {
+        eprintln!("SKIP: tar not on PATH");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let archive = make_tar(dir.path(), "", &[("a.txt", b"alpha\n", 0o644)]);
+    let err = extract_member_for_edit(&archive, "missing.txt", &dir.path().join("staging"), None)
+        .expect_err("unknown member must be rejected");
+    assert!(
+        matches!(err, ArchiveWriteError::MemberNotFound { .. }),
+        "expected MemberNotFound, got {err:?}"
+    );
+}
+
+// ── 7z tests ────────────────────────────────────────────────────────────────
+
+#[test]
+fn sevenzip_edit_commit_replaces_member_atomically() {
+    if !common::tools_available(&["7z"]) {
+        eprintln!("SKIP: 7z not on PATH");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let archive = make_7z(
+        dir.path(),
+        &[
+            ("a.txt", b"alpha\n", 0o644),
+            ("dir/b.txt", b"bravo\n", 0o755),
+            ("c.bin", b"\x00\x01\x02binary", 0o600),
+        ],
+    );
+    let _original_bytes = fs::read(&archive).unwrap();
+
+    let ctx = extract_member_for_edit(&archive, "dir/b.txt", &dir.path().join("staging"), None)
+        .expect("extract_member_for_edit failed");
+    assert_eq!(fs::read(ctx.staged_path()).unwrap(), b"bravo\n");
+    fs::write(ctx.staged_path(), b"BRAVO EDITED\n").unwrap();
+    let outcome = commit_member_edit(&ctx, &CommitOptions::default()).expect("commit failed");
+    assert_eq!(outcome.bak_path, None);
+    assert!(!bak_sibling(&archive).exists());
+    assert!(!tmp_sibling(&archive).exists());
+    assert_eq!(
+        sevenzip_member_bytes(&archive, "dir/b.txt"),
+        b"BRAVO EDITED\n"
+    );
+    assert_eq!(sevenzip_member_bytes(&archive, "a.txt"), b"alpha\n");
+    assert_eq!(
+        sevenzip_member_bytes(&archive, "c.bin"),
+        b"\x00\x01\x02binary"
+    );
+
+    // Second commit with keep_backup.
+    let before_second = fs::read(&archive).unwrap();
+    let ctx2 = extract_member_for_edit(&archive, "a.txt", &dir.path().join("staging-2"), None)
+        .expect("second extract");
+    fs::write(ctx2.staged_path(), b"ALPHA v2\n").unwrap();
+    let outcome2 = commit_member_edit(&ctx2, &CommitOptions { keep_backup: true })
+        .expect("second commit failed");
+    let bak = outcome2.bak_path.expect("keep_backup must report bak path");
+    assert_eq!(bak, bak_sibling(&archive));
+    assert_eq!(fs::read(&bak).unwrap(), before_second);
+    assert_eq!(sevenzip_member_bytes(&archive, "a.txt"), b"ALPHA v2\n");
+}
+
+#[test]
+fn sevenzip_edit_rejects_symlink_member() {
+    if !common::tools_available(&["7z"]) {
+        eprintln!("SKIP: 7z not on PATH");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("7z-src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("target.txt"), b"real\n").unwrap();
+    std::os::unix::fs::symlink("target.txt", src.join("link.txt")).unwrap();
+    let archive = dir.path().join("symlinks.7z");
+    let status = Command::new("7z")
+        .arg("a")
+        .arg("-r")
+        .arg("-snl")
+        .arg(&archive)
+        .arg(".")
+        .current_dir(&src)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let staging = dir.path().join("staging");
+    let err = extract_member_for_edit(&archive, "link.txt", &staging, None)
+        .expect_err("symlink member must be rejected");
+    assert!(
+        matches!(err, ArchiveWriteError::NonRegularMember { .. }),
+        "expected NonRegularMember, got {err:?}"
+    );
+    assert!(!staging.exists());
+}
+
+#[test]
+fn sevenzip_edit_commit_rejects_stale_fingerprint() {
+    if !common::tools_available(&["7z"]) {
+        eprintln!("SKIP: 7z not on PATH");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let archive = make_7z(
+        dir.path(),
+        &[("a.txt", b"alpha\n", 0o644), ("b.txt", b"bravo\n", 0o644)],
+    );
+    let ctx = extract_member_for_edit(&archive, "a.txt", &dir.path().join("staging"), None)
+        .expect("extract failed");
+    fs::write(ctx.staged_path(), b"edited\n").unwrap();
+
+    fs::write(
+        dir.path().join("7z-src").join("a.txt"),
+        b"externally changed\n",
+    )
+    .unwrap();
+    let status = Command::new("7z")
+        .arg("a")
+        .arg("-r")
+        .arg(&archive)
+        .arg(".")
+        .current_dir(dir.path().join("7z-src"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let modified_bytes = fs::read(&archive).unwrap();
+
+    let err = commit_member_edit(&ctx, &CommitOptions::default())
+        .expect_err("commit against a rewritten archive must fail");
+    assert!(
+        matches!(err, ArchiveWriteError::StaleArchive { .. }),
+        "expected StaleArchive, got {err:?}"
+    );
+    assert_eq!(fs::read(&archive).unwrap(), modified_bytes);
+    assert!(!tmp_sibling(&archive).exists());
+    assert!(!bak_sibling(&archive).exists());
+}
+
+#[test]
+fn sevenzip_edit_member_not_found() {
+    if !common::tools_available(&["7z"]) {
+        eprintln!("SKIP: 7z not on PATH");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let archive = make_7z(dir.path(), &[("a.txt", b"alpha\n", 0o644)]);
+    let err = extract_member_for_edit(&archive, "missing.txt", &dir.path().join("staging"), None)
+        .expect_err("unknown member must be rejected");
+    assert!(
+        matches!(err, ArchiveWriteError::MemberNotFound { .. }),
+        "expected MemberNotFound, got {err:?}"
+    );
 }
