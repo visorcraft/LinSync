@@ -37,6 +37,9 @@
 //! `.linsync-tmp` sibling from the verified working copy and performs the
 //! atomic publish, exactly as design §3/§4 require of the host.
 
+mod format;
+pub use format::*;
+
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -50,8 +53,6 @@ pub const DEFAULT_MAX_MEMBER_SIZE: u64 = 1024 * 1024 * 1024; // 1 GiB
 /// Default cap on the compressed:uncompressed expansion ratio.
 pub const DEFAULT_MAX_COMPRESSION_RATIO: u64 = 200;
 
-/// Sanity cap on the zip central directory size the host will parse.
-const MAX_CENTRAL_DIRECTORY_SIZE: u64 = 64 * 1024 * 1024;
 /// Bound on captured helper stderr, for error messages.
 const STDERR_CAP: usize = 64 * 1024;
 
@@ -78,7 +79,7 @@ impl Default for ArchiveEditCaps {
 /// truncation of integer division (200.99:1 must exceed a 200:1 cap) and
 /// overflow-safe. A declared compressed size of zero with any uncompressed
 /// bytes is a lie (stored members have equal sizes) and always exceeds.
-fn exceeds_ratio(uncompressed: u64, compressed: u64, max_ratio: u64) -> bool {
+pub(crate) fn exceeds_ratio(uncompressed: u64, compressed: u64, max_ratio: u64) -> bool {
     match compressed.checked_mul(max_ratio) {
         Some(limit) => uncompressed > limit,
         // The limit exceeds u64::MAX; nothing can exceed it.
@@ -251,10 +252,16 @@ impl std::error::Error for ArchiveWriteError {
     }
 }
 
-fn io_err(context: impl Into<String>, source: io::Error) -> ArchiveWriteError {
+pub(crate) fn io_err(context: impl Into<String>, source: io::Error) -> ArchiveWriteError {
     ArchiveWriteError::Io {
         context: context.into(),
         source,
+    }
+}
+
+pub(crate) fn unsupported(detail: impl Into<String>) -> ArchiveWriteError {
+    ArchiveWriteError::UnsupportedArchive {
+        detail: detail.into(),
     }
 }
 
@@ -276,6 +283,14 @@ struct ArchiveFingerprint {
     sha256: [u8; 32],
 }
 
+/// Format-specific metadata carried in [`MemberEditContext`] for verification
+/// at commit time. In Task 1 only the zip variant is populated; tar and 7z
+/// variants will be added when their editors are implemented.
+#[derive(Debug, Clone)]
+pub enum EditorMetadata {
+    Zip { member_count: usize },
+}
+
 /// Server-side state for one outstanding member edit. Produced by
 /// [`extract_member_for_edit`]; consumed by [`commit_member_edit`]. The bridge
 /// holds this behind its opaque token — clients never supply paths to commit.
@@ -284,16 +299,16 @@ pub struct MemberEditContext {
     archive: PathBuf,
     member: String,
     staging_root: PathBuf,
-    extract_root: PathBuf,
     work_dir: PathBuf,
     staged_path: PathBuf,
     fingerprint: ArchiveFingerprint,
     /// Original member Unix mode (zip external attributes), restored onto the
     /// staged file before repack so the mode round-trips.
     member_mode: Option<u32>,
-    /// Central-directory entry count at edit time, for the post-repack
-    /// member-count assertion.
-    member_count: usize,
+    /// Detected archive format; selects the editor used during commit.
+    format: ArchiveFormat,
+    /// Format-specific metadata captured at edit time for commit verification.
+    editor_metadata: EditorMetadata,
     /// Whether the commit will use the atomic rename path (`true`) or degrade
     /// to a non-atomic O_TRUNC write for portal-granted archives (`false`).
     atomic: bool,
@@ -331,6 +346,16 @@ impl MemberEditContext {
     /// The app-private backup path for portal-granted archives.
     pub fn portal_backup(&self) -> Option<&Path> {
         self.portal_backup.as_deref()
+    }
+
+    /// The detected archive format for this edit.
+    pub fn format(&self) -> ArchiveFormat {
+        self.format
+    }
+
+    /// Format-specific metadata captured at edit time for commit verification.
+    pub fn editor_metadata(&self) -> &EditorMetadata {
+        &self.editor_metadata
     }
 }
 
@@ -506,136 +531,22 @@ fn sha256_of(file: &mut File) -> Result<[u8; 32], ArchiveWriteError> {
     Ok(hasher.finalize().into())
 }
 
-// ── Zip central directory parsing ───────────────────────────────────────────
-
-struct CdEntry {
-    name: Vec<u8>,
-    utf8_flag: bool,
-    compressed_size: u64,
-    uncompressed_size: u64,
-    /// `Some(mode)` when the entry was made on Unix (external attrs >> 16).
-    unix_mode: Option<u32>,
-}
-
-fn unsupported(detail: impl Into<String>) -> ArchiveWriteError {
-    ArchiveWriteError::UnsupportedArchive {
-        detail: detail.into(),
-    }
-}
-
-fn read_u16(buf: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([buf[at], buf[at + 1]])
-}
-
-fn read_u32(buf: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]])
-}
-
-/// Parse the zip central directory. Read-only, host-side: the design checks
-/// caps "against the zip central-directory sizes before extraction", and the
-/// same parse supplies the symlink/encoding/entry-count facts.
-fn parse_central_directory(
-    file: &mut File,
-    file_size: u64,
-) -> Result<Vec<CdEntry>, ArchiveWriteError> {
-    const EOCD_SIG: u32 = 0x0605_4b50;
-    const EOCD_LEN: u64 = 22;
-    const CD_SIG: u32 = 0x0201_4b50;
-    const CD_FIXED_LEN: usize = 46;
-
-    if file_size < EOCD_LEN {
-        return Err(unsupported("file too small to be a zip archive"));
-    }
-    // The EOCD record is in the last 22 + 65535 bytes (max comment length).
-    let tail_len = file_size.min(EOCD_LEN + 65_535);
-    let tail_start = file_size - tail_len;
-    file.seek(SeekFrom::Start(tail_start))
-        .map_err(|e| io_err("seek to zip tail failed", e))?;
-    let mut tail = vec![0u8; tail_len as usize];
-    file.read_exact(&mut tail)
-        .map_err(|e| io_err("read of zip tail failed", e))?;
-
-    let mut eocd_at = None;
-    for at in (0..=(tail.len() - EOCD_LEN as usize)).rev() {
-        if read_u32(&tail, at) == EOCD_SIG {
-            let comment_len = read_u16(&tail, at + 20) as usize;
-            if at + EOCD_LEN as usize + comment_len == tail.len() {
-                eocd_at = Some(at);
-                break;
-            }
-        }
-    }
-    let Some(eocd_at) = eocd_at else {
-        return Err(unsupported(
-            "no end-of-central-directory record (not a zip archive?)",
-        ));
-    };
-    let total_entries = read_u16(&tail, eocd_at + 10) as u64;
-    let cd_size = u64::from(read_u32(&tail, eocd_at + 12));
-    let cd_offset = u64::from(read_u32(&tail, eocd_at + 16));
-    if total_entries == 0xFFFF || cd_size == 0xFFFF_FFFF || cd_offset == 0xFFFF_FFFF {
-        return Err(unsupported("zip64 archives are not supported for editing"));
-    }
-    if cd_size > MAX_CENTRAL_DIRECTORY_SIZE {
-        return Err(unsupported("central directory exceeds the parse cap"));
-    }
-    if cd_offset
-        .checked_add(cd_size)
-        .is_none_or(|end| end > file_size)
-    {
-        return Err(unsupported("central directory extends past end of file"));
-    }
-
-    file.seek(SeekFrom::Start(cd_offset))
-        .map_err(|e| io_err("seek to central directory failed", e))?;
-    let mut cd = vec![0u8; cd_size as usize];
-    file.read_exact(&mut cd)
-        .map_err(|e| io_err("read of central directory failed", e))?;
-
-    let mut entries = Vec::with_capacity(total_entries as usize);
-    let mut at = 0usize;
-    for _ in 0..total_entries {
-        if at + CD_FIXED_LEN > cd.len() || read_u32(&cd, at) != CD_SIG {
-            return Err(unsupported("malformed central directory entry"));
-        }
-        let made_by_os = cd[at + 5]; // high byte of "version made by"
-        let flags = read_u16(&cd, at + 8);
-        let compressed_size = u64::from(read_u32(&cd, at + 20));
-        let uncompressed_size = u64::from(read_u32(&cd, at + 24));
-        let name_len = read_u16(&cd, at + 28) as usize;
-        let extra_len = read_u16(&cd, at + 30) as usize;
-        let comment_len = read_u16(&cd, at + 32) as usize;
-        let external_attrs = read_u32(&cd, at + 38);
-        let name_start = at + CD_FIXED_LEN;
-        let entry_end = name_start + name_len + extra_len + comment_len;
-        if entry_end > cd.len() {
-            return Err(unsupported("central directory entry overruns directory"));
-        }
-        entries.push(CdEntry {
-            name: cd[name_start..name_start + name_len].to_vec(),
-            utf8_flag: flags & 0x0800 != 0,
-            compressed_size,
-            uncompressed_size,
-            unix_mode: (made_by_os == 3).then_some(external_attrs >> 16),
-        });
-        at = entry_end;
-    }
-    Ok(entries)
-}
-
 // ── Sandboxed helper execution ──────────────────────────────────────────────
 
 /// Read/write grants for one sandboxed helper invocation. Translated into a
 /// `SandboxPolicy` built directly with `SandboxPolicy::builder()`, mirroring
 /// the built-in `unzip`/`tar` extraction in `linsync-cli archive` (and the
 /// same `LINSYNC_SANDBOX_SKIP` escape used by `just test`).
-struct SandboxGrants {
+pub struct SandboxGrants {
     read: Vec<PathBuf>,
     write: Vec<PathBuf>,
 }
 
 #[cfg(feature = "sandbox")]
-fn spawn_confined(cmd: Command, grants: &SandboxGrants) -> io::Result<std::process::Child> {
+pub(crate) fn spawn_confined(
+    cmd: Command,
+    grants: &SandboxGrants,
+) -> io::Result<std::process::Child> {
     use linsync_sandbox::{SandboxPolicy, SandboxedCommand};
     let mut builder = SandboxPolicy::builder();
     for path in &grants.read {
@@ -650,7 +561,10 @@ fn spawn_confined(cmd: Command, grants: &SandboxGrants) -> io::Result<std::proce
 }
 
 #[cfg(not(feature = "sandbox"))]
-fn spawn_confined(_cmd: Command, _grants: &SandboxGrants) -> io::Result<std::process::Child> {
+pub(crate) fn spawn_confined(
+    _cmd: Command,
+    _grants: &SandboxGrants,
+) -> io::Result<std::process::Child> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "archive write requires the 'sandbox' feature to confine helper processes",
@@ -662,7 +576,7 @@ const HELPER_TIMEOUT_MS: u64 = 60_000;
 
 /// Run a helper under the sandbox grants, capturing bounded stdout/stderr.
 /// Kills the child if it does not finish within [`HELPER_TIMEOUT_MS`].
-fn run_helper(
+pub(crate) fn run_helper(
     mut cmd: Command,
     grants: &SandboxGrants,
     what: &'static str,
@@ -733,9 +647,25 @@ fn run_helper(
     ))
 }
 
+/// Select the concrete editor for a detected archive format.
+///
+/// Tar and 7z editors are not implemented yet; they will be added in Task 2
+/// and Task 3 respectively.
+fn editor_for_format(format: ArchiveFormat) -> Result<Box<dyn ArchiveEditor>, ArchiveWriteError> {
+    match format {
+        ArchiveFormat::Zip => Ok(Box::new(ZipEditor)),
+        ArchiveFormat::Tar { .. } => Err(unsupported(
+            "tar archive member editing is not implemented yet",
+        )),
+        ArchiveFormat::SevenZip => Err(unsupported(
+            "7z archive member editing is not implemented yet",
+        )),
+    }
+}
+
 // ── Edit-time extraction ────────────────────────────────────────────────────
 
-/// Extract `member` from the zip `archive` into `staging_root` for editing,
+/// Extract `member` from the archive into `staging_root` for editing,
 /// with the default size/ratio caps. See [`extract_member_for_edit_with_caps`].
 pub fn extract_member_for_edit(
     archive: &Path,
@@ -752,13 +682,13 @@ pub fn extract_member_for_edit(
     )
 }
 
-/// Extract `member` from the zip `archive` into `staging_root` for editing.
+/// Extract `member` from the archive into `staging_root` for editing.
 ///
-/// Validates the member path ([`validate_member_path`]), parses the central
-/// directory to reject symlink/non-regular members, names that do not
-/// round-trip UTF-8, and members exceeding `caps`; extracts the single member
-/// via sandboxed `unzip`; and captures the freshness fingerprint — all under
-/// a shared `flock(LOCK_SH)` on the archive. Nothing is staged on rejection.
+/// Validates the member path ([`validate_member_path`]), asks the format's
+/// editor to locate the member and reject symlink/non-regular members, names
+/// that do not round-trip UTF-8, and members exceeding `caps`; extracts the
+/// single member via the editor; and captures the freshness fingerprint — all
+/// under a shared `flock(LOCK_SH)` on the archive. Nothing is staged on rejection.
 pub fn extract_member_for_edit_with_caps(
     archive: &Path,
     member: &str,
@@ -808,98 +738,12 @@ pub fn extract_member_for_edit_with_caps(
         .metadata()
         .map_err(|e| io_err("stat of archive failed", e))?;
 
-    let entries = parse_central_directory(&mut file, metadata.len())?;
-    let member_count = entries.len();
+    let format = ArchiveFormat::detect(&archive)
+        .ok_or_else(|| unsupported("unsupported archive format for member editing"))?;
+    let editor = editor_for_format(format)?;
 
-    // Locate the member by exact stored-name bytes; diagnose encoding
-    // problems (design §5 edit-time guard) before reporting "not found".
-    let exact: Vec<&CdEntry> = entries
-        .iter()
-        .filter(|e| e.name.as_slice() == member.as_bytes())
-        .collect();
-    let entry = match exact.as_slice() {
-        [entry] => *entry,
-        [] => {
-            let lossy_match = entries
-                .iter()
-                .any(|e| String::from_utf8_lossy(&e.name) == member);
-            if lossy_match {
-                // The stored bytes are not valid UTF-8; the caller is holding
-                // a lossily decoded name `zip` could never address.
-                return Err(ArchiveWriteError::MemberNameEncoding {
-                    member: member.to_owned(),
-                });
-            }
-            return Err(ArchiveWriteError::MemberNotFound {
-                member: member.to_owned(),
-            });
-        }
-        _ => {
-            return Err(unsupported(format!(
-                "member '{member}' appears more than once in the archive"
-            )));
-        }
-    };
-    // Non-ASCII name without the UTF-8 flag: Info-ZIP re-encodes such names
-    // (cp437 interpretation) and would *add* a second entry on repack.
-    if !entry.utf8_flag && !member.is_ascii() {
-        return Err(ArchiveWriteError::MemberNameEncoding {
-            member: member.to_owned(),
-        });
-    }
-    if member.ends_with('/') {
-        // Unreachable after validate_member_path, but keep the invariant local.
-        return Err(ArchiveWriteError::NonRegularMember {
-            member: member.to_owned(),
-        });
-    }
-    if let Some(mode) = entry.unix_mode {
-        let fmt = mode & libc::S_IFMT;
-        if fmt != 0 && fmt != libc::S_IFREG {
-            return Err(ArchiveWriteError::NonRegularMember {
-                member: member.to_owned(),
-            });
-        }
-    }
-
-    // Caps against the declared central-directory sizes (design §2 bomb row).
-    if entry.compressed_size == 0xFFFF_FFFF || entry.uncompressed_size == 0xFFFF_FFFF {
-        return Err(unsupported(
-            "zip64 member sizes are not supported for editing",
-        ));
-    }
-    // A declared compressed size larger than the archive itself is physically
-    // impossible — an inflated value would defeat the ratio check below by
-    // shrinking the apparent expansion, so reject it outright.
-    if entry.compressed_size > metadata.len() {
-        return Err(unsupported(
-            "declared compressed size exceeds the archive size",
-        ));
-    }
-    if entry.uncompressed_size > caps.max_member_size {
-        return Err(ArchiveWriteError::CapsExceeded {
-            member: member.to_owned(),
-            detail: format!(
-                "declared size {} exceeds the {} byte cap",
-                entry.uncompressed_size, caps.max_member_size
-            ),
-        });
-    }
-    if exceeds_ratio(
-        entry.uncompressed_size,
-        entry.compressed_size,
-        caps.max_compression_ratio,
-    ) {
-        return Err(ArchiveWriteError::CapsExceeded {
-            member: member.to_owned(),
-            detail: format!(
-                "declared compression ratio {}:{} exceeds the {}:1 cap",
-                entry.uncompressed_size, entry.compressed_size, caps.max_compression_ratio
-            ),
-        });
-    }
-    let member_mode = entry.unix_mode.map(|m| m & 0o7777).filter(|m| *m != 0);
-    let compressed_size = entry.compressed_size;
+    let located = editor.locate_member(&archive, member, caps)?;
+    let compressed_size = located.compressed_size;
 
     // Fingerprint the exact bytes the extraction below will read.
     let fingerprint = ArchiveFingerprint {
@@ -928,26 +772,13 @@ pub fn extract_member_for_edit_with_caps(
         .and_then(|()| fs::create_dir_all(&work_dir))
         .map_err(|e| io_err("creating staging dirs failed", e))?;
 
-    let mut cmd = Command::new("unzip");
-    cmd.arg("-q")
-        .arg("-o")
-        .arg("-d")
-        .arg(&extract_root)
-        .arg(&archive)
-        .arg(member);
     let grants = SandboxGrants {
         read: vec![archive.clone()],
         write: vec![staging_root.to_path_buf()],
     };
-    let (ok, _stdout, stderr) = run_helper(cmd, &grants, "unzip").inspect_err(|_| {
-        cleanup_staging();
-    })?;
-    if !ok {
-        cleanup_staging();
-        return Err(ArchiveWriteError::ExtractFailed {
-            detail: format!("unzip failed: {}", stderr.trim()),
-        });
-    }
+    let staged_path = editor
+        .extract_member(&archive, member, &extract_root, &grants)
+        .inspect_err(|_| cleanup_staging())?;
 
     // Re-check the actual bytes written against the caps and require a
     // regular file at exactly the expected path.
@@ -981,6 +812,10 @@ pub fn extract_member_for_edit_with_caps(
         });
     }
 
+    let editor_metadata = EditorMetadata::Zip {
+        member_count: located.member_count,
+    };
+
     // Portal backup is only *recorded* here; the full-archive copy is made by
     // `commit_member_edit` immediately before the destructive O_TRUNC write,
     // so an edit that is browsed/discarded without committing never pays a
@@ -991,12 +826,12 @@ pub fn extract_member_for_edit_with_caps(
         archive,
         member: member.to_owned(),
         staging_root: staging_root.to_path_buf(),
-        extract_root,
         work_dir,
         staged_path,
         fingerprint,
-        member_mode,
-        member_count,
+        member_mode: located.mode,
+        format,
+        editor_metadata,
         atomic,
         portal_backup,
     })
@@ -1098,76 +933,23 @@ pub fn commit_member_edit(
             .map_err(|e| io_err("restoring member mode on staged file failed", e))?;
     }
 
-    // §3 step 1 (helper side): working copy in the staging dir. The helper
-    // never receives a grant near the archive's directory; the host alone
-    // writes there (see module docs on why `zip` cannot update a
-    // Landlock-file-granted `.linsync-tmp` in place).
-    let work_copy = ctx.work_dir.join("repack.zip");
-    {
-        original
-            .seek(SeekFrom::Start(0))
-            .map_err(|e| io_err("seek of original failed", e))?;
-        let mut work_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&work_copy)
-            .map_err(|e| {
-                io_err(
-                    format!("creating working copy '{}' failed", work_copy.display()),
-                    e,
-                )
-            })?;
-        io::copy(&mut original, &mut work_file)
-            .map_err(|e| io_err("copying original to working copy failed", e))?;
-    }
-
-    // §3 step 3: sandboxed `zip` replaces the one member in the working copy.
-    // cwd is the staging extract root so the member's relative path matches
-    // its archive path; `-b` keeps zip's own temp files inside the staging
-    // grant. The original archive is not in the policy at all.
-    let mut cmd = Command::new("zip");
-    cmd.arg("-q")
-        .arg("-b")
-        .arg(&ctx.work_dir)
-        .arg(&work_copy)
-        .arg(&ctx.member)
-        .current_dir(&ctx.extract_root);
+    // §3 step 1 + 3: ask the format editor to produce a verified working copy
+    // inside the staging dir. The helper never receives a grant near the
+    // archive's directory; the host alone writes there.
+    let work_archive_path = ctx.work_dir.join("repack.zip");
+    let editor = editor_for_format(ctx.format)?;
     let grants = SandboxGrants {
         read: Vec::new(),
         write: vec![ctx.staging_root.clone()],
     };
-    let (ok, _stdout, stderr) = run_helper(cmd, &grants, "zip")?;
-    if !ok {
-        return Err(ArchiveWriteError::RepackFailed {
-            detail: format!("zip failed: {}", stderr.trim()),
-        });
-    }
-
-    // Post-repack assertion (design §5): list the working copy under the same
-    // sandbox policy; member count unchanged, target exactly once. `-UU`
-    // makes zipinfo print stored name bytes verbatim so the comparison is
-    // byte-exact; `-1` prints names only, one per line.
-    let mut cmd = Command::new("unzip");
-    cmd.arg("-Z").arg("-1").arg("-UU").arg(&work_copy);
-    let grants = SandboxGrants {
-        read: vec![ctx.staging_root.clone()],
-        write: Vec::new(),
-    };
-    let (ok, stdout, stderr) = run_helper(cmd, &grants, "unzip -Z")?;
-    if !ok {
-        return Err(ArchiveWriteError::PostRepackAssertion {
-            detail: format!("listing the working copy failed: {}", stderr.trim()),
-        });
-    }
-    // Compare raw name bytes (`-UU` prints stored bytes verbatim): a lossy
-    // decode could let a non-UTF-8 sibling entry collide with a member name
-    // containing U+FFFD.
-    let names: Vec<&[u8]> = stdout
-        .split(|b| *b == b'\n')
-        .filter(|line| !line.is_empty())
-        .collect();
-    verify_post_repack_listing(&names, &ctx.member, ctx.member_count)?;
+    editor.repack(
+        archive,
+        &ctx.member,
+        &ctx.staged_path,
+        &ctx.work_dir,
+        &work_archive_path,
+        &grants,
+    )?;
 
     // §3 step 4: full fingerprint re-verification under the commit lock.
     let sha = sha256_of(&mut original)?;
@@ -1187,7 +969,7 @@ pub fn commit_member_edit(
             let _ = fs::remove_file(&tmp);
         };
         {
-            let mut work_file = File::open(&work_copy)
+            let mut work_file = File::open(&work_archive_path)
                 .map_err(|e| io_err("reopening working copy for publish failed", e))?;
             let mut tmp_opts = OpenOptions::new();
             tmp_opts.write(true).create(true).truncate(true);
@@ -1334,7 +1116,7 @@ pub fn commit_member_edit(
         // Destructive step: truncate the now-open portal file and overwrite it
         // from the verified working copy. The backup created above is the
         // recovery path if this fails partway.
-        let mut work_file = File::open(&work_copy)
+        let mut work_file = File::open(&work_archive_path)
             .map_err(|e| io_err("reopening working copy for portal publish failed", e))?;
         portal_file
             .set_len(0)

@@ -12,6 +12,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::archive_write::ArchiveFormat;
 use crate::folder::{
     FolderCompareError, FolderCompareOptions, FolderCompareResult, compare_folders,
 };
@@ -51,7 +52,10 @@ impl std::error::Error for ArchiveError {}
 
 /// Return `true` if `path` has a built-in archive extension.
 pub fn is_builtin_archive_format(path: &Path) -> bool {
-    looks_like_zip(path) || looks_like_tar(path)
+    matches!(
+        ArchiveFormat::detect(path),
+        Some(ArchiveFormat::Zip) | Some(ArchiveFormat::Tar { .. })
+    )
 }
 
 /// Compare two archives by extracting both to caller-supplied directories and
@@ -193,25 +197,11 @@ fn run_sandboxed(
 }
 
 fn looks_like_zip(path: &Path) -> bool {
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    matches!(ext.as_str(), "zip" | "jar" | "war" | "apk" | "ipa")
+    matches!(ArchiveFormat::detect(path), Some(ArchiveFormat::Zip))
 }
 
 fn looks_like_tar(path: &Path) -> bool {
-    let name = path.to_string_lossy().to_lowercase();
-    name.ends_with(".tar")
-        || name.ends_with(".tgz")
-        || name.ends_with(".tar.gz")
-        || name.ends_with(".tbz2")
-        || name.ends_with(".tar.bz2")
-        || name.ends_with(".txz")
-        || name.ends_with(".tar.xz")
-        || name.ends_with(".tzst")
-        || name.ends_with(".tar.zst")
+    matches!(ArchiveFormat::detect(path), Some(ArchiveFormat::Tar { .. }))
 }
 
 #[cfg(test)]
