@@ -25,6 +25,8 @@ Kirigami.ApplicationWindow {
     }
     property string leftPath: ""
     property string rightPath: ""
+    onLeftPathChanged: root.refreshArchiveEditability()
+    onRightPathChanged: root.refreshArchiveEditability()
     property string basePath: ""
     property bool threeWayMode: root.compareMode === "Three-way"
     // Inline editing state. When true, the corresponding text pane is editable.
@@ -90,7 +92,9 @@ Kirigami.ApplicationWindow {
     property bool validationCompatible: false
     property string validationMessage: ""
     property string validationPathKind: ""
-    property string appVersion: "1.14.0"
+    // Keep in sync with the workspace version in Cargo.toml. bridge-info.json
+    // overwrites this once loaded, but the default is shown during startup.
+    property string appVersion: "1.15.0"
     property int bridgeModelRevision: 0
     property bool canUndo: false
     property bool canRedo: false
@@ -111,6 +115,11 @@ Kirigami.ApplicationWindow {
     property bool archiveEditInProgress: false
     property string archiveEditSide: ""  // "left" or "right"
     property string archiveEditPortalWarning: ""
+    // Cached editability for the two compared archives. Updated asynchronously
+    // whenever the paths change so the context menu can be shown synchronously
+    // when the user right-clicks a folder row.
+    property bool leftArchiveEditable: false
+    property bool rightArchiveEditable: false
     property var unfilteredLeftRows: []
     property var unfilteredRightRows: []
     // Lazy text windowing. When a text diff is larger than the server's window
@@ -532,6 +541,52 @@ Kirigami.ApplicationWindow {
     // Sync scroll between panes only when flick animation ends, not per-pixel.
     function isDifferenceState(state) {
         return state === "changed" || state === "left_only" || state === "right_only" || state === "error" || state === "aborted"
+    }
+
+    function isEditableArchive(path) {
+        // Kept for compatibility: returns the cached bridge result for the
+        // current left/right paths. The cache is refreshed asynchronously by
+        // refreshArchiveEditability() whenever the paths change.
+        if (path === root.leftPath)
+            return root.leftArchiveEditable
+        if (path === root.rightPath)
+            return root.rightArchiveEditable
+        return false
+    }
+
+    function refreshArchiveEditability() {
+        function fetch(path, applyIfCurrent) {
+            if (root.bridgeUrl === "" || path === "") {
+                applyIfCurrent(false)
+                return
+            }
+            const request = new XMLHttpRequest()
+            request.onreadystatechange = function () {
+                if (request.readyState === XMLHttpRequest.DONE && request.status === 200) {
+                    let payload = null
+                    try {
+                        payload = JSON.parse(request.responseText)
+                    } catch (e) {
+                        payload = null
+                    }
+                    applyIfCurrent(payload && payload.editable === true)
+                }
+            }
+            const url = root.bridgeUrl + "/archive/can-edit?path=" + encodeURIComponent(path)
+            request.open("GET", url)
+            request.send()
+        }
+
+        const leftAtRequest = root.leftPath
+        fetch(leftAtRequest, function (editable) {
+            if (root.leftPath === leftAtRequest)
+                root.leftArchiveEditable = editable
+        })
+        const rightAtRequest = root.rightPath
+        fetch(rightAtRequest, function (editable) {
+            if (root.rightPath === rightAtRequest)
+                root.rightArchiveEditable = editable
+        })
     }
 
     function rebuildDiffRows() {
@@ -1262,8 +1317,10 @@ Kirigami.ApplicationWindow {
     }
 
     onBridgeUrlChanged: {
-        if (root.bridgeUrl !== "")
+        if (root.bridgeUrl !== "") {
             root.loadProfiles()
+            root.refreshArchiveEditability()
+        }
     }
 
     function loadFilters(callback) {
@@ -5343,12 +5400,14 @@ Kirigami.ApplicationWindow {
 
                         Controls.MenuItem {
                             text: qsTr("Edit member in left archive")
+                            visible: root.leftArchiveEditable
                             enabled: !root.archiveEditInProgress
                             onTriggered: root.startArchiveMemberEdit("left")
                             Accessible.name: text
                         }
                         Controls.MenuItem {
                             text: qsTr("Edit member in right archive")
+                            visible: root.rightArchiveEditable
                             enabled: !root.archiveEditInProgress
                             onTriggered: root.startArchiveMemberEdit("right")
                             Accessible.name: text

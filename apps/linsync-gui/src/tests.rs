@@ -4038,6 +4038,24 @@ fn webpage_unsupported_mode_returns_clear_error() {
     );
 }
 
+#[test]
+fn webpage_bridge_requires_confirmed_query_param() {
+    // The consent gate lives in QML; direct HTTP requests without the
+    // confirmed=1 token must be rejected before any network fetch.
+    let paths = test_app_paths("drift-webpage-confirm");
+    let state = test_bridge_state(None);
+    let resp = String::from_utf8(bridge_response(
+        "GET /compare/webpage?left=http://example.com/a&right=http://example.com/b&mode=html HTTP/1.1\r\n",
+        &paths,
+        &state,
+    ))
+    .expect("utf-8 response");
+    assert!(
+        resp.starts_with("HTTP/1.1 400"),
+        "missing confirmed=1 must return 400: {resp}"
+    );
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // Profile bridge endpoints (Phase 1)
 // ────────────────────────────────────────────────────────────────────────
@@ -5618,6 +5636,48 @@ fn bridge_archive_member_edit_returns_token_and_staged_path() {
         PathBuf::from(body["staged_path"].as_str().unwrap_or("")).exists(),
         "staged file should exist"
     );
+}
+
+#[test]
+fn bridge_archive_can_edit_true_for_supported_formats() {
+    let paths = test_app_paths("archive-can-edit-true");
+    for path in ["x.zip", "x.tar", "x.tar.gz", "x.7z"] {
+        let resp = String::from_utf8(bridge_response(
+            &format!(
+                "GET /archive/can-edit?path={} HTTP/1.1\r\n",
+                urlencoding::encode(path)
+            ),
+            &paths,
+            &test_bridge_state(None),
+        ))
+        .expect("utf-8 response");
+        assert!(
+            resp.contains("HTTP/1.1 200"),
+            "expected 200 for {path}: {resp}"
+        );
+        let body = json_response_body(&resp);
+        assert!(
+            body["editable"].as_bool().unwrap_or(false),
+            "expected editable=true for {path}"
+        );
+    }
+}
+
+#[test]
+fn bridge_archive_can_edit_false_for_unsupported() {
+    let paths = test_app_paths("archive-can-edit-false");
+    let resp = String::from_utf8(bridge_response(
+        &format!(
+            "GET /archive/can-edit?path={} HTTP/1.1\r\n",
+            urlencoding::encode("x.txt")
+        ),
+        &paths,
+        &test_bridge_state(None),
+    ))
+    .expect("utf-8 response");
+    assert!(resp.contains("HTTP/1.1 200"), "expected 200, got: {resp}");
+    let body = json_response_body(&resp);
+    assert_eq!(body["editable"].as_bool(), Some(false));
 }
 
 #[test]

@@ -302,6 +302,7 @@ pub(crate) fn bridge_response_with_token(
         "/binary/window" => binary_window_bridge_response(query, state),
         "/folder/op/plan" => folder_op_plan_bridge_response(query, paths, state),
         "/folder/op/execute" => folder_op_execute_bridge_response(query, paths, state),
+        "/archive/can-edit" => archive_can_edit_bridge_response(query),
         "/archive/member/edit" => archive_member_edit_bridge_response(query, paths, state),
         "/archive/member/commit" => archive_member_commit_bridge_response(query, state),
         "/archive/member/discard" => archive_member_discard_bridge_response(query, state),
@@ -447,6 +448,16 @@ pub(crate) fn bridge_response_with_token(
         ),
         "/compare/webpage" => {
             let params = query_params(query);
+            // The user-consent gate lives in QML (WebpageComparePage confirms the
+            // network fetch dialog before calling runCompare()). Reject direct
+            // bridge requests that did not pass through that dialog.
+            if !query_bool(&params, "confirmed") {
+                return bridge_error(
+                    400,
+                    "Bad Request",
+                    "webpage compare requires confirmed=1 from the consent dialog",
+                );
+            }
             let profile = match resolve_profile_for_request(paths, &params) {
                 Ok(p) => p,
                 Err(err) => return bridge_error(400, "Bad Request", &err),
@@ -2259,6 +2270,17 @@ pub(crate) fn copy_clipboard_bridge_response(query: &str) -> Vec<u8> {
     }
 }
 
+pub(crate) fn archive_can_edit_bridge_response(query: &str) -> Vec<u8> {
+    let params = query_params(query);
+    let Some(path_str) = query_value(&params, "path") else {
+        return bridge_error(400, "Bad Request", "missing path");
+    };
+    let path = PathBuf::from(percent_decode(path_str));
+    let editable = linsync_core::ArchiveFormat::detect(&path).is_some();
+    let body = serde_json::json!({ "editable": editable }).to_string();
+    http_response(200, "OK", "application/json", body.into_bytes())
+}
+
 pub(crate) fn archive_member_edit_bridge_response(
     query: &str,
     paths: &AppPaths,
@@ -2273,6 +2295,14 @@ pub(crate) fn archive_member_edit_bridge_response(
     };
     let archive = PathBuf::from(percent_decode(archive_str));
     let member = percent_decode(member_str);
+
+    if linsync_core::ArchiveFormat::detect(&archive).is_none() {
+        return bridge_error(
+            400,
+            "UnsupportedArchive",
+            "unsupported archive format for member editing",
+        );
+    }
 
     if !archive.exists() {
         return bridge_error(
