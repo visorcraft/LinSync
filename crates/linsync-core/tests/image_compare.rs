@@ -1,6 +1,4 @@
 // All tests in this file require the `image-compare` feature.
-
-#[cfg(feature = "image-compare")]
 mod image_compare_tests {
     use ::image::{ImageBuffer, Rgba, RgbaImage};
     use linsync_core::image::{

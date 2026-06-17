@@ -6,7 +6,6 @@
 // positions only when the request asks for them (`want_positions`), proving the
 // opt-in flag reaches the plugin and the positions thread back into the
 // `DocumentCompareResult`.
-#![cfg(feature = "document-compare")]
 
 use std::path::Path;
 

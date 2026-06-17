@@ -180,7 +180,6 @@ _linsync_cli() {{
         open-external) COMPREPLY=( $(compgen -W "{}" -- "$cur") ) ;;
         patch) COMPREPLY=( $(compgen -W "{}" -- "$cur") ) ;;
         reveal) COMPREPLY=( $(compgen -W "{}" -- "$cur") ) ;;
-        self-compare) COMPREPLY=( $(compgen -W "{}" -- "$cur") ) ;;
         session) COMPREPLY=( $(compgen -W "{}" -- "$cur") ) ;;
         table) COMPREPLY=( $(compgen -W "{}" -- "$cur") ) ;;
         webpage) COMPREPLY=( $(compgen -W "{}" -- "$cur") ) ;;
@@ -214,7 +213,6 @@ complete -F _linsync_cli linsync-cli
         OPEN_EXTERNAL_FLAGS.join(" "),
         PATCH_FLAGS.join(" "),
         REVEAL_FLAGS.join(" "),
-        SELF_COMPARE_FLAGS.join(" "),
         SESSION_FLAGS.join(" "),
         TABLE_FLAGS.join(" "),
         WEBPAGE_FLAGS.join(" ")
@@ -260,7 +258,6 @@ _linsync_cli() {{
                 open-external) _values 'open-external option' {} ;;
                 patch) _values 'patch option' {} ;;
                 reveal) _values 'reveal option' {} ;;
-                self-compare) _values 'self-compare option' {} ;;
                 session) _values 'session option' {} ;;
                 table) _values 'table option' {} ;;
                 webpage) _values 'webpage option' {} ;;
@@ -295,7 +292,6 @@ _linsync_cli "$@"
         zsh_values(OPEN_EXTERNAL_FLAGS),
         zsh_values(PATCH_FLAGS),
         zsh_values(REVEAL_FLAGS),
-        zsh_values(SELF_COMPARE_FLAGS),
         zsh_values(SESSION_FLAGS),
         zsh_values(TABLE_FLAGS),
         zsh_values(WEBPAGE_FLAGS)
@@ -354,12 +350,6 @@ pub(crate) fn fish_completions() -> String {
     for flag in REPORT_FLAGS {
         output.push_str(&format!(
             "complete -c linsync-cli -n '__fish_seen_subcommand_from report' {}\n",
-            fish_option(flag)
-        ));
-    }
-    for flag in SELF_COMPARE_FLAGS {
-        output.push_str(&format!(
-            "complete -c linsync-cli -n '__fish_seen_subcommand_from self-compare' {}\n",
             fish_option(flag)
         ));
     }

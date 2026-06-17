@@ -1,5 +1,7 @@
 use super::*;
 
+use linsync_core::syntax::escape_html;
+
 pub(crate) fn report_command(args: &[String]) -> Result<ExitCode, String> {
     let report_args = split_report_args(args)?;
 

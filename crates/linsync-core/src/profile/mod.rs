@@ -39,10 +39,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::binary::BinaryCompareOptions;
-#[cfg(feature = "document-compare")]
 use crate::document::DocumentCompareOptions;
 use crate::folder::FolderCompareOptions;
-#[cfg(feature = "image-compare")]
 use crate::image::ImageCompareOptions;
 use crate::table::TableCompareOptions;
 use crate::text::TextCompareOptions;
@@ -117,10 +115,8 @@ pub struct CompareProfile {
     pub table: TableCompareOptions,
     #[serde(default)]
     pub binary: BinaryCompareOptions,
-    #[cfg(feature = "image-compare")]
     #[serde(default)]
     pub image: ImageCompareOptions,
-    #[cfg(feature = "document-compare")]
     #[serde(default)]
     pub document: DocumentCompareOptions,
     #[serde(default)]
@@ -155,9 +151,7 @@ impl CompareProfile {
             folder: FolderCompareOptions::default(),
             table: TableCompareOptions::default(),
             binary: BinaryCompareOptions::default(),
-            #[cfg(feature = "image-compare")]
             image: ImageCompareOptions::default(),
-            #[cfg(feature = "document-compare")]
             document: DocumentCompareOptions::default(),
             webpage: WebpageCompareOptions::default(),
             plugin_enablement: std::collections::BTreeMap::new(),
@@ -203,10 +197,8 @@ struct LegacyProfileV0 {
     table: TableCompareOptions,
     #[serde(default)]
     binary: BinaryCompareOptions,
-    #[cfg(feature = "image-compare")]
     #[serde(default)]
     image: ImageCompareOptions,
-    #[cfg(feature = "document-compare")]
     #[serde(default)]
     document: DocumentCompareOptions,
     #[serde(default)]
@@ -231,9 +223,7 @@ impl From<LegacyProfileV0> for CompareProfile {
             folder: legacy.folder,
             table: legacy.table,
             binary: legacy.binary,
-            #[cfg(feature = "image-compare")]
             image: legacy.image,
-            #[cfg(feature = "document-compare")]
             document: legacy.document,
             webpage: legacy.webpage,
             plugin_enablement: legacy.plugin_enablement,

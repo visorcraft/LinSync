@@ -5,6 +5,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::syntax::escape_html;
+
 /// Maximum size of a file the binary engine will read entirely into memory for
 /// content comparison. Larger files are rejected to prevent OOM.
 const MAX_BINARY_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
@@ -221,8 +223,8 @@ impl BinaryCompareResult {
         html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">\n");
         html.push_str(&format!(
             "<title>LinSync binary report: {} vs {}</title>\n",
-            escape_binary_html(&self.left_name),
-            escape_binary_html(&self.right_name)
+            escape_html(&self.left_name),
+            escape_html(&self.right_name)
         ));
         html.push_str(
             "<style>\n\
@@ -235,8 +237,8 @@ impl BinaryCompareResult {
         );
         html.push_str(&format!(
             "<h1>{} vs {}</h1>\n",
-            escape_binary_html(&self.left_name),
-            escape_binary_html(&self.right_name)
+            escape_html(&self.left_name),
+            escape_html(&self.right_name)
         ));
         html.push_str(&format!(
             "<p>left {} bytes, right {} bytes; {} differing byte(s)",
@@ -269,10 +271,10 @@ impl BinaryCompareResult {
             html.push_str(&format!(
                 "<tr{class}><td class=\"off\">{:08x}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
                 row.offset,
-                escape_binary_html(&row.left_hex),
-                escape_binary_html(&row.left_ascii),
-                escape_binary_html(&row.right_hex),
-                escape_binary_html(&row.right_ascii),
+                escape_html(&row.left_hex),
+                escape_html(&row.left_ascii),
+                escape_html(&row.right_hex),
+                escape_html(&row.right_ascii),
             ));
         }
         html.push_str("</tbody></table>\n</body></html>\n");
@@ -613,14 +615,6 @@ fn content_differences(
 
     let rows = generate_hex_rows(left, right, bytes_per_row);
     (differences, rows)
-}
-
-fn escape_binary_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 pub fn generate_hex_rows(left: &[u8], right: &[u8], bytes_per_row: usize) -> Vec<HexRow> {

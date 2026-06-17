@@ -21,7 +21,6 @@ fn every_documented_key_round_trips_through_bridge() {
         ("detectMoves", "true"),
         ("eolNormalization", "lf"),
         ("defaultCompareMode", "binary"),
-        ("openLastSession", "true"),
         ("confirmOnClose", "true"),
         ("persistRecentPaths", "true"),
         ("reduceMotion", "true"),
@@ -122,13 +121,6 @@ fn every_documented_key_persists_to_disk() {
     assert_eq!(
         loaded.default_compare_mode, "binary",
         "defaultCompareMode=binary should reload as binary"
-    );
-
-    let loaded = save_and_load_setting(&paths, "openLastSession", "false")
-        .expect("openLastSession should persist");
-    assert!(
-        !loaded.open_last_session,
-        "openLastSession=false should reload as false"
     );
 
     let loaded = save_and_load_setting(&paths, "confirmOnClose", "true")

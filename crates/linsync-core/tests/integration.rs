@@ -271,7 +271,6 @@ fn moved_block_detection_smoke() {
 /// Auto syntax detection end-to-end: comparing `.py` files with the syntax
 /// mode left at `Auto` must resolve to Python via the file extension and
 /// attach keyword spans on the view rows (the path the GUI renders from).
-#[cfg(feature = "syntax-rich")]
 #[test]
 fn auto_syntax_mode_detects_python_and_attaches_keyword_spans()
 -> Result<(), Box<dyn std::error::Error>> {

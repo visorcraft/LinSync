@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 VisorCraft LLC
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Document and OCR compare paths (feature-gated: `document-compare`).
+//! Document and OCR compare paths.
 //!
 //! All helpers shell out — no Poppler/Tesseract/LibreOffice crate is linked.
 //! All helpers run inside the Phase 6 sandbox (see `linsync_sandbox::run_sandboxed`).
@@ -15,6 +15,7 @@ use crate::plugin::{
     DiscoveredPlugin, PluginCancellationToken, PluginExecutionOptions, PluginInputDescriptor,
     PluginTextOperationOptions, discover_plugins, run_unpack_text_plugin_with_options,
 };
+use crate::syntax::escape_html;
 use crate::text::{TextCompareOptions, compare_text};
 
 /// Which extraction strategy to use.
@@ -155,8 +156,8 @@ impl DocumentCompareResult {
         html.push_str("<h1>LinSync document report</h1>\n");
         html.push_str(&format!(
             "<p>Rendered via {} (left) / {} (right).</p>\n",
-            escape_document_html(&self.left_extractor),
-            escape_document_html(&self.right_extractor)
+            escape_html(&self.left_extractor),
+            escape_html(&self.right_extractor)
         ));
         let differing = self.rendered_pages.iter().filter(|p| !p.equal).count();
         let status = if self.is_equal() {
@@ -188,14 +189,6 @@ impl DocumentCompareResult {
         html.push_str("</tbody></table>\n</body></html>\n");
         html
     }
-}
-
-/// Minimal HTML escaper for the few attribution strings rendered above.
-fn escape_document_html(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// Error returned when a document compare fails.
@@ -456,7 +449,6 @@ fn find_renderer_plugin(plugins_root: &Path) -> Option<DiscoveredPlugin> {
 /// Rendered-mode document compare: rasterize both documents to page images via
 /// a `pdf_renderer` plugin, then diff corresponding pages through the image
 /// engine. Requires the `image-compare` feature.
-#[cfg(feature = "image-compare")]
 /// RAII guard for the temporary directories created by the rendered document
 /// compare. On drop it removes both sides unless explicitly released, so error
 /// paths cannot leak the rendered-page PNG caches.
@@ -634,20 +626,6 @@ fn compare_document_rendered(
     })
 }
 
-/// Without the image engine, rendered mode cannot diff the pages.
-#[cfg(not(feature = "image-compare"))]
-fn compare_document_rendered(
-    left: &Path,
-    _right: &Path,
-    _plugins_root: &Path,
-    _options: &DocumentCompareOptions,
-) -> Result<DocumentCompareResult, DocumentCompareError> {
-    Err(DocumentCompareError::NoSuitablePlugin {
-        path: left.display().to_string(),
-        mime_hint: "rendered mode requires the image-compare feature".to_owned(),
-    })
-}
-
 #[cfg(test)]
 mod roundtrip_tests {
     use super::*;
@@ -739,7 +717,7 @@ mod roundtrip_tests {
     }
 }
 
-#[cfg(all(test, feature = "image-compare"))]
+#[cfg(test)]
 mod rendered_tests {
     use super::*;
     use std::io::Write;

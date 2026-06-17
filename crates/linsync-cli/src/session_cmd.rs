@@ -33,8 +33,8 @@ pub(crate) fn compare_view_str(view: CompareViewMode) -> String {
 }
 
 /// `session <save | list | show | clear>` — manage the recent-session history
-/// shared with the GUI (`recent-sessions.json`). A saved session is restored by
-/// the GUI on next launch when "open last session" is enabled.
+/// shared with the GUI (`recent-sessions.json`). Sessions can be reopened
+/// explicitly from the GUI Sessions page.
 pub(crate) fn session_command(args: &[String]) -> Result<ExitCode, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         eprintln!(

@@ -79,10 +79,7 @@ Operate on a project file (a named bundle of saved comparisons). validate loads 
 Reveal files or folders through org.freedesktop.FileManager1.ShowItems, falling back to xdg-open for the containing folder.
 .TP
 .B session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] [--profile ID] | list [--json] | show [INDEX] [--json] | clear>
-Manage the recent-session history shared with the GUI ($XDG_DATA_HOME/linsync/recent-sessions.json). save records a compare (left/right, optional base, title, view mode, and a compare profile id) at the front of the history; list shows the saved sessions newest-first with their index; show prints one (INDEX defaults to 0, the most recent); clear empties the history. A saved session is restored by the GUI on next launch when "open last session" is enabled.
-.TP
-.B self-compare [--json] FILE
-Compare a file against a temporary cached copy.
+Manage the recent-session history shared with the GUI ($XDG_DATA_HOME/linsync/recent-sessions.json). save records a compare (left/right, optional base, title, view mode, and a compare profile id) at the front of the history; list shows the saved sessions newest-first with their index; show prints one (INDEX defaults to 0, the most recent); clear empties the history. Sessions can be reopened explicitly from the GUI Sessions page.
 .TP
 .B table [--header] [--delimiter CHAR|--tsv] [--table-quote CHAR] [--table-escape CHAR] [--table-comment PREFIX] [--table-skip-blank BOOL] [--numeric-tolerance FLOAT] [--json|--count|--quiet] LEFT RIGHT
 Compare delimited table files.
@@ -146,7 +143,6 @@ USAGE:
     linsync-cli reveal [--wait] PATH...
     linsync-cli report LEFT RIGHT --output FILE [--context LINES] [--columns COLS] [--tree-state expanded|collapsed] [--nested-file-reports] [--relative-paths] [--from-json FILE]
     linsync-cli session <save LEFT RIGHT [--base BASE] [--title T] [--view MODE] [--profile ID] | list [--json] | show [INDEX] [--json] | clear>
-    linsync-cli self-compare [--json] FILE
     linsync-cli table [--header] [--delimiter CHAR|--tsv] [--table-quote CHAR] [--table-escape CHAR] [--table-comment PREFIX] [--table-skip-blank BOOL] [--numeric-tolerance FLOAT] [--json|--count|--quiet] LEFT RIGHT
     linsync-cli webpage --sub-mode html|text|tree|rendered|screenshot --accept-network-fetch [--depth N] [--timeout SECS] [--max-requests N] LEFT_URL RIGHT_URL
 

@@ -41,12 +41,6 @@ fn run_with_str_env(args: &[&str], envs: &[(&str, &str)], remove_envs: &[&str]) 
     command.output().expect("run linsync-cli")
 }
 
-fn assert_comparison_cache_was_cleaned(cache_home: &Path) {
-    let comparisons = cache_home.join("linsync/comparisons");
-    assert!(comparisons.exists());
-    assert_eq!(fs::read_dir(comparisons).unwrap().count(), 0);
-}
-
 #[test]
 fn compare_returns_zero_for_equal_files() {
     let left = fixture("text/equal-left.txt");
@@ -1291,7 +1285,7 @@ fn conflict_command_reports_git_conflict_markers() {
 fn specialized_commands_support_json_output() {
     let temp = TempFixture::new();
     let conflict_file = temp.path.join("merged.txt");
-    let cache_home = temp.path.join("cache");
+    let _cache_home = temp.path.join("cache");
     fs::write(
         &conflict_file,
         "<<<<<<< HEAD\nleft\n=======\nright\n>>>>>>> feature\n",
@@ -1321,10 +1315,6 @@ fn specialized_commands_support_json_output() {
         fixture("table/left.csv").to_str().unwrap(),
         fixture("table/right.csv").to_str().unwrap(),
     ]);
-    let self_compare = run_with_env(
-        &["self-compare", "--json", left.to_str().unwrap()],
-        &[("XDG_CACHE_HOME", &cache_home)],
-    );
 
     assert_eq!(compare3.status.code(), Some(1));
     let compare3_json: serde_json::Value = serde_json::from_slice(&compare3.stdout).unwrap();
@@ -1343,47 +1333,6 @@ fn specialized_commands_support_json_output() {
     assert_eq!(table.status.code(), Some(1));
     let table_json: serde_json::Value = serde_json::from_slice(&table.stdout).unwrap();
     assert_eq!(table_json["changed_cells"], 1);
-
-    assert!(self_compare.status.success());
-    let self_json: serde_json::Value = serde_json::from_slice(&self_compare.stdout).unwrap();
-    assert_eq!(self_json["equal"], true);
-    assert_eq!(self_json["type"], "text");
-    assert_comparison_cache_was_cleaned(&cache_home);
-}
-
-#[test]
-fn self_compare_reports_temporary_copy_without_differences() {
-    let temp = TempFixture::new();
-    let cache_home = temp.path.join("cache");
-    let source = fixture("text/left.txt");
-    let output = run_with_env(
-        &["self-compare", source.to_str().unwrap()],
-        &[("XDG_CACHE_HOME", &cache_home)],
-    );
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("vs temporary copy"));
-    assert!(stdout.contains("0 differing lines"));
-    assert_comparison_cache_was_cleaned(&cache_home);
-}
-
-#[test]
-fn self_compare_accepts_binary_files() {
-    let temp = TempFixture::new();
-    let cache_home = temp.path.join("cache");
-    let source = temp.path.join("binary.bin");
-    fs::write(&source, b"\x00ab\xff").unwrap();
-    let output = run_with_env(
-        &["self-compare", source.to_str().unwrap()],
-        &[("XDG_CACHE_HOME", &cache_home)],
-    );
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("vs temporary copy"));
-    assert!(stdout.contains("0 differing bytes"));
-    assert_comparison_cache_was_cleaned(&cache_home);
 }
 
 #[test]

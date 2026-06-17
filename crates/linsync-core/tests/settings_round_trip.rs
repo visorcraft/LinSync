@@ -23,7 +23,6 @@ fn round_trip_every_settings_key() {
     s.ignore_eol = true;
     s.eol_normalization = "lf".into();
     s.default_compare_mode = "binary".into();
-    s.open_last_session = true;
     s.confirm_on_close = true;
     s.persist_recent_paths = true;
     s.recent_limit = 25;
@@ -55,7 +54,6 @@ fn round_trip_every_settings_key() {
     assert!(loaded.ignore_eol);
     assert_eq!(loaded.eol_normalization, "lf");
     assert_eq!(loaded.default_compare_mode, "binary");
-    assert!(loaded.open_last_session);
     assert!(loaded.confirm_on_close);
     assert!(loaded.persist_recent_paths);
     assert_eq!(loaded.recent_limit, 25);

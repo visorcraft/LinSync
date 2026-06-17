@@ -6,22 +6,19 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["sandbox", "syntax-rich"]
+default = ["sandbox"]
 sandbox = ["dep:linsync-sandbox", "dep:tempfile"]
-syntax-rich = ["dep:syntect"]
-image-compare = ["dep:image", "dep:lab"]
-image-avif = ["image-compare", "image/avif"]
+image-avif = ["image/avif"]
 # Rendered/screenshot webpage compare diffs the rendered PNGs through the image
 # engine, so web-engine implies image-compare.
-web-engine = ["dep:linsync-webengine", "image-compare"]
-document-compare = []
+web-engine = ["dep:linsync-webengine"]
 
 [dependencies]
 blake3.workspace = true
 crc32fast.workspace = true
 sha2.workspace = true
-image = { workspace = true, optional = true }
-lab = { workspace = true, optional = true }
+image = { workspace = true }
+lab = { workspace = true }
 libc.workspace = true
 linsync-sandbox = { workspace = true, optional = true }
 linsync-webengine = { path = "../linsync-webengine", optional = true }
@@ -29,7 +26,7 @@ regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_repr.workspace = true
-syntect = { workspace = true, optional = true }
+syntect = { workspace = true }
 tempfile = { version = "3", optional = true }
 tracing.workspace = true
 unicode-segmentation.workspace = true

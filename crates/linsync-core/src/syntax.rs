@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) fn escape_html(value: &str) -> String {
+pub fn escape_html(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
         match ch {
@@ -107,7 +107,6 @@ pub fn syntax_mode_from_path(path: &Path) -> Option<TextSyntaxMode> {
 }
 
 pub fn syntax_spans(text: &str, mode: TextSyntaxMode) -> Vec<SyntaxSpan> {
-    #[cfg(feature = "syntax-rich")]
     if let Some(spans) = rich::spans(text, mode) {
         return spans;
     }
@@ -896,7 +895,6 @@ mod fallback_lexer_tests {
 /// highlight one row at a time, so multi-line constructs (block comments, raw
 /// strings) degrade gracefully per line. Returns `None` when syntect cannot
 /// handle the mode so the hand-rolled lexers above take over.
-#[cfg(feature = "syntax-rich")]
 mod rich {
     use std::sync::OnceLock;
 
@@ -1074,7 +1072,7 @@ mod rich {
     }
 }
 
-#[cfg(all(test, feature = "syntax-rich"))]
+#[cfg(test)]
 mod syntect_tests {
     use super::*;
 

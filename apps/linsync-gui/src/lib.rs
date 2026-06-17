@@ -665,7 +665,6 @@ pub fn apply_gui_setting(
         "detectMoves" => settings.detect_moves = parse_bool_setting(key, value)?,
         "eolNormalization" => settings.eol_normalization = value.to_owned(),
         "defaultCompareMode" => settings.default_compare_mode = value.to_owned(),
-        "openLastSession" => settings.open_last_session = parse_bool_setting(key, value)?,
         "confirmOnClose" => settings.confirm_on_close = parse_bool_setting(key, value)?,
         "persistRecentPaths" => settings.persist_recent_paths = parse_bool_setting(key, value)?,
         "reduceMotion" => settings.reduce_motion = parse_bool_setting(key, value)?,

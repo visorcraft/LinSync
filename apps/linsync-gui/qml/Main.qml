@@ -94,7 +94,7 @@ Kirigami.ApplicationWindow {
     property string validationPathKind: ""
     // Keep in sync with the workspace version in Cargo.toml. bridge-info.json
     // overwrites this once loaded, but the default is shown during startup.
-    property string appVersion: "1.15.0"
+    property string appVersion: "1.15.1"
     property int bridgeModelRevision: 0
     property bool canUndo: false
     property bool canRedo: false
@@ -235,7 +235,6 @@ Kirigami.ApplicationWindow {
     property bool   ignoreEol:          true
     property string eolNormalization:   "auto"
     property string defaultCompareMode: "Text"
-    property bool   openLastSession:    true
     property bool   confirmOnClose:     true
     property bool   persistRecentPaths: true
     property bool   reduceMotion:       false
@@ -1110,7 +1109,6 @@ Kirigami.ApplicationWindow {
             "ignoreEol": true,
             "eolNormalization": "auto",
             "defaultCompareMode": "Text",
-            "openLastSession": true,
             "confirmOnClose": true,
             "persistRecentPaths": true,
             "reduceMotion": false,
@@ -1136,7 +1134,6 @@ Kirigami.ApplicationWindow {
         root.ignoreEol          = merged.ignoreEol
         root.eolNormalization   = merged.eolNormalization
         root.defaultCompareMode = merged.defaultCompareMode
-        root.openLastSession    = merged.openLastSession
         root.confirmOnClose     = merged.confirmOnClose
         root.persistRecentPaths = merged.persistRecentPaths
         root.reduceMotion       = merged.reduceMotion
@@ -1165,7 +1162,6 @@ Kirigami.ApplicationWindow {
         else if (key === "ignoreEol")          root.ignoreEol          = value
         else if (key === "eolNormalization")   root.eolNormalization   = value
         else if (key === "defaultCompareMode") root.defaultCompareMode = value
-        else if (key === "openLastSession")    root.openLastSession    = value
         else if (key === "confirmOnClose")     root.confirmOnClose     = value
         else if (key === "persistRecentPaths") root.persistRecentPaths = value
         else if (key === "reduceMotion")       root.reduceMotion       = value

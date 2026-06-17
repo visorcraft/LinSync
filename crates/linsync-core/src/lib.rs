@@ -1,12 +1,9 @@
-#[cfg(feature = "sandbox")]
 pub mod archive;
 pub mod archive_write;
 pub mod binary;
-#[cfg(feature = "document-compare")]
 pub mod document;
 pub mod filter;
 pub mod folder;
-#[cfg(feature = "image-compare")]
 pub mod image;
 pub mod logging;
 pub mod merge;
@@ -20,7 +17,6 @@ pub mod text;
 pub mod trash;
 pub mod webpage;
 
-#[cfg(feature = "sandbox")]
 pub use archive::{ArchiveError, compare_builtin_archives_with_dirs, is_builtin_archive_format};
 pub use archive_write::{
     ArchiveEditCaps, ArchiveFormat, ArchiveWriteError, CommitOptions, CommitOutcome,
@@ -33,7 +29,6 @@ pub use binary::{
     TypedInterpretation, TypedValueKind, compare_binary, compare_binary_files, is_likely_binary,
     parse_hex_pattern,
 };
-#[cfg(feature = "document-compare")]
 pub use document::{
     DocumentCompareError, DocumentCompareMode, DocumentCompareOptions, DocumentCompareResult,
     compare_document_files, mime_hint_from_path, select_plugin_id,
@@ -53,7 +48,6 @@ pub use folder::{
     SymlinkPolicy, assess_operation_risks, compare_folders, compare_folders_with_progress,
     compare_virtual_trees, execute_folder_operation_plan, plan_folder_operation,
 };
-#[cfg(feature = "image-compare")]
 pub use image::{
     FrameCompareMode, FrameSummary, ImageCompareError, ImageCompareMode, ImageCompareOptions,
     ImageCompareResult, ImageFormatSupport, compare_images, compare_images_cancellable,

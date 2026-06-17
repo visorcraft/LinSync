@@ -13,8 +13,6 @@ use linsync_core::{
     CURRENT_PLUGIN_SCHEMA_VERSION, PluginClass, PluginError, PluginExecutionOptions,
     PluginManifest, PluginSandbox, discover_plugins, run_plugin_helper,
 };
-
-#[cfg(feature = "image-compare")]
 use linsync_core::{ImageCompareMode, ImageCompareOptions, compare_images};
 
 fn generate_lines(count: usize, change_every: usize) -> String {
@@ -507,8 +505,6 @@ fn plugin_startup_timeout(c: &mut Criterion) {
 
     group.finish();
 }
-
-#[cfg(feature = "image-compare")]
 fn image_compare(c: &mut Criterion) {
     use tempfile::TempDir;
 
@@ -611,8 +607,6 @@ fn image_compare(c: &mut Criterion) {
 
     group.finish();
 }
-
-#[cfg(feature = "image-compare")]
 criterion_group!(
     benches,
     text_compare,
@@ -624,19 +618,6 @@ criterion_group!(
     folder_tree_compare,
     plugin_startup_timeout,
     image_compare,
-);
-
-#[cfg(not(feature = "image-compare"))]
-criterion_group!(
-    benches,
-    text_compare,
-    compare_documents_bench,
-    hirschberg_vs_lcs,
-    text_compare_options,
-    binary_compare,
-    table_compare,
-    folder_tree_compare,
-    plugin_startup_timeout,
 );
 
 criterion_main!(benches);

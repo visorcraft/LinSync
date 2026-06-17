@@ -7,15 +7,12 @@
 //! "Save as…" surfaces do this).
 
 use crate::binary::BinaryCompareOptions;
+use crate::document::DocumentCompareOptions;
 use crate::folder::{CompareMethod, FolderCompareOptions, SymlinkPolicy};
+use crate::image::ImageCompareOptions;
 use crate::table::TableCompareOptions;
 use crate::text::TextCompareOptions;
 use crate::webpage::WebpageCompareOptions;
-
-#[cfg(feature = "document-compare")]
-use crate::document::DocumentCompareOptions;
-#[cfg(feature = "image-compare")]
-use crate::image::ImageCompareOptions;
 
 use super::{CURRENT_PROFILE_SCHEMA_VERSION, CompareProfile, ProfileId};
 
@@ -64,9 +61,7 @@ fn builtin_shell(id: &str, name: &str, description: &str) -> CompareProfile {
         folder: FolderCompareOptions::default(),
         table: TableCompareOptions::default(),
         binary: BinaryCompareOptions::default(),
-        #[cfg(feature = "image-compare")]
         image: ImageCompareOptions::default(),
-        #[cfg(feature = "document-compare")]
         document: DocumentCompareOptions::default(),
         webpage: WebpageCompareOptions::default(),
         plugin_enablement: std::collections::BTreeMap::new(),

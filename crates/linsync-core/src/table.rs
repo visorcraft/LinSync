@@ -5,6 +5,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::syntax::escape_html;
+
 /// Maximum size of a file the table engine will read into memory. Larger CSV/TSV
 /// files are rejected to prevent OOM.
 const MAX_TABLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -229,8 +231,8 @@ impl TableCompareResult {
         html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">\n");
         html.push_str(&format!(
             "<title>LinSync table report: {} vs {}</title>\n",
-            escape_table_html(&self.left_name),
-            escape_table_html(&self.right_name)
+            escape_html(&self.left_name),
+            escape_html(&self.right_name)
         ));
         html.push_str(
             "<style>\n\
@@ -244,8 +246,8 @@ impl TableCompareResult {
         );
         html.push_str(&format!(
             "<h1>{} vs {}</h1>\n",
-            escape_table_html(&self.left_name),
-            escape_table_html(&self.right_name)
+            escape_html(&self.left_name),
+            escape_html(&self.right_name)
         ));
         html.push_str(&format!(
             "<p>{} changed cell(s) across {} row(s).</p>\n",
@@ -256,7 +258,7 @@ impl TableCompareResult {
         if let Some(header) = &self.header {
             html.push_str("<thead><tr><th>#</th>");
             for cell in header {
-                html.push_str(&format!("<th>{}</th>", escape_table_html(cell)));
+                html.push_str(&format!("<th>{}</th>", escape_html(cell)));
             }
             html.push_str("</tr></thead>\n");
         }
@@ -267,26 +269,22 @@ impl TableCompareResult {
                 let (class, content) = match cell.state {
                     TableCellState::Equal => (
                         "",
-                        escape_table_html(
-                            cell.right.as_deref().or(cell.left.as_deref()).unwrap_or(""),
-                        ),
+                        escape_html(cell.right.as_deref().or(cell.left.as_deref()).unwrap_or("")),
                     ),
                     TableCellState::Changed => (
                         "changed",
                         format!(
                             "{} → {}",
-                            escape_table_html(cell.left.as_deref().unwrap_or("")),
-                            escape_table_html(cell.right.as_deref().unwrap_or(""))
+                            escape_html(cell.left.as_deref().unwrap_or("")),
+                            escape_html(cell.right.as_deref().unwrap_or(""))
                         ),
                     ),
-                    TableCellState::LeftOnly => (
-                        "removed",
-                        escape_table_html(cell.left.as_deref().unwrap_or("")),
-                    ),
-                    TableCellState::RightOnly => (
-                        "added",
-                        escape_table_html(cell.right.as_deref().unwrap_or("")),
-                    ),
+                    TableCellState::LeftOnly => {
+                        ("removed", escape_html(cell.left.as_deref().unwrap_or("")))
+                    }
+                    TableCellState::RightOnly => {
+                        ("added", escape_html(cell.right.as_deref().unwrap_or("")))
+                    }
                 };
                 if class.is_empty() {
                     html.push_str(&format!("<td>{content}</td>"));
@@ -407,14 +405,6 @@ impl std::fmt::Display for TableParseError {
 }
 
 impl std::error::Error for TableParseError {}
-
-fn escape_table_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
 
 fn compute_diff_type(
     state: TableCellState,

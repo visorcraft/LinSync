@@ -124,7 +124,6 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
         "report" => report::report_command(&args[1..]),
         "project" | "projects" => project_cmd::project_command(&args[1..]),
         "session" | "sessions" => session_cmd::session_command(&args[1..]),
-        "self-compare" => compare::self_compare_command(&args[1..]),
         "table" => table_cmd::table_command(&args[1..]),
         "cache" => cache_cmd::cache_command(&args[1..]),
         "webpage" => webpage_cmd::webpage_command(&args[1..]),
@@ -161,7 +160,6 @@ const CLI_COMMANDS: &[&str] = &[
     "report",
     "project",
     "session",
-    "self-compare",
     "table",
     "webpage",
     "help",
@@ -291,7 +289,6 @@ const REPORT_FLAGS: &[&str] = &[
 ];
 const PATCH_FLAGS: &[&str] = &["--output", "-o", "--format", "--context", "--preview"];
 const REVEAL_FLAGS: &[&str] = &["--wait"];
-const SELF_COMPARE_FLAGS: &[&str] = &["--json"];
 const ARCHIVE_FLAGS: &[&str] = &["--keep-temp", "--json", "--unpacker"];
 const CACHE_FLAGS: &[&str] = &["--scope"];
 const FILTER_FLAGS: &[&str] = &["--out", "--in-place"];

@@ -264,8 +264,6 @@ fn libreoffice_extract_runs_on_odt_fixture() {
 }
 
 // ── compare_document_files ────────────────────────────────────────────────────
-
-#[cfg(feature = "document-compare")]
 #[test]
 fn compare_document_files_pdfs_returns_text_result() {
     if !common::tools_available(&["pdftotext", "bash"]) {
@@ -299,8 +297,6 @@ fn compare_document_files_pdfs_returns_text_result() {
         "expected differences between simple.pdf and simple-changed.pdf"
     );
 }
-
-#[cfg(feature = "document-compare")]
 #[test]
 fn compare_document_files_identical_pdfs_are_equal() {
     if !common::tools_available(&["pdftotext", "bash"]) {
@@ -326,7 +322,6 @@ fn compare_document_files_identical_pdfs_are_equal() {
     );
 }
 
-#[cfg(all(feature = "document-compare", feature = "image-compare"))]
 #[test]
 fn compare_document_files_rendered_diffs_pages() {
     if !common::tools_available(&["pdftoppm", "bash"]) {
@@ -367,8 +362,6 @@ fn compare_document_files_rendered_diffs_pages() {
         .expect("rendered compare on differing pair failed");
     assert!(!diff.is_equal(), "differing PDFs should render different");
 }
-
-#[cfg(feature = "document-compare")]
 #[test]
 fn pdf_render_plugin_manifest_deserializes() {
     let plugin_dir = common::workspace_root().join("packaging/plugins/pdf-render");
@@ -379,8 +372,6 @@ fn pdf_render_plugin_manifest_deserializes() {
         .validate(&plugin_dir)
         .expect("pdf-render manifest.validate() failed");
 }
-
-#[cfg(feature = "document-compare")]
 #[test]
 fn compare_document_files_no_plugin_returns_error() {
     use linsync_core::DocumentCompareOptions;
@@ -411,8 +402,6 @@ fn compare_document_files_no_plugin_returns_error() {
 }
 
 // ── privacy: temp-file cleanup ────────────────────────────────────────────────
-
-#[cfg(feature = "document-compare")]
 #[test]
 fn plugin_temp_dir_is_removed_after_compare() {
     if !common::tools_available(&["pdftotext", "bash"]) {

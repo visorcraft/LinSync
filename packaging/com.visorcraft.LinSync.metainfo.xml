@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.15.1" date="2026-06-17">
+      <description>
+        <p>Over-engineering cleanup: removed dead self-compare command, unused open-last-session setting, consolidated HTML escapers, and made always-on features unconditional.</p>
+      </description>
+    </release>
     <release version="1.15.0" date="2026-06-16">
       <description>
         <p>Version bump to 1.15.0.</p>
