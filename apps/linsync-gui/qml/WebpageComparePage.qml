@@ -134,7 +134,7 @@ Controls.Pane {
         const left = encodeURIComponent(root.leftUrl);
         const right = encodeURIComponent(root.rightUrl);
         const mode = encodeURIComponent(root.subMode);
-        var query = "/compare/webpage?left=" + left + "&right=" + right + "&mode=" + mode + "&request_id=" + encodeURIComponent(root.activeRequestId);
+        var query = "/compare/webpage?left=" + left + "&right=" + right + "&mode=" + mode + "&request_id=" + encodeURIComponent(root.activeRequestId) + "&confirmed=1";
         if (root.pendingNewTab)
             query += "&new_tab=1";
         root.bridgeGet(query, function (ok, payload) {
