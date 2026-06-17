@@ -42,23 +42,23 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `autocfg` | 1.5.1 | Apache-2.0 OR MIT |
 | `bincode` | 1.3.3 | MIT |
 | `bit_field` | 0.10.3 | Apache-2.0/MIT |
-| `bitflags` | 2.11.1 | MIT OR Apache-2.0 |
+| `bitflags` | 2.13.0 | MIT OR Apache-2.0 |
 | `blake3` | 1.8.5 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
-| `block-buffer` | 0.10.4 | MIT OR Apache-2.0 |
+| `block-buffer` | 0.12.1 | MIT OR Apache-2.0 |
 | `bytemuck` | 1.25.0 | Zlib OR Apache-2.0 OR MIT |
 | `byteorder-lite` | 0.1.0 | Unlicense OR MIT |
-| `cc` | 1.2.62 | MIT OR Apache-2.0 |
+| `cc` | 1.2.64 | MIT OR Apache-2.0 |
 | `cfg-if` | 1.0.4 | MIT OR Apache-2.0 |
 | `clang-format` | 0.3.0 | MIT OR Apache-2.0 |
 | `codespan-reporting` | 0.11.1 | Apache-2.0 |
 | `codespan-reporting` | 0.13.1 | Apache-2.0 |
 | `color_quant` | 1.1.0 | MIT |
 | `constant_time_eq` | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
+| `const-oid` | 0.10.2 | Apache-2.0 OR MIT |
 | `convert_case` | 0.6.0 | MIT |
-| `cpufeatures` | 0.2.17 | MIT OR Apache-2.0 |
 | `cpufeatures` | 0.3.0 | MIT OR Apache-2.0 |
 | `crc32fast` | 1.5.0 | MIT OR Apache-2.0 |
-| `crypto-common` | 0.1.7 | MIT OR Apache-2.0 |
+| `crypto-common` | 0.2.2 | MIT OR Apache-2.0 |
 | `cxx` | 1.0.194 | MIT OR Apache-2.0 |
 | `cxxbridge-flags` | 1.0.194 | MIT OR Apache-2.0 |
 | `cxxbridge-macro` | 1.0.194 | MIT OR Apache-2.0 |
@@ -68,7 +68,7 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `cxx-qt-gen` | 0.8.1 | MIT OR Apache-2.0 |
 | `cxx-qt-lib` | 0.8.1 | MIT OR Apache-2.0 |
 | `cxx-qt-macro` | 0.8.1 | MIT OR Apache-2.0 |
-| `digest` | 0.10.7 | MIT OR Apache-2.0 |
+| `digest` | 0.11.3 | MIT OR Apache-2.0 |
 | `enumflags2` | 0.7.12 | MIT OR Apache-2.0 |
 | `enumflags2_derive` | 0.7.12 | MIT OR Apache-2.0 |
 | `equivalent` | 1.0.2 | Apache-2.0 OR MIT |
@@ -80,11 +80,11 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `flate2` | 1.1.9 | MIT OR Apache-2.0 |
 | `fnv` | 1.0.7 | Apache-2.0 / MIT |
 | `foldhash` | 0.2.0 | Zlib |
-| `generic-array` | 0.14.7 | MIT |
-| `getrandom` | 0.3.4 | MIT OR Apache-2.0 |
+| `getrandom` | 0.4.3 | MIT OR Apache-2.0 |
 | `gif` | 0.14.2 | MIT OR Apache-2.0 |
 | `half` | 2.7.1 | MIT OR Apache-2.0 |
 | `hashbrown` | 0.17.1 | MIT OR Apache-2.0 |
+| `hybrid-array` | 0.4.12 | MIT OR Apache-2.0 |
 | `image` | 0.25.10 | MIT OR Apache-2.0 |
 | `image-webp` | 0.2.4 | MIT OR Apache-2.0 |
 | `indexmap` | 2.14.0 | Apache-2.0 OR MIT |
@@ -98,8 +98,8 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `libc` | 0.2.186 | MIT OR Apache-2.0 |
 | `link-cplusplus` | 1.0.12 | MIT OR Apache-2.0 |
 | `linux-raw-sys` | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| `log` | 0.4.29 | MIT OR Apache-2.0 |
-| `memchr` | 2.8.0 | Unlicense OR MIT |
+| `log` | 0.4.32 | MIT OR Apache-2.0 |
+| `memchr` | 2.8.2 | Unlicense OR MIT |
 | `miniz_oxide` | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | `moxcms` | 0.8.1 | BSD-3-Clause OR Apache-2.0 |
 | `nu-ansi-term` | 0.50.3 | MIT |
@@ -115,26 +115,26 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `qt-build-utils` | 0.8.1 | MIT OR Apache-2.0 |
 | `quick-error` | 2.0.1 | MIT/Apache-2.0 |
 | `quote` | 1.0.45 | MIT OR Apache-2.0 |
-| `regex` | 1.12.3 | MIT OR Apache-2.0 |
+| `regex` | 1.12.4 | MIT OR Apache-2.0 |
 | `regex-automata` | 0.4.14 | MIT OR Apache-2.0 |
-| `regex-syntax` | 0.8.10 | MIT OR Apache-2.0 |
+| `regex-syntax` | 0.8.11 | MIT OR Apache-2.0 |
 | `rustix` | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | `rustversion` | 1.0.22 | MIT OR Apache-2.0 |
 | `same-file` | 1.0.6 | Unlicense/MIT |
-| `seccompiler` | 0.4.0 | Apache-2.0 OR BSD-3-Clause |
+| `seccompiler` | 0.5.0 | Apache-2.0 OR BSD-3-Clause |
 | `semver` | 1.0.28 | MIT OR Apache-2.0 |
 | `serde` | 1.0.228 | MIT OR Apache-2.0 |
 | `serde_core` | 1.0.228 | MIT OR Apache-2.0 |
 | `serde_derive` | 1.0.228 | MIT OR Apache-2.0 |
-| `serde_json` | 1.0.149 | MIT OR Apache-2.0 |
+| `serde_json` | 1.0.150 | MIT OR Apache-2.0 |
 | `serde_repr` | 0.1.20 | MIT OR Apache-2.0 |
-| `sha2` | 0.10.9 | MIT OR Apache-2.0 |
+| `sha2` | 0.11.0 | MIT OR Apache-2.0 |
 | `sharded-slab` | 0.1.7 | MIT |
-| `shlex` | 1.3.0 | MIT OR Apache-2.0 |
+| `shlex` | 2.0.1 | MIT OR Apache-2.0 |
 | `simd-adler32` | 0.3.9 | MIT |
-| `smallvec` | 1.15.1 | MIT OR Apache-2.0 |
+| `smallvec` | 1.15.2 | MIT OR Apache-2.0 |
 | `static_assertions` | 1.1.0 | MIT OR Apache-2.0 |
-| `syn` | 2.0.117 | MIT OR Apache-2.0 |
+| `syn` | 2.0.118 | MIT OR Apache-2.0 |
 | `syntect` | 5.3.0 | MIT |
 | `tempfile` | 3.27.0 | MIT OR Apache-2.0 |
 | `termcolor` | 1.4.1 | Unlicense OR MIT |
@@ -152,15 +152,14 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `tracing-subscriber` | 0.3.23 | MIT |
 | `typenum` | 1.20.1 | MIT OR Apache-2.0 |
 | `unicode-ident` | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 |
-| `unicode-segmentation` | 1.13.2 | MIT OR Apache-2.0 |
+| `unicode-segmentation` | 1.13.3 | MIT OR Apache-2.0 |
 | `unicode-width` | 0.1.14 | MIT OR Apache-2.0 |
 | `unicode-width` | 0.2.2 | MIT OR Apache-2.0 |
 | `urlencoding` | 2.1.3 | MIT |
-| `version_check` | 0.9.5 | MIT/Apache-2.0 |
 | `walkdir` | 2.5.0 | Unlicense/MIT |
 | `weezl` | 0.1.12 | MIT OR Apache-2.0 |
-| `zerocopy` | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
-| `zerocopy-derive` | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| `zerocopy` | 0.8.52 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| `zerocopy-derive` | 0.8.52 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | `zmij` | 1.0.21 | MIT |
 | `zune-core` | 0.5.1 | MIT OR Apache-2.0 OR Zlib |
 | `zune-inflate` | 0.2.54 | MIT OR Apache-2.0 OR Zlib |

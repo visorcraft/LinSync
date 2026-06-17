@@ -41,7 +41,7 @@
   },
   {
     "name": "bitflags",
-    "version": "2.11.1",
+    "version": "2.13.0",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -51,7 +51,7 @@
   },
   {
     "name": "block-buffer",
-    "version": "0.10.4",
+    "version": "0.12.1",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -66,7 +66,7 @@
   },
   {
     "name": "cc",
-    "version": "1.2.62",
+    "version": "1.2.64",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -100,14 +100,14 @@
     "license": "CC0-1.0 OR MIT-0 OR Apache-2.0"
   },
   {
+    "name": "const-oid",
+    "version": "0.10.2",
+    "license": "Apache-2.0 OR MIT"
+  },
+  {
     "name": "convert_case",
     "version": "0.6.0",
     "license": "MIT"
-  },
-  {
-    "name": "cpufeatures",
-    "version": "0.2.17",
-    "license": "MIT OR Apache-2.0"
   },
   {
     "name": "cpufeatures",
@@ -121,7 +121,7 @@
   },
   {
     "name": "crypto-common",
-    "version": "0.1.7",
+    "version": "0.2.2",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -171,7 +171,7 @@
   },
   {
     "name": "digest",
-    "version": "0.10.7",
+    "version": "0.11.3",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -230,13 +230,8 @@
     "license": "Zlib"
   },
   {
-    "name": "generic-array",
-    "version": "0.14.7",
-    "license": "MIT"
-  },
-  {
     "name": "getrandom",
-    "version": "0.3.4",
+    "version": "0.4.3",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -252,6 +247,11 @@
   {
     "name": "hashbrown",
     "version": "0.17.1",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "hybrid-array",
+    "version": "0.4.12",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -321,12 +321,12 @@
   },
   {
     "name": "log",
-    "version": "0.4.29",
+    "version": "0.4.32",
     "license": "MIT OR Apache-2.0"
   },
   {
     "name": "memchr",
-    "version": "2.8.0",
+    "version": "2.8.2",
     "license": "Unlicense OR MIT"
   },
   {
@@ -406,7 +406,7 @@
   },
   {
     "name": "regex",
-    "version": "1.12.3",
+    "version": "1.12.4",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -416,7 +416,7 @@
   },
   {
     "name": "regex-syntax",
-    "version": "0.8.10",
+    "version": "0.8.11",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -436,7 +436,7 @@
   },
   {
     "name": "seccompiler",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "license": "Apache-2.0 OR BSD-3-Clause"
   },
   {
@@ -461,7 +461,7 @@
   },
   {
     "name": "serde_json",
-    "version": "1.0.149",
+    "version": "1.0.150",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -471,7 +471,7 @@
   },
   {
     "name": "sha2",
-    "version": "0.10.9",
+    "version": "0.11.0",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -481,7 +481,7 @@
   },
   {
     "name": "shlex",
-    "version": "1.3.0",
+    "version": "2.0.1",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -491,7 +491,7 @@
   },
   {
     "name": "smallvec",
-    "version": "1.15.1",
+    "version": "1.15.2",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -501,7 +501,7 @@
   },
   {
     "name": "syn",
-    "version": "2.0.117",
+    "version": "2.0.118",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -591,7 +591,7 @@
   },
   {
     "name": "unicode-segmentation",
-    "version": "1.13.2",
+    "version": "1.13.3",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -610,11 +610,6 @@
     "license": "MIT"
   },
   {
-    "name": "version_check",
-    "version": "0.9.5",
-    "license": "MIT/Apache-2.0"
-  },
-  {
     "name": "walkdir",
     "version": "2.5.0",
     "license": "Unlicense/MIT"
@@ -626,12 +621,12 @@
   },
   {
     "name": "zerocopy",
-    "version": "0.8.48",
+    "version": "0.8.52",
     "license": "BSD-2-Clause OR Apache-2.0 OR MIT"
   },
   {
     "name": "zerocopy-derive",
-    "version": "0.8.48",
+    "version": "0.8.52",
     "license": "BSD-2-Clause OR Apache-2.0 OR MIT"
   },
   {
