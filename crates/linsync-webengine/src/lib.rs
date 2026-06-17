@@ -289,11 +289,11 @@ fn read_tail(path: &Path, max_bytes: usize) -> String {
 ///
 /// Privacy contract: the browser runs against a LinSync-owned profile
 /// (`--user-data-dir` under [`WebEngineOptions::profile_storage_dir`]) — it
-/// never touches the user's real browser profile. "Ephemeral" here means
-/// wiped-by-[`clear_profile`]: the directory persists between renders (so
-/// per-URL cache survives), and concurrent renders would contend on
-/// Chromium's `SingletonLock` in it — fine today because core renders
-/// sequentially (left, then right).
+/// never touches the user's real browser profile. The directory is ephemeral
+/// (cleaned up by the caller after rendering), but it persists between renders
+/// so per-URL cache survives; concurrent renders would contend on Chromium's
+/// `SingletonLock` in it — fine today because core renders sequentially (left,
+/// then right).
 fn render_url_chromium(
     binary: &Path,
     url: &str,
@@ -523,6 +523,10 @@ Item {{
 }
 
 /// Delete all Qt WebEngine profile data under `profile_storage_dir`.
+///
+/// Test-only helper kept for idempotency coverage; production callers own
+/// profile cleanup via `linsync_core::webpage::WebProfileDir`.
+#[cfg(test)]
 pub fn clear_profile(options: &WebEngineOptions) -> Result<(), WebEngineError> {
     let dir = &options.profile_storage_dir;
     if dir.exists() {

@@ -17,7 +17,6 @@ path = "src/main.rs"
 default = []
 cxxqt = ["dep:cxx", "dep:cxx-qt", "dep:cxx-qt-build", "dep:cxx-qt-lib", "dep:qt-build-utils"]
 cxxqt-app = ["cxxqt", "cxx-qt-lib/qt_gui", "cxx-qt-lib/qt_qml"]
-cxxqt-smoke = ["cxxqt"]
 test-support = []
 web-engine = ["linsync-core/web-engine"]
 
@@ -73,6 +72,5 @@ cxx-qt-build = { version = "0.8.1", optional = true }
 qt-build-utils = { version = "0.8.1", optional = true }
 
 [dev-dependencies]
-image = { workspace = true }
 sha2 = { workspace = true }
 tempfile = "3"

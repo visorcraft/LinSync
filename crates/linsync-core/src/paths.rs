@@ -70,10 +70,6 @@ impl AppPaths {
         self.config_dir.join("profiles")
     }
 
-    pub fn profile_file(&self, profile_id: &str) -> PathBuf {
-        self.profiles_dir().join(format!("{profile_id}.json"))
-    }
-
     /// Records the user's active-profile pointer:
     /// `$XDG_CONFIG_HOME/linsync/active-profile.json`.
     pub fn active_profile_pointer_file(&self) -> PathBuf {

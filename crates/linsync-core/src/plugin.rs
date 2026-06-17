@@ -15,7 +15,7 @@ use crate::paths::AppPaths;
 
 pub const PLUGIN_MANIFEST_FILE: &str = "linsync-plugin.json";
 pub const CURRENT_PLUGIN_SCHEMA_VERSION: u32 = 1;
-pub const CURRENT_PLUGIN_PROTOCOL_VERSION: u32 = 1;
+pub(crate) const CURRENT_PLUGIN_PROTOCOL_VERSION: u32 = 1;
 
 fn current_plugin_schema_version() -> u32 {
     CURRENT_PLUGIN_SCHEMA_VERSION

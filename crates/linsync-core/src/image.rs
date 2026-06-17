@@ -604,20 +604,6 @@ fn compare_decoded_same_size(
     }
 }
 
-/// Compare every frame of two animated (or still) images pairwise. Reports a
-/// per-frame summary plus aggregate pixel counts; a frame-count mismatch marks
-/// the extra frames as one-sided (their full pixel count counted as differing)
-/// and the overall result as different. Aggregate `differing_pixels`/`diff_ratio`
-/// are pixel-count-weighted across frames (a larger frame contributes more); use
-/// `per_frame_summaries` for un-weighted per-frame ratios.
-pub fn compare_images_all_frames(
-    left: &Path,
-    right: &Path,
-    options: &ImageCompareOptions,
-) -> Result<ImageCompareResult, ImageCompareError> {
-    compare_images_all_frames_cancellable(left, right, options, &NEVER_CANCELLED)
-}
-
 fn compare_images_all_frames_cancellable(
     left: &Path,
     right: &Path,

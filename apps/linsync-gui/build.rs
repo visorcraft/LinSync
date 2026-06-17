@@ -28,12 +28,7 @@ fn main() {
             "qml/SessionsPage.qml",
             "qml/SettingsPage.qml",
         ]);
-        rust_sources.push("src/cxxqt_session.rs");
-    }
-
-    if cfg!(feature = "cxxqt-smoke") {
-        module = module.qml_file("qml/CxxQtSmoke.qml");
-        rust_sources.push("src/cxxqt_smoke.rs");
+        rust_sources.push("src/cxxqt_translator.rs");
     }
 
     let mut builder = CxxQtBuilder::new_qml_module(module);

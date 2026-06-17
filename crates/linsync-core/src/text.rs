@@ -738,26 +738,6 @@ pub fn compare_text_files(
     Ok(compare_documents(left_document, right_document, options))
 }
 
-/// Cancellable variant of [`compare_text_files`]. `should_cancel` is polled
-/// before and during the (O(n·m)) LCS construction; returning `true` aborts the
-/// compare and yields `Ok(None)`. Used by the GUI bridge to honour the Stop
-/// button on large-file text compares.
-pub fn compare_text_files_cancellable(
-    left: &Path,
-    right: &Path,
-    options: &TextCompareOptions,
-    should_cancel: &dyn Fn() -> bool,
-) -> io::Result<Option<TextCompareResult>> {
-    let left_document = TextDocument::from_path_with_encoding(left, options.encoding)?;
-    let right_document = TextDocument::from_path_with_encoding(right, options.encoding)?;
-    Ok(compare_documents_cancellable(
-        left_document,
-        right_document,
-        options,
-        should_cancel,
-    ))
-}
-
 /// Apply a prediffer plugin to both sides before comparing.
 ///
 /// If `prediffer_plugin_dir` is `Some` and the plugin is a valid prediffer,

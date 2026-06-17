@@ -21,6 +21,7 @@
 .vscode/
 .idea/
 .zed/
+.opencode/
 
 # Python cache directories from project scripts (e.g. scripts/l10n-report.py)
 **/__pycache__/

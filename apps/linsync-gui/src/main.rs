@@ -40,9 +40,7 @@ const GUI_TAB_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 const GUI_TABS_SNAPSHOT_KEY: &str = "gui_tabs_snapshot";
 
 #[cfg(feature = "cxxqt-app")]
-mod cxxqt_session;
-#[cfg(feature = "cxxqt-smoke")]
-mod cxxqt_smoke;
+mod cxxqt_translator;
 #[cfg(feature = "cxxqt-app")]
 mod icon_theme;
 
@@ -3919,7 +3917,6 @@ fn summary_item_string(label: &str, value: String) -> GuiSummaryItem {
 }
 
 mod bridge;
-#[allow(unused_imports)]
 pub(crate) use bridge::*;
 
 #[cfg(test)]

@@ -52,7 +52,7 @@ use crate::webpage::WebpageCompareOptions;
 /// can't safely consume. `ProfileStore::load` upgrades older versions
 /// to this version on read; if a profile carries a newer
 /// `schema_version` the store refuses to load it.
-pub const CURRENT_PROFILE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const CURRENT_PROFILE_SCHEMA_VERSION: u32 = 1;
 
 /// Stable identifier for a profile, used in file names and active-profile
 /// pointers. Must be ASCII kebab-case (`[a-z0-9-]+`) and non-empty.
@@ -250,7 +250,9 @@ impl CompareProfile {
     /// Parse a profile from its raw JSON representation, upgrading older
     /// schema versions to the current one. Returns an error if the JSON is
     /// malformed or if the profile declares a future schema version.
-    pub fn migrate_from_legacy(raw: serde_json::Value) -> Result<Self, ProfileMigrationError> {
+    pub(crate) fn migrate_from_legacy(
+        raw: serde_json::Value,
+    ) -> Result<Self, ProfileMigrationError> {
         let version = parse_schema_version(&raw)?;
 
         if version > CURRENT_PROFILE_SCHEMA_VERSION {
@@ -330,7 +332,7 @@ impl std::fmt::Display for ProfileValidationError {
 impl std::error::Error for ProfileValidationError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProfileMigrationError {
+pub(crate) enum ProfileMigrationError {
     Parse { message: String },
     Validation(ProfileValidationError),
 }
@@ -351,7 +353,7 @@ impl std::error::Error for ProfileMigrationError {}
 /// additional fields; readers tolerate them via `serde(default)`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct ActiveProfilePointer {
+pub(crate) struct ActiveProfilePointer {
     pub schema_version: u32,
     pub profile_id: ProfileId,
 }

@@ -92,6 +92,7 @@ pub fn compare_builtin_archives_with_dirs<
 /// the folder compare engine over the extracted trees.
 ///
 /// `TempDir` handles cleanup automatically when the returned result is dropped.
+#[cfg(test)]
 pub fn compare_builtin_archives<P: AsRef<Path>>(
     left: P,
     right: P,

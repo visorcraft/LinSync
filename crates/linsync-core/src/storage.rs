@@ -178,10 +178,6 @@ impl ThemePreference {
         }
     }
 
-    pub fn theme_value(self) -> u8 {
-        self as u8
-    }
-
     pub fn from_legacy_key(value: &str) -> Option<Self> {
         match value {
             "system" => Some(Self::System),
@@ -329,17 +325,20 @@ impl SettingsStore {
         write_json(&self.path, settings)
     }
 
+    #[cfg(test)]
     pub fn import_from(&self, source: &Path) -> Result<Settings, StoreError> {
         let settings = read_json::<Settings>(source)?.validate_current_schema()?;
         self.save(&settings)?;
         Ok(settings)
     }
 
+    #[cfg(test)]
     pub fn export_to(&self, destination: &Path) -> Result<(), StoreError> {
         let settings = self.load_or_default()?;
         write_json(destination, &settings)
     }
 
+    #[cfg(test)]
     pub fn backup_to(&self, destination: &Path) -> Result<(), StoreError> {
         self.export_to(destination)
     }

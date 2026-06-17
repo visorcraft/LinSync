@@ -21,10 +21,7 @@ pub mod trash;
 pub mod webpage;
 
 #[cfg(feature = "sandbox")]
-pub use archive::{
-    ArchiveError, compare_builtin_archives, compare_builtin_archives_with_dirs,
-    is_builtin_archive_format,
-};
+pub use archive::{ArchiveError, compare_builtin_archives_with_dirs, is_builtin_archive_format};
 pub use archive_write::{
     ArchiveEditCaps, ArchiveWriteError, CommitOptions, CommitOutcome, MemberEditContext,
     commit_member_edit, extract_member_for_edit, extract_member_for_edit_with_caps,
@@ -59,9 +56,8 @@ pub use folder::{
 #[cfg(feature = "image-compare")]
 pub use image::{
     FrameCompareMode, FrameSummary, ImageCompareError, ImageCompareMode, ImageCompareOptions,
-    ImageCompareResult, ImageFormatSupport, compare_images, compare_images_all_frames,
-    compare_images_cancellable, compare_images_streaming, generate_overlay,
-    supported_image_formats,
+    ImageCompareResult, ImageFormatSupport, compare_images, compare_images_cancellable,
+    compare_images_streaming, generate_overlay, supported_image_formats,
 };
 pub use logging::{LoggingError, init_file_logging, install_panic_log_hook};
 pub use merge::{
@@ -72,16 +68,16 @@ pub use merge::{
 };
 pub use paths::AppPaths;
 pub use plugin::{
-    CURRENT_PLUGIN_PROTOCOL_VERSION, CURRENT_PLUGIN_SCHEMA_VERSION, DiscoveredPlugin,
-    ExtractMemberResponse, PluginCancellationToken, PluginChunk, PluginClass, PluginDiagnostic,
-    PluginDiscovery, PluginDiscoveryError, PluginError, PluginExecutionOptions,
-    PluginExecutionResult, PluginInputDescriptor, PluginManifest, PluginOperation,
-    PluginOperationError, PluginOperationOutput, PluginOperationRequest, PluginOperationResponse,
-    PluginOperationStatus, PluginOption, PluginOptionError, PluginOptionKind, PluginOutputKind,
-    PluginOutputStream, PluginProbeOutcome, PluginSandbox, PluginStoreError,
-    PluginTextOperationOptions, PluginTextResult, PredifferConflictPolicy, RenderPagesResponse,
-    SandboxStatus, UnpackFolderResponse, VirtualNode, WordPosition, active_sandbox_status,
-    clear_plugin_option, compare_archives_with_unpacker, compare_archives_with_unpacker_recursive,
+    CURRENT_PLUGIN_SCHEMA_VERSION, DiscoveredPlugin, ExtractMemberResponse,
+    PluginCancellationToken, PluginChunk, PluginClass, PluginDiagnostic, PluginDiscovery,
+    PluginDiscoveryError, PluginError, PluginExecutionOptions, PluginExecutionResult,
+    PluginInputDescriptor, PluginManifest, PluginOperation, PluginOperationError,
+    PluginOperationOutput, PluginOperationRequest, PluginOperationResponse, PluginOperationStatus,
+    PluginOption, PluginOptionError, PluginOptionKind, PluginOutputKind, PluginOutputStream,
+    PluginProbeOutcome, PluginSandbox, PluginStoreError, PluginTextOperationOptions,
+    PluginTextResult, PredifferConflictPolicy, RenderPagesResponse, SandboxStatus,
+    UnpackFolderResponse, VirtualNode, WordPosition, active_sandbox_status, clear_plugin_option,
+    compare_archives_with_unpacker, compare_archives_with_unpacker_recursive,
     discover_installed_plugins, discover_plugins, extract_archive_member, install_plugin,
     is_plugin_enabled_for_profile, is_plugin_trusted, is_stable_plugin_id, load_plugin_enabled_map,
     load_plugin_options, load_plugin_trusted_map, plugin_discovery_roots, probe_plugin,
@@ -94,8 +90,7 @@ pub use plugin::{
 };
 pub use profile::builtin::{builtin_profile_ids, builtin_profiles, find_builtin};
 pub use profile::{
-    ActiveProfilePointer, CURRENT_PROFILE_SCHEMA_VERSION, CompareProfile, ProfileId, ProfileStore,
-    ProfileStoreError, ProfileValidationError,
+    CompareProfile, ProfileId, ProfileStore, ProfileStoreError, ProfileValidationError,
 };
 pub use storage::{
     ArtifactManifest, CompareArtifact, CompareViewMode, FilterStore, NamedFilters, ProjectFile,
@@ -118,8 +113,8 @@ pub use text::{
     TextFindOptions, TextInputEncoding, TextRegexRuleSet, TextRenderMode, TextSubstitution,
     TextViewPage, TextViewRow, builtin_text_regex_rule_sets, compare_documents,
     compare_documents_cancellable, compare_text, compare_text_files,
-    compare_text_files_cancellable, compare_text_files_with_prediffer,
-    compare_text_files_with_prediffer_chain, text_regex_rule_set,
+    compare_text_files_with_prediffer, compare_text_files_with_prediffer_chain,
+    text_regex_rule_set,
 };
 pub use trash::{
     DeleteBackend, DeleteError, DeleteOutcome, DeletePlan, DeletePreference, DeleteRestoreGuidance,

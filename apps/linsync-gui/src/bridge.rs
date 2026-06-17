@@ -4709,7 +4709,7 @@ pub(crate) fn run_cxxqt_host(
     // No-op when no catalog matches the locale, so the English source strings
     // remain. Must run before the engine loads QML so qsTr() resolves.
     if let Some(i18n_dir) = qml_root.parent().map(|p| p.join("i18n")) {
-        let loaded = crate::cxxqt_session::ffi::linsync_install_translator(&QString::from(
+        let loaded = crate::cxxqt_translator::ffi::linsync_install_translator(&QString::from(
             i18n_dir.to_string_lossy().as_ref(),
         ));
         if loaded {
