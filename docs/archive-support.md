@@ -2,7 +2,7 @@
 
 > Status: the read-only archive-as-virtual-folder pipeline (nested-archive
 > recursion + member extraction) has shipped. Writable archive-member editing
-> for **zip archives** shipped in the current release; tar and 7z remain read-only. The rest
+> for **zip, tar (plain and compressed variants), and 7z** shipped in the current release. The rest
 > of this document records the design constraints and the bar future formats
 > would have to clear.
 
@@ -34,25 +34,32 @@ The archive workflow supports:
 - Showing archive member paths with an explicit virtual-path prefix so users do
   not confuse extracted temporary files with real editable filesystem paths.
 
-**Zip archives additionally support member editing** (see below). Tar and 7z
-remain read-only.
+## Writable Archive Editing
 
-## Writable Zip Editing
-
-Zip archive member editing shipped in v1.10.0. The design is documented in
+Archive member editing shipped in v1.10.0 for zip and was later extended to tar
+(plain and compressed variants) and 7z. The design is documented in
 `docs/archive-write-safety-design.md` and covers:
 
 - Atomic replace via tmp-then-rename (original never opened for writing).
 - Automatic `.bak` backup until commit succeeds.
-- Sandboxed `unzip`/`zip` helper processes under Landlock/seccomp.
+- Sandboxed helper processes under Landlock/seccomp.
 - Freshness fingerprinting (SHA-256 + flock) to prevent TOCTOU races.
 - Size and compression-ratio caps to mitigate archive bombs.
 - Path validation (zip-slip, symlink rejection, encoding round-trip checks).
 - Post-repack assertion (member count unchanged, target exactly once).
 
+Supported formats:
+
+- **zip** — in-place member replacement; only the edited member is recompressed.
+- **tar** (`.tar`, `.tgz`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, …) — whole-archive
+  rewrite because tar has no in-place member replacement; compressed variants
+  additionally decompress and recompress the entire stream.
+- **7z** — whole-archive rewrite via the `7z`/`p7zip` binary; the `7z` helper must
+  be installed on the host.
+
 Edit flow:
 
-1. Right-click a zip member row → "Edit member in left/right archive".
+1. Right-click an editable member row → "Edit member in left/right archive".
 2. The member is extracted to a staging file and opened in the external editor.
 3. Save in the editor, then click **Commit** (or **Discard**) in LinSync.
 4. Commit repacks the archive atomically; discard cleans up the staging file.
@@ -75,8 +82,11 @@ disabled for virtual archive folders.
 
 ## Writable Archive Milestone
 
-Writable archive-member workflows are now implemented for **zip**.
-Tar, 7z, and other formats remain read-only until a repack-capable helper or
-built-in path is available. The plugin protocol extension for `repack_member` is
-specified in `docs/archive-write-safety-design.md` §5 but deferred until
+Writable archive-member workflows are now implemented for **zip, tar (plain and
+compressed variants), and 7z**. Tar and 7z use whole-archive rewrite because
+those formats lack in-place member replacement; 7z additionally requires the
+`7z`/`p7zip` binary to be installed on the host. Other formats remain read-only
+until a repack-capable helper or built-in path is available. The plugin protocol
+extension for `repack_member` is specified in
+`docs/archive-write-safety-design.md` §5 but deferred until
 `sandbox_writes_input` support lands in `linsync-sandbox`.

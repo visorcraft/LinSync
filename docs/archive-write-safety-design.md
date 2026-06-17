@@ -1,6 +1,6 @@
 # Writable Archive-Member Editing — Safety Design
 
-> Status: **IMPLEMENTED** (v1, zip only). This document was the safety-design
+> Status: **IMPLEMENTED** (zip, tar, 7z). This document was the safety-design
 > gate for writable archive-member editing; all sections through §7 are now
 > shipped in `linsync-core/src/archive_write.rs` and the GUI bridge. The design
 > remains the authoritative contract for the repack path.
@@ -16,23 +16,23 @@ anything except a final atomic publish step performed by the trusted host.
 
 In scope:
 
-- **Zip only** (`.zip`, `.jar`, `.war`, `.apk`, `.ipa` — the suffixes the
-  built-in `unzip` path in `linsync-cli archive` already recognizes as zip).
+- **Zip** (`.zip`, `.jar`, `.war`, `.apk`, `.ipa` — the suffixes the built-in
+  `unzip` path in `linsync-cli archive` already recognizes as zip).
+- **Tar and compressed-tar** (`.tar`, `.tgz`, `.tar.gz`, `.tar.bz2`, `.tar.xz`,
+  …) — single-member replace is implemented by rewriting the entire stream;
+  compressed variants decompress and recompress the whole archive.
+- **7z** (`.7z`) — single-member replace is implemented by rewriting the
+  archive via the system `7z`/`p7zip` binary.
 - **Single-member replace via repack**: one member's content is replaced; all
   other members, their order, modes, extra fields, and the archive comment are
-  preserved byte-for-byte (see §3 working-copy model).
+  preserved byte-for-byte where the format allows (see §3 working-copy model).
 
 Explicitly out of scope, each with its reason:
 
-- **tar and compressed-tar (`.tar`, `.tgz`, `.tar.gz`, …)** — tar has no
-  in-place member replacement; replacing a member requires rewriting the entire
-  stream, and the compressed variants additionally require full
-  decompress/recompress. That multiplies the partial-write and bomb surface for
-  no v1 benefit. Deferred.
-- **7z and plugin-provided formats** — replacement depends on helper
-  capability we cannot assume. The protocol extension (§5) lets a future
-  unpacker opt in; until a repack-capable unpacker exists for a format, that
-  format stays read-only.
+- **Plugin-provided formats** — replacement depends on helper capability we
+  cannot assume. The protocol extension (§5) lets a future unpacker opt in;
+  until a repack-capable unpacker exists for a format, that format stays
+  read-only.
 - **Nested archives** (`outer.zip!/inner.zip!/member`) — writing into an inner
   archive requires recursively repacking every enclosing layer, so a failure at
   layer N corrupts the freshness assumptions of layers N-1..0. Deferred.
@@ -96,11 +96,13 @@ successful rename cannot occur in this
 protocol (step 7 is cleanup only); if `.bak` deletion itself fails, the commit
 still reports success and the stale `.bak` is reported in diagnostics.
 
-Why a working copy instead of extract-everything-and-rebuild: only the edited
-member is recompressed; every other member's compressed bytes, order, extra
-fields, and the archive comment survive untouched; there is no full-tree
-extraction (smaller bomb surface); and large archives are copied once, not
-extracted and re-deflated. The full-rebuild alternative was rejected.
+Why a working copy instead of extract-everything-and-rebuild: for zip, only
+the edited member is recompressed; every other member's compressed bytes,
+order, extra fields, and the archive comment survive untouched. For tar and 7z
+the entire stream is rewritten because those formats do not support in-place
+member replacement. In all cases the original archive is copied once to the
+working copy, not edited in place, and the publish step is a single atomic
+rename.
 
 ## 4. Sandbox policy for the repack helper
 
@@ -243,17 +245,17 @@ Two guards close Info-ZIP's name-encoding hole (a cp437 legacy name that
 ### Capability detection
 
 A member's "Edit a copy and repack" action is offered only when the archive
-format has a repack path: built-in zip, or an installed-and-enabled unpacker
-whose manifest declares `supports_repack: true` for the extension. Otherwise
-the action is **hidden** (not greyed) — read-only formats simply do not grow a
-write affordance.
+format has a repack path: built-in zip, tar, or 7z (with the `7z`/`p7zip`
+binary installed), or an installed-and-enabled unpacker whose manifest declares
+`supports_repack: true` for the extension. Otherwise the action is **hidden**
+(not greyed) — read-only formats simply do not grow a write affordance.
 
 ## 6. UX contract
 
 - Archives stay read-only by default. There is no global "writable archives"
   mode and no edit-on-double-click.
 - Flow, per member:
-  1. Context action **"Edit a copy and repack…"** on a zip member row.
+  1. Context action **"Edit a copy and repack…"** on an editable member row.
   2. `POST /archive/member/edit` extracts the member (caps from §2) into
      app-private staging under `AppPaths::cache_dir()/archive-edits/<token>/`
      (portal backups under `state_dir/archive-edit/<token>.bak`) and returns
@@ -344,7 +346,7 @@ POST /archive/member/edit?archive=<path>&member=<path>
   → 200 {"ok":true,"token":"<128-bit hex>","staging_path":"…",
           "member":"…","atomic":true|false}        // atomic=false ⇒ portal path
   → 400 invalid/symlink/non-regular member, non-UTF-8 member name,
-        caps exceeded, non-zip
+        caps exceeded, unsupported archive format
   → 404 archive or member not found
   → 409 an edit token is already outstanding for this archive
 
@@ -373,9 +375,11 @@ content).
 
 Implementation must ship at least these tests (names indicative):
 
-- `archive_edit_commit_replaces_member_atomically` — e2e happy path: edit,
-  commit, re-list members, untouched members byte-identical, edited member
-  updated, mode preserved.
+- `archive_edit_commit_replaces_member_atomically` — e2e happy path per
+  supported format: edit, commit, re-list members, untouched members
+  byte-identical, edited member updated, mode preserved.
+- `archive_edit_commit_replaces_member_tar_and_7z` — whole-archive rewrite
+  variants for tar (plain and compressed) and 7z.
 - `archive_edit_commit_rejects_without_confirm_409` — Phase 2 pattern reuse.
 - `archive_edit_commit_rejects_stale_fingerprint` — TOCTOU: rewrite the
   archive between edit and commit; commit → 409, original (new) bytes intact,
