@@ -2042,8 +2042,10 @@ fn entries_match(
         }
         CompareMethod::QuickContents | CompareMethod::FullContents => {
             same_size
-                && fs::read(left_root.join(relative_path))?
-                    == fs::read(right_root.join(relative_path))?
+                && binary_files_equal_until_first_difference(
+                    &left_root.join(relative_path),
+                    &right_root.join(relative_path),
+                )?
         }
         CompareMethod::HashBlake3 => {
             same_size
