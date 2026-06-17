@@ -218,6 +218,19 @@ Kirigami.Page {
         "compatible with GPL-3.0-only.  No third-party copyleft Cargo crates\n" +
         "are present in the current dependency tree.\n" +
         "\n" +
+        "## Bundled native code and data\n" +
+        "\n" +
+        "The released binaries also contain the following third-party code and\n" +
+        "data that are not separate Cargo crates:\n" +
+        "\n" +
+        " * Oniguruma regular expression engine (bundled by onig_sys 69.9.3),\n" +
+        "   used through syntect.  License: BSD-2-Clause (see the BSD 2-Clause\n" +
+        "   text below).\n" +
+        "\n" +
+        " * Sublime Text default syntax definitions (bundled by syntect 5.3.0).\n" +
+        "   Derived from sublimehq/Packages.  License: custom permissive\n" +
+        "   (HPND-style) — see the dedicated text below.\n" +
+        "\n" +
         "## License Texts\n" +
         "\n" +
         "### MIT License\n" +
@@ -377,7 +390,16 @@ Kirigami.Page {
         "https://www.unicode.org/copyright.html.  Permission is granted, free\n" +
         "of charge, to any person obtaining a copy of the Unicode data files\n" +
         "and associated documentation, subject to attribution of the Unicode\n" +
-        "Consortium and the disclaimer of warranty set out in the license.\n"
+        "Consortium and the disclaimer of warranty set out in the license.\n" +
+        "\n" +
+        "### Sublime Text default syntax definitions\n" +
+        "\n" +
+        "Derived from sublimehq/Packages.  Permission to copy, use, modify,\n" +
+        "sell and distribute this software is granted, provided that the\n" +
+        "copyright notice appears in all copies.  Neither the original authors\n" +
+        "nor the distributors make any representation about the suitability of\n" +
+        "this software for any purpose.  This software is provided \"as is\"\n" +
+        "without express or implied warranty.\n"
 
     readonly property string acknowledgementsText:
         "# Acknowledgements\n" +
@@ -421,6 +443,14 @@ Kirigami.Page {
         "more maintainers who chose to release their work as open source.\n" +
         "If your work is included here and you would like a more explicit\n" +
         "acknowledgement, please reach out -- credit is the least we can offer.\n" +
+        "\n" +
+        "## Bundled code and data\n" +
+        "\n" +
+        " * Oniguruma -- K. Kosako and contributors.  BSD-2-Clause.\n" +
+        "   https://github.com/kkos/oniguruma\n" +
+        "\n" +
+        " * Sublime Text default syntax definitions -- sublimehq/Packages.\n" +
+        "   Custom permissive grant.  https://github.com/sublimehq/Packages\n" +
         "\n" +
         "## Inspiration\n" +
         "\n" +

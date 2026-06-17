@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Last regenerated: 2026-06-16
+Last regenerated: 2026-06-17
 
 This notice file covers the current LinSync source tree and Cargo dependency
 set. It must be regenerated or reviewed before every public binary release.
@@ -173,6 +173,16 @@ distributed in the released binaries. It is verified during pre-release with the
 `just deny` (cargo-deny) and `just audit` (cargo-audit) workflows. Re-run
 `just credits` after any dependency change and update the in-app Credits
 (`CreditsPage.qml`) and Licenses (`LicensesPage.qml`) pages to match.
+
+## Bundled native code and data
+
+Some release binaries also contain third-party code and data that are not
+separate Cargo crates:
+
+| Library / data set | Version / source | License | Notes |
+| --- | --- | --- | --- |
+| Oniguruma regular expression engine | bundled by `onig_sys` 69.9.3 | BSD-2-Clause | Statically linked through `syntect` → `onig` → `onig_sys`. The upstream license text is in `oniguruma/COPYING`. |
+| Sublime Text default syntax definitions | bundled by `syntect` 5.3.0 | custom permissive (HPND-style) | Shipped as a `SyntaxSet` dump; derived from `sublimehq/Packages`. No attribution list is required by the upstream grant. |
 
 ## Copyleft Dependency Tracking
 

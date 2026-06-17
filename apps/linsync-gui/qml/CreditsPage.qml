@@ -34,6 +34,11 @@ Kirigami.ScrollablePage {
         { name: "FreeDesktop / Portal services", license: "various (MIT / LGPL / Apache-2.0)", url: "https://www.freedesktop.org" }
     ]
 
+    readonly property var bundledComponents: [
+        { name: "Oniguruma regular expression engine", license: "BSD-2-Clause" },
+        { name: "Sublime Text default syntax definitions", license: "custom permissive (HPND-style)" }
+    ]
+
     readonly property var crates: [
     // BEGIN GENERATED CREDITS (do not edit inside; run `just credits-update`)
         { name: "adler2",                  version: "2.0.1",     license: "0BSD OR MIT OR Apache-2.0" },
@@ -266,6 +271,35 @@ Kirigami.ScrollablePage {
                             Controls.ToolTip.text: modelData.url
                             Controls.ToolTip.visible: hovered
                             onClicked: Qt.openUrlExternally(modelData.url)
+                        }
+                    }
+                }
+            }
+
+            AppCard {
+                Layout.fillWidth: true
+                Layout.topMargin: 8
+                title: qsTr("Bundled native code & data")
+                subtitle: qsTr("Code and data that are not separate Cargo crates but are included in the released binaries.")
+                Repeater {
+                    model: page.bundledComponents
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 12
+                        Controls.Label {
+                            Layout.preferredWidth: 240
+                            text: modelData.name
+                            font.bold: true
+                            font.pixelSize: 12
+                            elide: Text.ElideRight
+                        }
+                        Controls.Label {
+                            Layout.fillWidth: true
+                            text: modelData.license
+                            font.family: "monospace"
+                            font.pixelSize: 11
+                            opacity: 0.85
                         }
                     }
                 }
