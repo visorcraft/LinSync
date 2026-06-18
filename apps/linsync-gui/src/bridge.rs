@@ -1101,6 +1101,34 @@ pub(crate) fn parse_text_bookmark_query(value: &str) -> Result<TextBookmark, Str
     Ok(TextBookmark { side, line, label })
 }
 
+/// Parse a `?compare_method=` query token, or `None` if unrecognized. The
+/// caller decides whether unknown is an error (folder query) or a no-op that
+/// keeps the profile value (compare request).
+fn parse_compare_method_query(value: &str) -> Option<linsync_core::CompareMethod> {
+    Some(match value {
+        "full-contents" => linsync_core::CompareMethod::FullContents,
+        "quick-contents" => linsync_core::CompareMethod::QuickContents,
+        "binary-contents" => linsync_core::CompareMethod::BinaryContents,
+        "modified-date" => linsync_core::CompareMethod::ModifiedDate,
+        "date-size" => linsync_core::CompareMethod::DateAndSize,
+        "size" => linsync_core::CompareMethod::Size,
+        "existence" => linsync_core::CompareMethod::Existence,
+        "hash-blake3" => linsync_core::CompareMethod::HashBlake3,
+        "normalized-text" => linsync_core::CompareMethod::NormalizedText,
+        _ => return None,
+    })
+}
+
+/// Parse a `?symlink_policy=` query token, or `None` if unrecognized.
+fn parse_symlink_policy_query(value: &str) -> Option<linsync_core::SymlinkPolicy> {
+    Some(match value {
+        "compare-target" => linsync_core::SymlinkPolicy::CompareTarget,
+        "follow" => linsync_core::SymlinkPolicy::Follow,
+        "special-file" => linsync_core::SymlinkPolicy::SpecialFile,
+        _ => return None,
+    })
+}
+
 /// Resolve `FolderCompareOptions` for a single bridge request: start
 /// from the active profile's folder options, then apply per-request
 /// query overrides (`?recursive`, `?compare_method`, `?symlink_policy`,
@@ -1118,26 +1146,12 @@ pub(crate) fn resolve_folder_options_for_request(
         opts.recursive = parsed;
     }
     if let Some(v) = query_value(params, "compare_method") {
-        opts.compare_method = match v {
-            "full-contents" => linsync_core::CompareMethod::FullContents,
-            "quick-contents" => linsync_core::CompareMethod::QuickContents,
-            "binary-contents" => linsync_core::CompareMethod::BinaryContents,
-            "modified-date" => linsync_core::CompareMethod::ModifiedDate,
-            "date-size" => linsync_core::CompareMethod::DateAndSize,
-            "size" => linsync_core::CompareMethod::Size,
-            "existence" => linsync_core::CompareMethod::Existence,
-            "hash-blake3" => linsync_core::CompareMethod::HashBlake3,
-            "normalized-text" => linsync_core::CompareMethod::NormalizedText,
-            _ => return Err(format!("unknown compare_method '{v}'")),
-        };
+        opts.compare_method =
+            parse_compare_method_query(v).ok_or_else(|| format!("unknown compare_method '{v}'"))?;
     }
     if let Some(v) = query_value(params, "symlink_policy") {
-        opts.symlink_policy = match v {
-            "compare-target" => linsync_core::SymlinkPolicy::CompareTarget,
-            "follow" => linsync_core::SymlinkPolicy::Follow,
-            "special-file" => linsync_core::SymlinkPolicy::SpecialFile,
-            _ => return Err(format!("unknown symlink_policy '{v}'")),
-        };
+        opts.symlink_policy =
+            parse_symlink_policy_query(v).ok_or_else(|| format!("unknown symlink_policy '{v}'"))?;
     }
     if let Some(v) = query_value(params, "include_skipped")
         && let Some(parsed) = parse_bool_query_param(v)
@@ -1163,26 +1177,10 @@ pub(crate) fn resolve_compare_options_for_request(
         folder.recursive = parsed;
     }
     if let Some(v) = query_value(params, "compare_method") {
-        folder.compare_method = match v {
-            "full-contents" => linsync_core::CompareMethod::FullContents,
-            "quick-contents" => linsync_core::CompareMethod::QuickContents,
-            "binary-contents" => linsync_core::CompareMethod::BinaryContents,
-            "modified-date" => linsync_core::CompareMethod::ModifiedDate,
-            "date-size" => linsync_core::CompareMethod::DateAndSize,
-            "size" => linsync_core::CompareMethod::Size,
-            "existence" => linsync_core::CompareMethod::Existence,
-            "hash-blake3" => linsync_core::CompareMethod::HashBlake3,
-            "normalized-text" => linsync_core::CompareMethod::NormalizedText,
-            _ => folder.compare_method,
-        };
+        folder.compare_method = parse_compare_method_query(v).unwrap_or(folder.compare_method);
     }
     if let Some(v) = query_value(params, "symlink_policy") {
-        folder.symlink_policy = match v {
-            "compare-target" => linsync_core::SymlinkPolicy::CompareTarget,
-            "follow" => linsync_core::SymlinkPolicy::Follow,
-            "special-file" => linsync_core::SymlinkPolicy::SpecialFile,
-            _ => folder.symlink_policy,
-        };
+        folder.symlink_policy = parse_symlink_policy_query(v).unwrap_or(folder.symlink_policy);
     }
     if let Some(v) = query_value(params, "include_skipped")
         && let Some(parsed) = parse_bool_query_param(v)
@@ -4558,47 +4556,6 @@ pub(crate) fn query_bool(params: &[(String, String)], key: &str) -> bool {
             || value.eq_ignore_ascii_case("true")
             || value.eq_ignore_ascii_case("yes")
     })
-}
-
-pub(crate) fn percent_decode(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-
-    while index < bytes.len() {
-        match bytes[index] {
-            b'%' if index + 2 < bytes.len() => {
-                if let (Some(high), Some(low)) =
-                    (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
-                {
-                    decoded.push((high << 4) | low);
-                    index += 3;
-                } else {
-                    decoded.push(bytes[index]);
-                    index += 1;
-                }
-            }
-            b'+' => {
-                decoded.push(b' ');
-                index += 1;
-            }
-            byte => {
-                decoded.push(byte);
-                index += 1;
-            }
-        }
-    }
-
-    String::from_utf8_lossy(&decoded).into_owned()
-}
-
-pub(crate) fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
 }
 
 pub(crate) fn bridge_error(status: u16, reason: &str, message: &str) -> Vec<u8> {

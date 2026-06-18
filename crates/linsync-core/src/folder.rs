@@ -2170,7 +2170,11 @@ fn compute_file_hash(path: &Path, algorithm: HashAlgorithm) -> io::Result<String
                 hasher.update(&buf[..n]);
             }
             // digest 0.11's Output is no longer io::Write / LowerHex; hex by hand.
-            Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+            Ok(hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect())
         }
         HashAlgorithm::Crc32 => {
             let mut hasher = Crc32Hasher::new();

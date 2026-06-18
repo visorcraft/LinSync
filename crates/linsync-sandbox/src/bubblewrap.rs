@@ -108,8 +108,8 @@ pub(crate) fn spawn_with_bwrap(
     // locking — the same constraints the Landlock path's pre_exec observes.
     unsafe {
         bwrap_cmd.pre_exec(move || {
-            set_rlimit(libc::RLIMIT_NOFILE as libc::__rlimit_resource_t, fd_limit)?;
-            set_rlimit(libc::RLIMIT_NPROC as libc::__rlimit_resource_t, proc_limit)?;
+            crate::set_rlimit(libc::RLIMIT_NOFILE as libc::__rlimit_resource_t, fd_limit)?;
+            crate::set_rlimit(libc::RLIMIT_NPROC as libc::__rlimit_resource_t, proc_limit)?;
             Ok(())
         });
     }
@@ -132,22 +132,6 @@ pub(crate) fn spawn_with_bwrap(
     // write_guard (the write end) is dropped here, closing it.
     drop(write_guard);
     Ok(child)
-}
-
-/// Set a soft+hard `setrlimit(2)` resource limit. Async-signal-safe — safe to
-/// call from `pre_exec`. Mirrors the helper on the Landlock path (kept local
-/// because that one is module-private to `landlock.rs`).
-fn set_rlimit(resource: libc::__rlimit_resource_t, value: u64) -> std::io::Result<()> {
-    let lim = libc::rlimit {
-        rlim_cur: value,
-        rlim_max: value,
-    };
-    let rc = unsafe { libc::setrlimit(resource, &lim) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
 }
 
 /// Write the BPF program bytes to a pipe; return the (read_fd, write_guard).

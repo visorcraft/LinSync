@@ -11,7 +11,7 @@ const RESPONSE_SCHEMA_VERSION: u32 = 1;
 // ── Image compare bridge ──────────────────────────────────────────────────────
 
 /// Percent-decode a URL-encoded query string value.
-fn percent_decode_value(value: &str) -> String {
+pub fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -84,7 +84,7 @@ fn document_mode_label(mode: linsync_core::DocumentCompareMode) -> &'static str 
 fn image_query_param(query: &str, key: &str) -> Option<String> {
     for part in query.split('&') {
         if let Some((_k, v)) = part.split_once('=').filter(|(k, _)| *k == key) {
-            return Some(percent_decode_value(v));
+            return Some(percent_decode(v));
         }
     }
     None

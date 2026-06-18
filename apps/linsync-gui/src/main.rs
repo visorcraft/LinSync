@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use linsync::{apply_gui_setting, parse_bool_setting};
+use linsync::{apply_gui_setting, parse_bool_setting, percent_decode};
 use linsync_core::plugin::{PluginClass, PluginExecutionOptions};
 use linsync_core::{
     AppPaths, BinaryCompareOptions, CompareOptions, CompareProfile, CompareSession, CompareSide,

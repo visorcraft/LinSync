@@ -20,6 +20,22 @@ pub(crate) mod landlock;
 #[cfg(target_os = "linux")]
 pub(crate) mod seccomp;
 
+/// Set a soft+hard `setrlimit(2)` resource limit. Async-signal-safe — safe to
+/// call from `pre_exec`. Shared by the Landlock and bubblewrap backends.
+#[cfg(target_os = "linux")]
+pub(crate) fn set_rlimit(resource: libc::__rlimit_resource_t, value: u64) -> std::io::Result<()> {
+    let lim = libc::rlimit {
+        rlim_cur: value,
+        rlim_max: value,
+    };
+    let rc = unsafe { libc::setrlimit(resource, &lim) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 pub use policy::{PluginSandboxFields, SandboxPolicy, policy_for_plugin};
 
 use std::process::{Child, Command};

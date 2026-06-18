@@ -115,8 +115,8 @@ pub(crate) fn spawn_with_landlock(
     unsafe {
         cmd.pre_exec(move || {
             // 1. Resource limits (fork-bomb + fd-leak prevention).
-            set_rlimit(libc::RLIMIT_NOFILE as libc::__rlimit_resource_t, fd_limit)?;
-            set_rlimit(libc::RLIMIT_NPROC as libc::__rlimit_resource_t, proc_limit)?;
+            crate::set_rlimit(libc::RLIMIT_NOFILE as libc::__rlimit_resource_t, fd_limit)?;
+            crate::set_rlimit(libc::RLIMIT_NPROC as libc::__rlimit_resource_t, proc_limit)?;
 
             // 2. Landlock filesystem restrictions.
             apply_landlock_policy(&read_paths, &write_paths, abi_ver)?;
@@ -129,19 +129,6 @@ pub(crate) fn spawn_with_landlock(
     }
 
     crate::spawn_retrying_etxtbsy(&mut cmd)
-}
-
-fn set_rlimit(resource: libc::__rlimit_resource_t, value: u64) -> std::io::Result<()> {
-    let lim = libc::rlimit {
-        rlim_cur: value,
-        rlim_max: value,
-    };
-    let rc = unsafe { libc::setrlimit(resource, &lim) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
 }
 
 fn apply_landlock_policy(
