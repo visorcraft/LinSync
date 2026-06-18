@@ -94,7 +94,7 @@ Kirigami.ApplicationWindow {
     property string validationPathKind: ""
     // Keep in sync with the workspace version in Cargo.toml. bridge-info.json
     // overwrites this once loaded, but the default is shown during startup.
-    property string appVersion: "1.15.1"
+    property string appVersion: "1.16.0"
     property int bridgeModelRevision: 0
     property bool canUndo: false
     property bool canRedo: false

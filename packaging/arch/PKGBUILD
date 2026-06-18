@@ -13,7 +13,7 @@
 # package.
 
 pkgname=linsync
-pkgver=1.15.1
+pkgver=1.16.0
 pkgrel=1
 pkgdesc="Linux-native visual file and folder comparison built on Rust + Qt 6"
 arch=('x86_64')

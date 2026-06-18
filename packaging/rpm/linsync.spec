@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.15.1
+Version:        1.16.0
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
