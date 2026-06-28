@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.visorcraft.LinSync</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>LinSync</name>
+  <summary>Linux-native visual file and folder comparison</summary>
+  <developer id="com.visorcraft">
+    <name>VisorCraft LLC</name>
+  </developer>
+  <description>
+    <p>
+      LinSync is a GPL-licensed Linux application for visual file and folder
+      comparison, merge workflows, filters, reports, and Linux-native parity.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.visorcraft.LinSync.desktop</launchable>
+  <url type="homepage">https://github.com/visorcraft</url>
+  <provides>
+    <binary>linsync</binary>
+    <binary>linsync-cli</binary>
+    <mediatype>text/plain</mediatype>
+    <mediatype>text/x-diff</mediatype>
+    <mediatype>text/x-patch</mediatype>
+    <mediatype>inode/directory</mediatype>
+    <mediatype>application/x-linsync-session</mediatype>
+    <mediatype>application/x-linsync-project</mediatype>
+  </provides>
+  <categories>
+    <category>Utility</category>
+    <category>Development</category>
+    <category>TextTools</category>
+    <category>FileTools</category>
+  </categories>
+  <keywords>
+    <keyword>diff</keyword>
+    <keyword>compare</keyword>
+    <keyword>merge</keyword>
+    <keyword>folder</keyword>
+    <keyword>patch</keyword>
+  </keywords>
+  <content_rating type="oars-1.1" />
+  <!-- Real screenshots captured by scripts/gui-screenshot.sh against the
+       packaged 1.3.1 binary on a CachyOS host; uploaded to the hosting
+       path below for the AppStream / Flathub listing. -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>Text and folder compare workspace with side-by-side panes</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/compare.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Sessions page — open tabs and recent comparison history</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/sessions.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Filters page — glob include/exclude rules, walk options, and legacy .flt migration</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/filters.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Plugins page — installed comparison plugins with per-plugin enable toggle</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/plugins.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Settings page — theme, fonts, comparison defaults, and session preferences</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/settings.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>About page — version, license, credits, and third-party notices</caption>
+      <image type="source" width="1600" height="900">https://visorcraft.com/linsync/screenshots/about.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="1.16.0" date="2026-06-17">
+      <description>
+        <p>Dependency maintenance: upgraded all bundled Rust crates to their latest releases (including the SHA-2 and seccomp libraries) and refreshed the third-party credits. Internal cleanup deduplicated URL decoding, the sandbox resource-limit helper, and bridge query-option parsing.</p>
+      </description>
+    </release>
+    <release version="1.15.1" date="2026-06-17">
+      <description>
+        <p>Over-engineering cleanup: removed dead self-compare command, unused open-last-session setting, consolidated HTML escapers, and made always-on features unconditional.</p>
+      </description>
+    </release>
+    <release version="1.15.0" date="2026-06-16">
+      <description>
+        <p>Version bump to 1.15.0.</p>
+      </description>
+    </release>
+    <release version="1.14.0" date="2026-06-14">
+      <description>
+        <p>Split CLI and GUI monoliths into modules. Removed dead LinSyncSessionBridge transport. Added coverage recipe.</p>
+      </description>
+    </release>
+    <release version="1.13.1" date="2026-06-12">
+      <description>
+        <p>Version bump to 1.13.1.</p>
+      </description>
+    </release>
+    <release version="1.13.0" date="2026-06-12">
+      <description>
+        <p>Version bump to 1.13.0.</p>
+      </description>
+    </release>
+    <release version="1.12.1" date="2026-06-11">
+      <description>
+        <p>Fix QML section layout so sidebar pages no longer overlap.</p>
+      </description>
+    </release>
+    <release version="1.12.0" date="2026-06-11">
+      <description>
+        <p>Version bump to 1.12.0.</p>
+      </description>
+    </release>
+    <release version="1.11.0" date="2026-06-10">
+      <description>
+        <p>CI hardening: self-skip Chromium headless screenshot test when sandbox cannot initialise in containerised environments. Includes all 1.10.0 features: rich syntax highlighting for text diff (13 languages via syntect), permanent-delete confirmation dialog for folder operations, Chromium headless fallback renderer for webpage compare, and writable zip archive-member editing with sandboxed repack.</p>
+      </description>
+    </release>
+    <release version="1.10.0" date="2026-06-10">
+      <description>
+        <p>Add rich syntax highlighting for text diff (13 languages via syntect). Add permanent-delete confirmation dialog for folder operations. Add Chromium headless fallback renderer for webpage compare. Add writable zip archive-member editing with sandboxed repack, TOCTOU fingerprinting, and Flatpak portal-path degradation.</p>
+      </description>
+    </release>
+    <release version="1.9.5" date="2026-06-03">
+      <description>
+        <p>Align the Image Compare, Webpage Compare, and Document Compare pages with the main Compare page's flat top-toolbar layout, removing inset fieldset styling from their path/URL and mode controls. The Document Compare page now exposes the same clear Left/Right document picker row as the other compare modes. The Sessions page header also now matches the Plugins page, with status text grouped under the title and actions aligned on the right.</p>
+      </description>
+    </release>
+    <release version="1.9.4" date="2026-06-03">
+      <description>
+        <p>Remove *all* automatic defaults for the Compare page's Left and Right path fields on bare GUI launch. The editors now always start blank (showing the friendly placeholders), no matter what "last session", dev /tmp/ folder, test fixture, or prior compare exists in the recent-sessions store. The "Restore last session" feature and Sessions page continue to work for explicit re-opening of previous work (single or multi-tab), which is the only way paths get populated after a bare start. This directly addresses the complaint that defaulting the inputs to any "fake folder names" (tests/fixtures, /tmp/bigfolder, etc.) was a horrible user experience. Only an explicit two-path launch (e.g. from the shell), drag-and-drop, browse, typing, or a deliberate reopen action will ever put values into the path editors.</p>
+      </description>
+    </release>
+    <release version="1.9.3" date="2026-06-03">
+      <description>
+        <p>Fix horrible first-launch UX on the Compare page: the Left and Right path fields no longer default to internal test fixture directories such as <code>.../tests/fixtures/folders/left</code> (and the text pair). These fixtures are used by the smoke scripts, unit tests, and manual dev runs; previously they were eligible for "recent sessions" recording (because they are valid comparable data) and would be auto-restored on every bare GUI launch when the "Restore last session" setting was on. Now paths under <code>tests/fixtures/</code> are excluded from recording (in tab_has_persistable_paths) and filtered out of the recent list on restore and on the Sessions page. Updated the tests that directly exercised recording of fixture launches to use clean temp files instead. The root cause was lack of a guard for repo-internal test data in the persist-recent path.</p>
+      </description>
+    </release>
+    <release version="1.9.2" date="2026-06-03">
+      <description>
+        <p>CI, packaging, and release tooling robustness release. Make <code>just ci</code> / <code>just test</code> reliable across containers, GitHub runners, and dev shells by setting <code>LINSYNC_SANDBOX_SKIP=1</code> (matching the CI job contract; real Landlock enforcement tests remain runnable explicitly on suitable kernels). Packaging: AppImage/AppDir build now forces Qt 6 qmake detection and defaults to <code>NO_STRIP=1</code> to avoid failures from linuxdeploy's bundled strip on modern glibc/toolchains with <code>.relr.dyn</code> sections; <code>just package</code> now produces usable artifacts out of the box. Release smoke now passes fully: complete the parity-acceptance rows for all specialized compare areas (image, document, webpage, archive) and the standalone plugin sandbox entry so <code>scripts/check-parity-acceptance.py</code> (invoked by <code>release-smoke.sh</code>) succeeds. Also includes minor cleanups for index stat caching on binary test fixtures.</p>
+      </description>
+    </release>
+    <release version="1.9.1" date="2026-06-02">
+      <description>
+        <p>Completes and corrects third-party license attribution. The in-app Credits and Licenses pages and the bundled third-party notices now list every Rust crate distributed in the release build — previously only a subset was shown, omitting the cxx-qt bridge and image-decoder stacks — and the Licenses page bundles the full verbatim Apache-2.0 and Zlib license texts. A regeneration command and a release/CI drift-guard keep the attribution surfaces in sync with the dependency graph. Also includes documentation and internal tooling cleanup.</p>
+      </description>
+    </release>
+    <release version="1.9.0" date="2026-06-02">
+      <description>
+        <p>Completes the previously-deferred roadmap niceties. Image compare now handles animated GIF, APNG, and WebP frame-by-frame (opt-in via an all-frames mode, with a per-frame breakdown), decodes Radiance HDR and OpenEXR sources (tone-mapped to 8-bit), and reports each side's decoded color type. OCR gains word-level positional data through an optional, backward-compatible plugin-protocol field parsed from Tesseract's TSV output. Plugins gain a per-profile enable/disable override (profile over global) wired into prediffer and archive-unpacker routing with a Plugins-page toggle, plus a conflict-resolution policy for overlapping prediffers. Image and document comparison results can now be saved as versioned JSON and re-rendered into HTML reports, matching the existing text/folder/table/binary round-trip.</p>
+      </description>
+    </release>
+    <release version="1.8.1" date="2026-06-02">
+      <description>
+        <p>Feature release completing the roadmap (Phases 4-10). Large text diffs and large folder comparisons now render lazily window-by-window so the view never loads an unbounded diff or tree at once, backed by paged core APIs and bridge endpoints. Adds rendered document compare (pdftoppm) with page-range selection, webpage rendered/screenshot compare via an out-of-process Qt WebEngine renderer with a filterable resource tree, and archive comparison through unpacker/virtualizer plugins with nested-archive recursion. The plugin layer gains option-schema validation, install/remove across core/CLI/GUI, a first-run trust prompt, per-profile prediffer routing and chaining, and sandbox-confinement reporting. Three-way merge can launch interactively as a Git mergetool; reports gain versioned JSON save/restore, relative-path portable bundles, and preview-before-export; sessions and projects persist multiple tabs with per-entry profiles and CLI commands. Accessibility adds screen-reader status/error announcements and high-contrast diff change bars, and the localization runtime is wired with a lupdate/lrelease string-catalog pipeline.</p>
+      </description>
+    </release>
+    <release version="1.8.0" date="2026-06-01">
+      <description>
+        <p>Correctness, security, and robustness hardening release. Fixes folder delete operations (which previously always failed); makes three-way merge resolve from structured conflict regions instead of re-parsing marker text (content that looks like a conflict marker no longer corrupts the result), preserve CRLF/CR line endings on save, and write atomically. The plugin sandbox now grants helpers read-only access to $HOME, applies file-descriptor and process limits on the bubblewrap fallback, and blocks the full set of credential-changing syscalls. Image compare bounds decoder memory and dimensions to defeat decompression bombs and fixes an overlay-buffer integer overflow. Settings and sessions preserve unknown JSON keys across load and save, OCR language selection now reaches the extractor plugin, and there are further fixes across table, filter, trash, webpage, the CLI, and the GUI bridge.</p>
+      </description>
+    </release>
+    <release version="1.7.1" date="2026-05-29">
+      <description>
+        <p>Renamed the application id from io.visorcraft.LinSync to com.visorcraft.LinSync to match the visorcraft.com domain. This updates the desktop entry, AppStream component id, MIME registration, icons, D-Bus and Wayland app id, and plugin ids; it also fixes stray visorcraft.io references (the security contact email and the Qt organization domain).</p>
+      </description>
+    </release>
+    <release version="1.7.0" date="2026-05-29">
+      <description>
+        <p>Security hardening across the plugin sandbox and bundled helpers: the sandbox fails closed when neither Landlock nor bubblewrap is available and clears the helper environment down to a safe allowlist, streaming helpers run under the same confinement, the web-fetch plugin pins the validated address at connect time to defeat DNS rebinding, folder copy and delete operations refuse symlinked paths that escape the comparison root, and the GUI bridge token file is written owner-only. The About page now shows the real LinSync application icon and gives the "Visit LinSync" button the same styling as the Credits and Licenses buttons.</p>
+      </description>
+    </release>
+    <release version="1.6.0" date="2026-05-28">
+      <description>
+        <p>Webpage compare is now fully functional: the plugin sandbox grants network plugins read access to the resolver configuration and TLS trust store (fixing getaddrinfo EAI_AGAIN inside the sandbox), the web-fetch plugin presents a mainstream browser User-Agent so CDN/WAF filters no longer return 403, and results render as a side-by-side editor diff with cursor, multi-row selection, keyboard navigation, line-number gutters, synchronized scrolling, and a draggable diff-overview ruler. The Plugins page now renders built-in (always-on) toggles with a themed track instead of black.</p>
+      </description>
+    </release>
+    <release version="1.5.0" date="2026-05-28">
+      <description>
+        <p>The Image, Webpage, and Document compare pages are now fully theme-aware: Kirigami.Theme propagates correctly and the shared App* form controls render with themed frames instead of stray dark borders. Image Compare gains Left/Right file pickers and Tolerance/ΔE spin boxes that match the Settings styling. The Webpage compare layout was redesigned and the Document compare page was restyled to match the other compare pages. Adds a shared AppButton control and removes the sidebar hover flash.</p>
+      </description>
+    </release>
+    <release version="1.4.0" date="2026-05-28">
+      <description>
+        <p>QML diff-pane simplification reduces per-row QML nodes 3×. Binding-loop-free theme model across 7 pages. Compare profiles are now fully wired through the HTTP bridge with 7 built-in profiles, CLI subcommand, and cxx-qt fixup landed. New reusable App* QML controls and DesignTokens theming system.</p>
+      </description>
+    </release>
+    <release version="1.3.1" date="2026-05-27">
+      <description>
+        <p>Security release. The bundled web-fetch plugin now validates outbound URLs against an SSRF policy: only http/https schemes are honoured, the resolved host must be a publicly-routable address, and redirect targets are revalidated against the same policy.</p>
+      </description>
+    </release>
+    <release version="1.1.0" date="2026-05-27">
+      <description>
+        <p>LinSync 1.1.0 adds three new compare modes: image (pure-Rust pixel + CIEDE2000 perceptual diff), document (PDF/DOCX/ODT via Tesseract OCR + Poppler + LibreOffice helpers), and webpage (rendered DOM diff via Qt WebEngine, feature-gated). New linsync-sandbox crate wires Landlock + seccompiler with a bubblewrap fallback for plugin helpers. Plugin host now propagates process groups to prevent grandchild leaks.</p>
+      </description>
+    </release>
+    <release version="1.0.1" date="2026-05-26">
+      <description>
+        <p>GUI wiring complete for Settings, Filters, and Plugins pages; three-pane merge view with save-to-third-target; linsync-cli mergetool integration. Filter grammar adds the de: / e: expression families and a migrator for legacy .flt files. Plugin protocol gains unpack_folder and streaming output, with bundled ZIP and tar unpackers. Text compare gains opt-in moved-block detection. Accessibility audit with 11 P0 fixes; per-section GUI screenshots in CI.</p>
+      </description>
+    </release>
+    <release version="1.0.0" date="2026-05-18">
+      <description>
+        <p>LinSync 1.0.0 with Rust core comparison engines, CLI workflows, and the QML/Kirigami shell.</p>
+      </description>
+    </release>
+  </releases>
+</component>

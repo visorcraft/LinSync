@@ -1,0 +1,76 @@
+[package]
+name = "linsync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "linsync"
+path = "src/lib.rs"
+
+[[bin]]
+name = "linsync"
+path = "src/main.rs"
+
+[features]
+default = []
+cxxqt = ["dep:cxx", "dep:cxx-qt", "dep:cxx-qt-build", "dep:cxx-qt-lib", "dep:qt-build-utils"]
+cxxqt-app = ["cxxqt", "cxx-qt-lib/qt_gui", "cxx-qt-lib/qt_qml"]
+test-support = []
+web-engine = ["linsync-core/web-engine"]
+
+[[test]]
+name = "settings_bridge"
+path = "tests/settings_bridge.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "filters_bridge"
+path = "tests/filters_bridge.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "plugins_bridge"
+path = "tests/plugins_bridge.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "image_compare_bridge"
+path = "tests/image_compare_bridge.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "document_compare_bridge"
+path = "tests/document_compare_bridge.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "webpage_compare_bridge"
+path = "tests/webpage_compare_bridge.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "archive_edit_bridge"
+path = "tests/archive_edit_bridge.rs"
+required-features = ["test-support"]
+
+[dependencies]
+cxx = { version = "1.0", optional = true }
+cxx-qt = { version = "0.8.1", optional = true }
+cxx-qt-lib = { version = "0.8.1", optional = true }
+image = { workspace = true }
+libc.workspace = true
+linsync-core = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+urlencoding = "2"
+
+[build-dependencies]
+cxx-qt-build = { version = "0.8.1", optional = true }
+qt-build-utils = { version = "0.8.1", optional = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }
+tempfile = "3"

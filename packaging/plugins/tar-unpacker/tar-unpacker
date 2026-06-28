@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 VisorCraft LLC
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# LinSync `unpacker` / `folder_virtualizer` plugin for tar-family archives.
+#
+# Protocol: reads one JSON request from stdin (may or may not have a trailing
+# newline), {"op":"unpack_folder","source":"<path>"}, and emits one JSON line:
+#   {"ok":true,"tree":[{"path":"...","kind":"file"|"dir","size":N},...]}
+#   {"ok":false,"error":"..."}
+
+set -euo pipefail
+
+REQUEST=$(cat)
+
+python3 - "$REQUEST" "$LINSYNC_PLUGIN_TEMP_DIR" <<'PY'
+import sys, json, os, tarfile
+
+raw_request = sys.argv[1]
+temp_dir = sys.argv[2] if len(sys.argv) > 2 else "."
+try:
+    req = json.loads(raw_request)
+except json.JSONDecodeError as e:
+    print(json.dumps({"ok": False, "error": f"invalid JSON request: {e}"}))
+    sys.exit(0)
+
+op = req.get("op", "")
+if op not in ("unpack_folder", "extract_member"):
+    print(json.dumps({"ok": False, "error": f"unsupported op: {op}"}))
+    sys.exit(0)
+
+src = req.get("source", "")
+if not src:
+    print(json.dumps({"ok": False, "error": "missing source field"}))
+    sys.exit(0)
+
+if not os.path.isfile(src):
+    print(json.dumps({"ok": False, "error": f"source not found: {src}"}))
+    sys.exit(0)
+
+if op == "extract_member":
+    member = req.get("member", "")
+    norm = os.path.normpath(member)
+    if not member or norm.startswith("..") or os.path.isabs(norm):
+        print(json.dumps({"ok": False, "error": f"unsafe member path: {member!r}"}))
+        sys.exit(0)
+    try:
+        with tarfile.open(src) as tf:
+            # `tar -cf . ` prefixes entries with "./"; the unpack_folder tree
+            # reports normalized paths, so accept both forms here.
+            ti = None
+            for name in (member, "./" + member, norm):
+                try:
+                    ti = tf.getmember(name)
+                    break
+                except KeyError:
+                    continue
+            if ti is None:
+                print(json.dumps({"ok": False, "error": f"member not found: {member}"}))
+                sys.exit(0)
+            extracted = tf.extractfile(ti)
+            if extracted is None:
+                print(json.dumps({"ok": False, "error": f"member not a file: {member}"}))
+                sys.exit(0)
+            data = extracted.read()
+    except tarfile.TarError as e:
+        print(json.dumps({"ok": False, "error": f"bad tar: {e}"}))
+        sys.exit(0)
+    out = os.path.join(temp_dir, os.path.basename(norm) or "member")
+    with open(out, "wb") as fh:
+        fh.write(data)
+    print(json.dumps({"ok": True, "path": out}))
+    sys.exit(0)
+
+try:
+    with tarfile.open(src) as tf:
+        members = tf.getmembers()
+except tarfile.TarError as e:
+    print(json.dumps({"ok": False, "error": f"bad tar: {e}"}))
+    sys.exit(0)
+
+tree = []
+seen = set()
+
+for m in members:
+    name = m.name.lstrip('./')
+    if not name:
+        continue
+    norm = os.path.normpath(name)
+    if norm.startswith("..") or os.path.isabs(norm):
+        print(json.dumps({"ok": False, "error": f"unsafe path in archive: {m.name}"}))
+        sys.exit(0)
+
+    if m.isfile():
+        # Emit implicit parent dirs first
+        parts = name.split('/')
+        for i in range(1, len(parts)):
+            d = '/'.join(parts[:i])
+            if d and d not in seen:
+                tree.append({"path": d, "kind": "dir"})
+                seen.add(d)
+        tree.append({"path": name, "kind": "file", "size": m.size})
+    elif m.isdir():
+        clean = name.rstrip('/')
+        if clean and clean not in seen:
+            tree.append({"path": clean, "kind": "dir"})
+            seen.add(clean)
+
+print(json.dumps({"ok": True, "tree": tree}))
+PY

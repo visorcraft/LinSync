@@ -1,0 +1,43 @@
+[licenses]
+version = 2
+confidence-threshold = 0.8
+# Enabling the image crate's gif/hdr/exr decoders pulls in these transitive
+# image-decoder crates, all already covered by the allow-list below:
+#   exr (BSD-3-Clause), gif (MIT OR Apache-2.0), color_quant (MIT),
+#   lebe (BSD-3-Clause), bit_field (MIT), zune-inflate (MIT OR Apache-2.0).
+allow = [
+    "Apache-2.0",
+    # libfuzzer-sys is triple-licensed: MIT OR Apache-2.0 WITH
+    # LLVM-exception OR NCSA. cargo-deny insists on satisfying every
+    # disjunct in some configurations, so allow all three. NCSA is a
+    # permissive MIT/BSD-style license used by the LLVM project; both
+    # NCSA and the Apache-2.0-WITH-LLVM-exception variant are
+    # FSF-compatible with GPL-3.0.
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "GPL-3.0-only",
+    "MIT",
+    "NCSA",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[advisories]
+version = 2
+yanked = "deny"
+# `paste` is unmaintained but still widely-depended-upon (transitive
+# via cxx-qt-build's compile-time codegen). No drop-in replacement is
+# available yet and the crate has no known vulnerabilities; downgrade
+# the unmaintained advisory to a warning rather than an error.
+ignore = [
+    "RUSTSEC-2024-0436", # paste — unmaintained
+    # RUSTSEC-2025-0141: bincode 1.x is unmaintained (not a vulnerability).
+    # Pulled by syntect's dump-load to deserialize its own bundled syntax dump —
+    # trusted crate data, never untrusted input. Revisit when syntect drops bincode.
+    "RUSTSEC-2025-0141",
+]

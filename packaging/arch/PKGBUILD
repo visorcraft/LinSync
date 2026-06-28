@@ -1,0 +1,103 @@
+# Maintainer: VisorCraft LLC <licensing@visorcraft.com>
+# SPDX-FileCopyrightText: 2026 VisorCraft LLC
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Builds the LinSync GUI + CLI from the local source tree.  Works on Arch
+# Linux and downstream pacman-based distributions (CachyOS, EndeavourOS,
+# Manjaro, ...).  Run from this directory with:
+#
+#     makepkg -si
+#
+# This PKGBUILD assumes the repository is checked out one level up
+# (../../..) — adjust `source=` if you publish it as a standalone AUR
+# package.
+
+pkgname=linsync
+pkgver=1.16.0
+pkgrel=1
+pkgdesc="Linux-native visual file and folder comparison built on Rust + Qt 6"
+arch=('x86_64')
+url="https://github.com/visorcraft/LinSync"
+license=('GPL-3.0-only')
+depends=(
+    'qt6-base'
+    'qt6-declarative'
+    'kirigami'
+    'hicolor-icon-theme'
+    'bubblewrap'
+    'unzip'
+    # Provides the QtWebEngine QML module the rendered/screenshot webpage modes
+    # render through (the binary is built with the web-engine feature).
+    'qt6-webengine'
+)
+makedepends=(
+    'cargo'
+    'rust'
+    'qt6-tools'
+)
+optdepends=(
+    'dolphin: KDE service-menu integration (Compare in Dolphin)'
+)
+provides=('linsync')
+conflicts=('linsync-bin' 'linsync-git')
+options=('!lto')
+source=()
+sha256sums=()
+
+_srcdir="${startdir}/../.."
+
+build() {
+    cd "${_srcdir}"
+    QT_VERSION_MAJOR=6 cargo build --release --workspace \
+        --features 'linsync/cxxqt linsync/cxxqt-app linsync/web-engine linsync-cli/web-engine'
+}
+
+check() {
+    cd "${_srcdir}"
+    cargo test --release --workspace --no-run
+}
+
+package() {
+    cd "${_srcdir}"
+
+    # Binaries
+    install -Dm755 "target/release/linsync"     "${pkgdir}/usr/bin/linsync"
+    install -Dm755 "target/release/linsync-cli" "${pkgdir}/usr/bin/linsync-cli"
+
+    # Bundled QML + distro config snippets
+    install -d "${pkgdir}/usr/share/linsync"
+    cp -R apps/linsync-gui/qml "${pkgdir}/usr/share/linsync/qml"
+    cp -R packaging/plugins "${pkgdir}/usr/share/linsync/plugins"
+    install -Dm644 packaging/distro/git-mergetool.gitconfig \
+        "${pkgdir}/usr/share/linsync/git-mergetool.gitconfig"
+
+    # Compile + install UI translation catalogs next to the qml tree, where the
+    # in-process host loads `linsync_<locale>.qm` from (qml's sibling i18n/).
+    local _lrelease
+    _lrelease=$(command -v lrelease6 || command -v lrelease-qt6 || command -v lrelease || echo /usr/lib/qt6/bin/lrelease)
+    install -d "${pkgdir}/usr/share/linsync/i18n"
+    for _ts in apps/linsync-gui/i18n/*.ts; do
+        "$_lrelease" "$_ts" -qm "${pkgdir}/usr/share/linsync/i18n/$(basename "${_ts%.ts}").qm"
+    done
+
+    # Desktop integration
+    install -Dm644 packaging/com.visorcraft.LinSync.desktop      "${pkgdir}/usr/share/applications/com.visorcraft.LinSync.desktop"
+    install -Dm644 packaging/com.visorcraft.LinSync.metainfo.xml "${pkgdir}/usr/share/metainfo/com.visorcraft.LinSync.metainfo.xml"
+    install -Dm644 packaging/com.visorcraft.LinSync.mime.xml     "${pkgdir}/usr/share/mime/packages/com.visorcraft.LinSync.xml"
+
+    # Dolphin service menu (only relevant when KDE Dolphin is installed)
+    install -Dm644 packaging/dolphin/com.visorcraft.LinSync.desktop \
+        "${pkgdir}/usr/share/kio/servicemenus/com.visorcraft.LinSync.desktop"
+
+    # Icons (scalable + hicolor sizes)
+    install -Dm644 packaging/icons/hicolor/scalable/apps/com.visorcraft.LinSync.svg \
+        "${pkgdir}/usr/share/icons/hicolor/scalable/apps/com.visorcraft.LinSync.svg"
+    for size in 16 22 24 32 36 48 64 72 96 128 192 256 512; do
+        install -Dm644 "packaging/icons/hicolor/${size}x${size}/apps/com.visorcraft.LinSync.png" \
+            "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/com.visorcraft.LinSync.png"
+    done
+
+    # License + notices
+    install -Dm644 LICENSE                       "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    install -Dm644 docs/third-party-notices.md   "${pkgdir}/usr/share/doc/${pkgname}/third-party-notices.md"
+}

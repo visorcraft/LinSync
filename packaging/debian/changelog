@@ -1,0 +1,339 @@
+linsync (1.15.0-1) unstable; urgency=medium
+
+  * Version bump to 1.15.0.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Tue, 16 Jun 2026 00:00:00 -0500
+
+linsync (1.14.0-1) unstable; urgency=medium
+
+  * Split CLI and GUI monoliths into modules. Removed dead LinSyncSessionBridge
+    transport. Added coverage recipe.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Sun, 14 Jun 2026 00:00:00 -0500
+
+linsync (1.13.1-1) unstable; urgency=medium
+
+  * Version bump to 1.13.1.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Fri, 12 Jun 2026 19:34:49 -0500
+
+linsync (1.13.0-1) unstable; urgency=medium
+
+  * Version bump to 1.13.0.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Fri, 12 Jun 2026 12:54:40 -0500
+
+linsync (1.12.1-1) unstable; urgency=medium
+
+  * Fix QML section layout so sidebar pages no longer overlap.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Thu, 11 Jun 2026 16:57:00 -0500
+
+linsync (1.12.0-1) unstable; urgency=medium
+
+  * Version bump to 1.12.0.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Thu, 11 Jun 2026 15:37:36 -0500
+
+linsync (1.11.0-1) unstable; urgency=medium
+
+  * CI hardening: self-skip Chromium headless screenshot test when sandbox
+    cannot initialise in containerised environments.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 10 Jun 2026 22:45:00 -0500
+
+linsync (1.10.0-1) unstable; urgency=medium
+
+  * Rich syntax highlighting for text diff (syntect-backed, 13 languages).
+  * Permanent-delete confirmation in folder operations GUI.
+  * Webpage compare hardening: Chromium headless fallback renderer.
+  * Writable zip archive-member editing with sandboxed repack, TOCTOU
+    fingerprinting, and Flatpak portal-path degradation.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 10 Jun 2026 22:33:00 -0500
+
+linsync (1.9.5-1) unstable; urgency=medium
+
+  * Align the specialized compare pages with the main Compare page's top-bar
+    layout: Image, Webpage, and Document Compare now use flat full-width
+    toolbar rows for paths/URLs, modes, and actions instead of inset fieldset
+    cards.
+  * Make the Sessions page header match the Plugins page header, with the
+    title/status copy on the left and primary actions aligned on the right.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 03 Jun 2026 22:33:00 -0500
+
+linsync (1.9.4-1) unstable; urgency=medium
+
+  * Remove *all* automatic defaults for the Compare page's Left and Right path
+    fields. On a bare launch (the normal case: no two positional arguments on
+    the command line), the editors now always start empty, showing the
+    placeholders "Left file or folder" / "Right file or folder". Previous
+    "last session" (whether from fixtures, /tmp/bigfolder, real user compares,
+    or anything) is no longer auto-applied to populate the inputs or the
+    initial diff view. The "Restore last session" setting and the recent-
+    sessions store / Sessions sidebar remain fully functional for *explicit*
+    resume (click to re-open a previous compare or multi-tab workspace); that
+    action will then set the paths. This finally eliminates the "why are we
+    defaulting to fake folder names" problem.
+  * Implementation: on bare launch the open_last_session path still cleans
+    internal fixtures out of the recent list (for the Sessions page), but no
+    longer synthesizes a launch context that would drive the path properties
+    in QML. Only explicit CLI launches, UI browse/type, drag, or explicit
+    reopen set non-empty values in the path fields.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 03 Jun 2026 18:23:00 -0500
+
+linsync (1.9.3-1) unstable; urgency=medium
+
+  * UX: prevent the Compare page's Left/Right path editors from defaulting to
+    internal test fixture paths (e.g. .../tests/fixtures/folders/left) on bare
+    GUI launches. Paths under the source tree's tests/fixtures/ (used heavily
+    by gui-smoke.sh, release-smoke, unit tests, and dev `cargo run -p linsync -- ...`)
+    are now excluded from recent-paths and recent-sessions storage by
+    tab_has_persistable_paths(), and filtered out of the in-memory recent list
+    on load/restore. The Sessions page (/sessions/recent) and reopen handler
+    also drop them. This stops dev/smoke usage from permanently polluting the
+    user's XDG_STATE_HOME recent-sessions.json (and thus the auto-restore when
+    open_last_session=true). Updated the affected tests to use clean temp files.
+  * The root cause was that the fixtures are real, comparable data (so
+    validation.compatible was true) and there was no exclusion for repo-internal
+    test data in the "persist recent" path.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 03 Jun 2026 18:15:00 -0500
+
+linsync (1.9.2-1) unstable; urgency=medium
+
+  * CI and test reliability: set LINSYNC_SANDBOX_SKIP=1 in the Justfile `test:`
+    recipe (and documented in .github/workflows/ci.yml and the sandbox
+    integration test module doc) so that `just ci` and `just test` are reliable
+    and non-flaky across containers, GitHub runners, and dev shells; the
+    Landlock/seccomp enforcement tests that assert real EACCES are still
+    exercised by running the specific test without the variable on a kernel+env
+    where enforcement works.
+  * Packaging robustness: packaging/appimage/build-appdir.sh now forces Qt 6
+    qmake (QMAKE=qmake6 or qmake-qt6) before invoking linuxdeploy --plugin qt,
+    avoiding "Could not find Qt modules" when a stray qmake-qt5 is first on
+    PATH; the Justfile `package:` recipe now defaults the builder to
+    NO_STRIP=1 (the strip binary inside current linuxdeploy AppImages fails on
+    some .relr.dyn sections from staged host libraries on modern toolchains);
+    `just package` and the makepkg path now succeed and produce functional
+    AppDir / .AppImage / .pkg.tar.zst out of the box.
+  * Release preflight: docs/parity-acceptance.md now has explicit rows for
+    every area listed in docs/feature-parity.md (including the split
+    "Specialized compare — image", "— document", "— webpage", "— archive", and
+    the standalone "Plugin sandbox"), so `python3 scripts/check-parity-acceptance.py`
+    (called from scripts/release-smoke.sh) passes.
+  * Minor cleanups from the full build/audit cycle: spurious modified status on
+    binary test fixtures after smoke runs is now suppressed via index refresh.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 03 Jun 2026 17:50:00 -0500
+
+linsync (1.9.1-1) unstable; urgency=medium
+
+  * Third-party attribution: the in-app Credits and Licenses pages and
+    docs/third-party-notices.md now list every crate distributed in the release
+    build (the cxx-qt bridge and image-decoder stacks were previously unlisted)
+    and bundle the full verbatim Apache-2.0 and Zlib license texts.
+  * A `just credits` regenerator and a release/CI drift-guard keep the three
+    attribution surfaces in sync with the dependency graph.
+  * Documentation and internal tooling cleanup.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Tue, 02 Jun 2026 18:00:00 -0500
+
+linsync (1.9.0-1) unstable; urgency=medium
+
+  * Completes the previously-deferred roadmap niceties.
+  * Image: animated GIF/APNG/WebP frame-by-frame compare (--image-frames
+    first|all, default first); Radiance HDR and OpenEXR decode (tone-mapped to
+    RGBA8); decoded color-type metadata on every result.
+  * Document/OCR: word-level positional data via an optional, backward-compatible
+    word_positions plugin-protocol field, parsed from Tesseract TSV.
+  * Plugins: per-profile enable/disable override map (profile > global >
+    default) threaded into prediffer/virtualizer routing, with a GUI toggle and
+    a /profiles/active/plugin-enabled bridge endpoint; overlapping-prediffer
+    conflict policy (--prediffer-conflict-policy chain|first-wins|last-wins).
+  * Reports: image and document results round-trip as versioned JSON
+    (compare --save-result <-> report --from-json) with metadata HTML reports.
+  * Fixes ImageCompareMode::Tolerance serialization (struct variant).
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Tue, 02 Jun 2026 13:00:00 -0500
+
+linsync (1.8.1-1) unstable; urgency=medium
+
+  * Feature release completing roadmap Phases 4-10.
+  * Performance: lazy windowed rendering for large text diffs and large folder
+    comparisons (the view never loads an unbounded diff/tree at once); paged
+    core APIs and bridge endpoints (/compare/text/window, /folder/query with
+    sort/filter/state/paging).
+  * Specialized engines: rendered document compare (pdftoppm) with
+    --document-pages range selection; webpage rendered/screenshot compare via
+    an out-of-process Qt WebEngine renderer plus a filterable resource tree;
+    archive compare via unpacker/virtualizer plugins with nested-archive
+    recursion and member extraction; table date/time tolerance and per-column
+    case/trim/regex rules.
+  * Plugins: option-schema validation and an option/enabled store; install and
+    remove across core/CLI/GUI; first-run trust prompt; per-profile prediffer
+    routing and prediffer chaining; sandbox-confinement reporting and
+    per-plugin diagnostics.
+  * Merge: interactive Git mergetool that launches the GUI and validates the
+    saved output; conflict highlight/scroll by per-side line numbers.
+  * Reports: versioned save-result/from-json for text/folder/table/binary;
+    --relative-paths portable reports; preview-before-export.
+  * Sessions/projects: multi-tab session persistence and restore; CLI session
+    and project commands; per-entry compare profiles; recent-workspaces list;
+    persist-recent-paths privacy control.
+  * Accessibility: screen-reader status/error announcements and high-contrast
+    diff change bars. Localization: runtime QTranslator plus the
+    lupdate/lrelease string-catalog pipeline.
+  * Folder: extended-attribute (xattr) comparison mode.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Tue, 02 Jun 2026 12:00:00 -0500
+
+linsync (1.8.0-1) unstable; urgency=medium
+
+  * Correctness, security, and robustness hardening release.
+  * Folder sync: fix delete operations, which previously always failed
+    without removing or trashing anything.
+  * Three-way merge: resolve from structured conflict regions instead of
+    re-parsing marker text (content that looks like a conflict marker no
+    longer corrupts the result), preserve CRLF/CR line endings on save, and
+    write output atomically (temp+rename, O_NOFOLLOW).
+  * Plugin sandbox: grant helpers read-only access to $HOME, apply fd/proc
+    rlimits on the bubblewrap fallback, and block the full set of
+    credential-changing syscalls.
+  * Image compare: bound decoder memory and dimensions (decompression-bomb
+    guard) and fix an overlay-buffer integer overflow.
+  * Settings and sessions preserve unknown JSON keys across load/save.
+  * OCR language selection now reaches the extractor plugin.
+  * Further fixes across table, filter, trash, webpage, CLI argument parsing,
+    and the GUI bridge (comma-containing folder paths, merge conflict count,
+    plugin options dialog, perceptual deltaE scaling, and plugin-id
+    path-traversal hardening).
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Mon, 01 Jun 2026 12:00:00 -0500
+
+linsync (1.7.1-1) unstable; urgency=medium
+
+  * Rename the application id io.visorcraft.LinSync -> com.visorcraft.LinSync
+    to match the visorcraft.com domain (desktop entry, AppStream metainfo,
+    MIME registration, icons, D-Bus / Wayland app id, and plugin ids).
+  * Fix stray visorcraft.io references (security contact email, Qt
+    organization domain).
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Fri, 29 May 2026 16:19:55 -0500
+
+linsync (1.7.0-1) unstable; urgency=medium
+
+  * Security hardening: sandbox fails closed without a backend and clears the
+    helper environment to an allowlist; streaming helpers sandboxed; web-fetch
+    pins the validated address at connect time (DNS-rebinding defense); folder
+    copy/delete refuse symlink-escaping paths; GUI bridge token written 0600
+  * About page: real app icon and unified "Visit LinSync" button styling
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Fri, 29 May 2026 09:00:00 -0500
+
+linsync (1.6.0-1) unstable; urgency=medium
+
+  * Webpage compare fully functional: sandbox DNS/TLS access for network
+    plugins, browser User-Agent, side-by-side editor diff with overview ruler
+  * Plugins page: themed built-in toggles (no longer black)
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Thu, 28 May 2026 18:50:00 -0500
+
+linsync (1.5.0-1) unstable; urgency=medium
+
+  * Version bump to 1.5.0
+  * Compare pages (Image / Webpage / Document) are now fully theme-aware
+  * Themed App* form controls across the compare pages (no stray dark borders)
+  * Image Compare: Left/Right file pickers; Tolerance/ΔE match Settings styling
+  * Webpage Compare layout redesigned; Document Compare restyled to match
+  * Shared AppButton control; sidebar hover flash removed
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Thu, 28 May 2026 12:00:00 -0500
+
+linsync (1.4.0-1) unstable; urgency=medium
+
+  * Version bump to 1.4.0
+  * QML diff-pane simplification: per-row TextArea → single Label (3× fewer nodes)
+  * Binding loops resolved across 7 QML pages
+  * Compare profiles: HTTP bridge fully profile-aware, cxx-qt fixup landed
+  * Phase 1 core + CLI + 7 built-in profiles shipped
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Thu, 28 May 2026 05:54:00 -0500
+
+linsync (1.3.1-2) unstable; urgency=medium
+
+  * Fixed QML ScrollBar namespace crash on launch
+  * Default to external qml6 runner (bypass fragile cxx-qt in-process host)
+  * Pass bridge URL via environment variable to fix qml6 argument parsing
+  * New compare dialog with file-browse and raw-text-paste tabs
+  * Removed 2000-line cap on comparison results
+  * Fixed scroll jitter (debounced pane sync, Canvas overview ruler)
+  * Full keyboard navigation (Up/Down/Home/End/PgUp/PgDn)
+  * Text selection support in diff panes
+  * Pre-computed color theme cache for faster delegate painting
+  * LRU text-transform cache avoids regex per-line per-frame
+  * ListView reuseItems + cacheBuffer for instant item recycling
+  * 256 KB bridge request limit for raw-text paste
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 27 May 2026 13:48:00 -0500
+
+linsync (1.2.1-1) unstable; urgency=medium
+
+  * Security: SSRF defenses for the bundled web-fetch plugin.
+    - Outbound requests are restricted to http / https.
+    - The resolved host must be a publicly-routable address; loopback,
+      RFC1918, link-local, unique-local, multicast, unspecified, and
+      reserved ranges are refused.
+    - Redirect targets are revalidated against the same policy.
+    - The opener no longer registers handlers for file://, ftp://, or
+      data:.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 27 May 2026 00:00:00 +0000
+
+linsync (1.1.0-1) unstable; urgency=medium
+
+  * New compare modes:
+    - image (pure-Rust pixel + CIEDE2000 perceptual diff)
+    - document (PDF/DOCX/ODT via Tesseract OCR + Poppler + LibreOffice
+      helper plugins)
+    - webpage (rendered DOM diff via Qt WebEngine, feature-gated)
+  * Sandbox foundation: new linsync-sandbox crate wires Landlock and
+    seccompiler with a bubblewrap fallback and a degraded mode for
+    plugin helpers.
+  * Plugin host: process-group propagation prevents soffice / poppler
+    grandchild leaks; killpg on shutdown.
+  * Screenshot pipeline: launch-context startup-section bridge lets
+    scripts/gui-screenshot.sh capture each sidebar section
+    deterministically.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Wed, 27 May 2026 00:00:00 +0000
+
+linsync (1.0.1-1) unstable; urgency=medium
+
+  * GUI wiring complete for Settings, Filters, and Plugins pages.
+  * Filter grammar: de: / e: expression families parse and evaluate;
+    linsync-cli filter migrate rewrites legacy .flt files into the
+    supported subset.
+  * Merge UI: dedicated three-pane view with save-to-third-target;
+    linsync-cli mergetool subcommand integrates LinSync as a Git
+    mergetool.
+  * Plugin protocol: unpack_folder operation, length-prefixed
+    streaming output, bundled ZIP/tar unpackers.
+  * Text compare: moved-block detection as a third diff kind
+    (opt-in via Settings).
+  * Accessibility audit and 11 P0 fixes; per-section GUI screenshots
+    captured in CI.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Tue, 26 May 2026 00:00:00 +0000
+
+linsync (1.0.0-1) unstable; urgency=medium
+
+  * Initial Debian packaging stub for LinSync 1.0.0.
+  * Bundles the Rust + Qt 6 / Kirigami GUI and the linsync-cli companion
+    binary.
+  * Installs the hicolor icon theme, AppStream metainfo, MIME package,
+    and the Dolphin service menu.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Tue, 19 May 2026 00:00:00 +0000

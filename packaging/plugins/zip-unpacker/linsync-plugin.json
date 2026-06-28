@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "com.visorcraft.zip-unpacker",
+  "name": "Zip Unpacker",
+  "version": "1.0.1",
+  "license": "GPL-3.0-only",
+  "entry": ["./zip-unpacker"],
+  "classes": ["unpacker", "folder_virtualizer"],
+  "mime_types": [
+    "application/zip",
+    "application/x-zip",
+    "application/java-archive",
+    "application/vnd.android.package-archive"
+  ],
+  "extensions": ["zip", "jar", "war", "apk", "ipa"],
+  "capabilities": ["unpack-folder", "extract-member"],
+  "deterministic": true,
+  "sandbox": {
+    "network": false,
+    "writes_input": false,
+    "requires_home_access": false
+  }
+}

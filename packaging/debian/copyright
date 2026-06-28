@@ -1,0 +1,16 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: LinSync
+Upstream-Contact: VisorCraft LLC <licensing@visorcraft.com>
+Source: https://github.com/visorcraft/LinSync
+
+Files: *
+Copyright: 2026 VisorCraft LLC
+License: GPL-3.0-only
+
+License: GPL-3.0-only
+ LinSync is licensed under the GNU General Public License version 3.
+ On Debian systems, the full text is available in
+ /usr/share/common-licenses/GPL-3.
+ .
+ LinSync depends on permissively-licensed Rust crates documented in
+ /usr/share/doc/linsync/third-party-notices.md.

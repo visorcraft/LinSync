@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "com.visorcraft.tar-unpacker",
+  "name": "Tar Unpacker",
+  "version": "1.0.1",
+  "license": "GPL-3.0-only",
+  "entry": ["./tar-unpacker"],
+  "classes": ["unpacker", "folder_virtualizer"],
+  "mime_types": [
+    "application/x-tar",
+    "application/gzip",
+    "application/x-bzip2",
+    "application/x-xz",
+    "application/zstd"
+  ],
+  "extensions": ["tar", "tgz", "tar.gz", "tbz2", "tar.bz2", "txz", "tar.xz", "tzst", "tar.zst"],
+  "capabilities": ["unpack-folder", "extract-member"],
+  "deterministic": true,
+  "sandbox": {
+    "network": false,
+    "writes_input": false,
+    "requires_home_access": false
+  }
+}

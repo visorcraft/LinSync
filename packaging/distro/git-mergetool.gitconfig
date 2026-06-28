@@ -1,0 +1,3 @@
+[mergetool "linsync"]
+	cmd = linsync-cli mergetool --base \"$BASE\" --local \"$LOCAL\" --remote \"$REMOTE\" --merged \"$MERGED\"
+	trustExitCode = true

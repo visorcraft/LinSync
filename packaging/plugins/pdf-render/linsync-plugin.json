@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "com.visorcraft.linsync.pdf-render",
+  "name": "PDF Page Renderer",
+  "version": "1.0.0",
+  "license": "GPL-3.0-only",
+  "entry": ["./pdf-render.sh"],
+  "classes": ["pdf_renderer"],
+  "mime_types": ["application/pdf"],
+  "extensions": ["pdf"],
+  "capabilities": ["render-pages"],
+  "deterministic": true,
+  "sandbox": {
+    "network": false,
+    "writes_input": false,
+    "requires_home_access": false
+  },
+  "options_schema": [
+    {
+      "key": "resolution_dpi",
+      "label": "Render resolution (DPI)",
+      "kind": "int",
+      "default": 150
+    }
+  ]
+}

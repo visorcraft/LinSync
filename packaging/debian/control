@@ -1,0 +1,35 @@
+Source: linsync
+Section: utils
+Priority: optional
+Maintainer: VisorCraft LLC <licensing@visorcraft.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cargo,
+ rustc,
+ qt6-base-dev,
+ qt6-declarative-dev,
+ qml6-module-org-kde-kirigami,
+ pkg-config
+Standards-Version: 4.6.2
+Homepage: https://github.com/visorcraft/LinSync
+Rules-Requires-Root: no
+
+Package: linsync
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ qml-qt6,
+ qml6-module-org-kde-kirigami,
+ qml6-module-qtquick-dialogs,
+ qml6-module-qtquick-controls,
+ hicolor-icon-theme,
+ bubblewrap,
+ unzip
+Recommends: dolphin
+Description: Linux-native visual file and folder comparison
+ LinSync is a Rust + Qt 6 desktop application for file and folder diffing.
+ It provides side-by-side compare with synchronised scrolling, recursive
+ folder diff with .gitignore-aware include/exclude globs, plugin-driven
+ engines for text/folder/table/hex modes, and full XDG/KDE desktop
+ integration.

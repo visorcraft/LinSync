@@ -1,0 +1,50 @@
+[workspace]
+members = [
+    "apps/linsync-gui",
+    "crates/linsync-cli",
+    "crates/linsync-core",
+    "crates/linsync-sandbox",
+    "crates/linsync-webengine",
+]
+resolver = "3"
+
+[workspace.package]
+version = "1.16.0"
+edition = "2024"
+license = "GPL-3.0-only"
+repository = "https://github.com/visorcraft/LinSync"
+
+[workspace.dependencies]
+blake3 = "1.8"
+crc32fast = "1.4"
+criterion = "0.8"
+sha2 = "0.11"
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "webp",
+    "tiff",
+    # Animation (GIF, plus the APNG/animated-WebP frame iterators) and HDR
+    # decoders for the advanced image-compare modes. All license-clean under
+    # deny.toml (gif: MIT/Apache-2.0; exr: BSD-3-Clause; hdr: built-in).
+    "gif",
+    "hdr",
+    "exr",
+] }
+lab = "0.11"
+libc = "0.2"
+linsync-core = { path = "crates/linsync-core" }
+linsync-sandbox = { path = "crates/linsync-sandbox" }
+linsync-webengine = { path = "crates/linsync-webengine" }
+regex = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_repr = "0.1"
+syntect = { version = "5", default-features = false, features = [
+    "default-syntaxes",
+    "regex-onig",
+    "parsing",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "json"] }
+unicode-segmentation = "1.13"

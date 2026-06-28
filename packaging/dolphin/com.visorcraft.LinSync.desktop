@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Service
+Name=LinSync Dolphin Actions
+MimeType=application/octet-stream;text/plain;text/x-diff;text/x-patch;inode/directory;application/x-linsync-session;application/x-linsync-project;
+Actions=openWithLinSync;
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+X-KDE-Priority=TopLevel
+
+[Desktop Action openWithLinSync]
+Name=Open in LinSync
+Icon=com.visorcraft.LinSync
+Exec=linsync %U

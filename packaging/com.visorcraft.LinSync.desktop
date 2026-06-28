@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=LinSync
+GenericName=File and Folder Compare
+Comment=Linux-native visual file and folder comparison
+Keywords=diff;merge;compare;folder;text;
+Exec=linsync %F
+Icon=com.visorcraft.LinSync
+Terminal=false
+StartupWMClass=linsync
+Categories=Utility;TextTools;FileTools;
+MimeType=text/plain;text/x-diff;text/x-patch;inode/directory;application/x-linsync-session;application/x-linsync-project;

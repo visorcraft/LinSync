@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "com.visorcraft.linsync.pdf-to-text",
+  "name": "PDF Text Extractor",
+  "version": "1.0.0",
+  "license": "GPL-3.0-only",
+  "entry": ["./pdf-to-text.sh"],
+  "classes": ["unpacker", "document_text_extractor"],
+  "mime_types": ["application/pdf"],
+  "extensions": ["pdf"],
+  "capabilities": ["unpack-text"],
+  "deterministic": true,
+  "sandbox": {
+    "network": false,
+    "writes_input": false,
+    "requires_home_access": false
+  },
+  "options_schema": [
+    {
+      "key": "page_range",
+      "label": "Page range (e.g. \"1-3\" or \"all\")",
+      "kind": "string",
+      "default": "all"
+    }
+  ]
+}

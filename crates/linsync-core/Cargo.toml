@@ -1,0 +1,43 @@
+[package]
+name = "linsync-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["sandbox"]
+sandbox = ["dep:linsync-sandbox", "dep:tempfile"]
+image-avif = ["image/avif"]
+# Rendered/screenshot webpage compare diffs the rendered PNGs through the image
+# engine, so web-engine implies image-compare.
+web-engine = ["dep:linsync-webengine"]
+
+[dependencies]
+blake3.workspace = true
+crc32fast.workspace = true
+sha2.workspace = true
+image = { workspace = true }
+lab = { workspace = true }
+libc.workspace = true
+linsync-sandbox = { workspace = true, optional = true }
+linsync-webengine = { path = "../linsync-webengine", optional = true }
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_repr.workspace = true
+syntect = { workspace = true }
+tempfile = { version = "3", optional = true }
+tracing.workspace = true
+unicode-segmentation.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile = "3"
+httptest = "0.16"
+serde_json = { workspace = true }
+
+[[bench]]
+name = "compare_bench"
+harness = false
