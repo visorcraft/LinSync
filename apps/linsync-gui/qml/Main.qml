@@ -25,8 +25,14 @@ Kirigami.ApplicationWindow {
     }
     property string leftPath: ""
     property string rightPath: ""
-    onLeftPathChanged: root.refreshArchiveEditability()
-    onRightPathChanged: root.refreshArchiveEditability()
+    onLeftPathChanged: {
+        root.refreshArchiveEditability()
+        root.clearRawTextPreview()
+    }
+    onRightPathChanged: {
+        root.refreshArchiveEditability()
+        root.clearRawTextPreview()
+    }
     property string basePath: ""
     property bool threeWayMode: root.compareMode === "Three-way"
     // Inline editing state. When true, the corresponding text pane is editable.
@@ -38,6 +44,7 @@ Kirigami.ApplicationWindow {
     property string pendingRemovePluginName: ""
     property string pendingEditToggleSide: ""
     property string compareMode: "Text"
+    onCompareModeChanged: root.clearRawTextPreview()
     property string differenceText: "0 differences"
     property var summaryItems: []
     property var tabItems: []
@@ -121,6 +128,11 @@ Kirigami.ApplicationWindow {
     property string rightPaneText: ""
     property bool liveCompareEnabled: false
     property int liveCompareDebounceMs: 300
+    property bool rawPreviewActive: false
+    property var rawPreviewLeftRows: []
+    property var rawPreviewRightRows: []
+    property int rawPreviewDiffCount: 0
+    property int rawPreviewRequestSerial: 0
     // Cached editability for the two compared archives. Updated asynchronously
     // whenever the paths change so the context menu can be shown synchronously
     // when the user right-clicks a folder row.
@@ -2241,6 +2253,7 @@ Kirigami.ApplicationWindow {
     }
 
     function requestCompare(newTab) {
+        root.clearRawTextPreview()
         if (root.compareMode === "Three-way") {
             if (root.basePath === "" || root.leftPath === "" || root.rightPath === "") {
                 root.statusText = qsTr("Select base, left, and right paths")
@@ -2375,6 +2388,72 @@ Kirigami.ApplicationWindow {
                     : qsTr("Compare failed")
             }
         })
+    }
+
+    function clearRawTextPreview() {
+        root.rawPreviewRequestSerial += 1
+        root.rawPreviewActive = false
+        root.rawPreviewLeftRows = []
+        root.rawPreviewRightRows = []
+        root.rawPreviewDiffCount = 0
+        if (root.rawTextInputActive()) {
+            root.leftRows = makeBlankRows()
+            root.rightRows = makeBlankRows()
+            root.unfilteredLeftRows = root.leftRows
+            root.unfilteredRightRows = root.rightRows
+            root.textTotalRows = 0
+            root.serverDiffRowIndexes = []
+            root.setDifferenceCount(0)
+            root.rebuildDiffRows()
+        }
+    }
+
+    function requestRawTextPreview() {
+        if (!root.liveCompareEnabled || !root.rawTextInputActive())
+            return
+        if (!root.rawTextInputReady()) {
+            root.clearRawTextPreview()
+            return
+        }
+        if (root.bridgeUrl === "")
+            return
+
+        root.rawPreviewRequestSerial += 1
+        const serial = root.rawPreviewRequestSerial
+        let path = "/raw-compare/preview?" + root.textOptionParams().substring(1)
+
+        root.bridgePostJson(path, {
+            "left_text": root.leftPaneText,
+            "right_text": root.rightPaneText,
+            "left_name": qsTr("Left"),
+            "right_name": qsTr("Right")
+        }, function (ok, payload) {
+            if (serial !== root.rawPreviewRequestSerial || !root.rawTextInputActive())
+                return
+            if (ok && payload)
+                root.applyRawTextPreview(payload)
+        })
+    }
+
+    function applyRawTextPreview(payload) {
+        if (!payload || payload.error)
+            return
+        root.rawPreviewActive = true
+        root.rawPreviewDiffCount = payload.difference_count || 0
+        root.rawPreviewLeftRows = payload.left_rows || []
+        root.rawPreviewRightRows = payload.right_rows || []
+        root.leftRows = root.rawPreviewLeftRows.length > 0 ? root.rawPreviewLeftRows : makeBlankRows()
+        root.rightRows = root.rawPreviewRightRows.length > 0 ? root.rawPreviewRightRows : makeBlankRows()
+        root.unfilteredLeftRows = root.leftRows
+        root.unfilteredRightRows = root.rightRows
+        root.textTotalRows = 0
+        root.serverDiffRowIndexes = []
+        root.rebuildDiffRows()
+        root.setDifferenceCount(root.rawPreviewDiffCount)
+        root.statusText = qsTr("Live preview: %1 difference(s)").arg(root.rawPreviewDiffCount)
+        // PaneColumn.resetRowsModel() returns during raw input, so replacing
+        // root.leftRows/root.rightRows updates row backgrounds, gutters, and diff
+        // navigation without overwriting the user's editable TextArea content.
     }
 
     // Cancel the in-flight compare (if any) by flipping its bridge-side cancel
