@@ -628,6 +628,24 @@ fn source_tree_qml_wires_live_compare_timer_and_toggle() {
 }
 
 #[test]
+fn source_tree_qml_resets_raw_preview_on_mode_boundary() {
+    let qml_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml");
+    let main = fs::read_to_string(qml_root.join("Main.qml")).expect("Main.qml should read");
+
+    assert!(main.contains("readonly property bool rawTextInputMode"));
+    assert!(main.contains("return root.rawTextInputMode"));
+    assert!(
+        main.contains("const shouldResetRows = root.rawPreviewActive || root.rawTextInputMode")
+    );
+    assert!(main.contains("property bool rawInputMode: root.rawTextInputMode"));
+    assert!(main.contains("onRawInputModeChanged: resetRowsModel()"));
+    assert!(main.contains(
+        "const rawText = pane.sideKey === \"left\" ? root.leftPaneText : root.rightPaneText"
+    ));
+    assert!(main.contains("if (contentArea.text !== rawText)"));
+}
+
+#[test]
 fn source_tree_window_icon_file_exists() {
     let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
     let icon_file = resolve_window_icon_file(&source_file).expect("missing window icon file");

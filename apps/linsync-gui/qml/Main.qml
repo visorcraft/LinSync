@@ -44,6 +44,9 @@ Kirigami.ApplicationWindow {
     property string pendingRemovePluginName: ""
     property string pendingEditToggleSide: ""
     property string compareMode: "Text"
+    readonly property bool rawTextInputMode: compareMode === "Text"
+        && leftPath === ""
+        && rightPath === ""
     onCompareModeChanged: root.clearRawTextPreview()
     property string differenceText: "0 differences"
     property var summaryItems: []
@@ -101,7 +104,7 @@ Kirigami.ApplicationWindow {
     property string validationPathKind: ""
     // Keep in sync with the workspace version in Cargo.toml. bridge-info.json
     // overwrites this once loaded, but the default is shown during startup.
-    property string appVersion: "1.16.0"
+    property string appVersion: "1.16.1"
     property int bridgeModelRevision: 0
     property bool canUndo: false
     property bool canRedo: false
@@ -515,9 +518,7 @@ Kirigami.ApplicationWindow {
     }
 
     function rawTextInputActive() {
-        return root.compareMode === "Text"
-            && root.leftPath === ""
-            && root.rightPath === ""
+        return root.rawTextInputMode
     }
 
     function rawTextInputReady() {
@@ -2413,12 +2414,13 @@ Kirigami.ApplicationWindow {
     }
 
     function clearRawTextPreview() {
+        const shouldResetRows = root.rawPreviewActive || root.rawTextInputMode
         root.rawPreviewRequestSerial += 1
         root.rawPreviewActive = false
         root.rawPreviewLeftRows = []
         root.rawPreviewRightRows = []
         root.rawPreviewDiffCount = 0
-        if (root.rawTextInputActive()) {
+        if (shouldResetRows) {
             root.leftRows = makeBlankRows()
             root.rightRows = makeBlankRows()
             root.unfilteredLeftRows = root.leftRows
@@ -6374,9 +6376,10 @@ Kirigami.ApplicationWindow {
         required property var rows
         property bool useBridgeModel: false
         property int modelRevision: 0
+        property bool rawInputMode: root.rawTextInputMode
         property bool syntaxOverlayActive: root.compareMode === "Text"
             && root.syntaxMode !== "plain"
-            && !(pane.editMode || root.rawTextInputActive())
+            && !(pane.editMode || pane.rawInputMode)
         property bool editMode: false
 
         // External code (sibling pane sync) sets pane.contentY to mirror
@@ -6446,7 +6449,12 @@ Kirigami.ApplicationWindow {
         }
 
         function resetRowsModel() {
-            if (root.rawTextInputActive()) return
+            if (pane.rawInputMode) {
+                const rawText = pane.sideKey === "left" ? root.leftPaneText : root.rightPaneText
+                if (contentArea.text !== rawText)
+                    contentArea.text = rawText
+                return
+            }
             if (pane.editMode) loadRawContent()
             else contentArea.text = computeJoinedText()
         }
@@ -6460,6 +6468,7 @@ Kirigami.ApplicationWindow {
         }
         onUseBridgeModelChanged: { if (!pane.editMode) resetRowsModel() }
         onModelRevisionChanged: { if (!pane.editMode) resetRowsModel() }
+        onRawInputModeChanged: resetRowsModel()
         onEditModeChanged: resetRowsModel()
         Component.onCompleted: resetRowsModel()
 
@@ -6646,7 +6655,7 @@ Kirigami.ApplicationWindow {
 
                     Controls.TextArea {
                         id: contentArea
-                        readOnly: !(pane.editMode || root.rawTextInputActive())
+                        readOnly: !(pane.editMode || pane.rawInputMode)
                         font.family: root.paneFontFamily
                         font.pixelSize: root.paneFontSize
                         textFormat: Controls.TextArea.PlainText
@@ -6672,7 +6681,7 @@ Kirigami.ApplicationWindow {
                                     root.editRightDirtyText = text
                                     root.rightDirty = true
                                 }
-                            } else if (root.rawTextInputActive()) {
+                            } else if (pane.rawInputMode) {
                                 if (pane.sideKey === "left")
                                     root.leftPaneText = text
                                 else

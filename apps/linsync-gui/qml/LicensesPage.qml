@@ -100,21 +100,21 @@ Kirigami.Page {
         "| codespan-reporting   | 0.11.1   | Apache-2.0 |\n" +
         "| codespan-reporting   | 0.13.1   | Apache-2.0 |\n" +
         "| color_quant          | 1.1.0    | MIT |\n" +
-        "| constant_time_eq     | 0.4.2    | CC0-1.0 OR MIT-0 OR Apache-2.0 |\n" +
         "| const-oid            | 0.10.2   | Apache-2.0 OR MIT |\n" +
+        "| constant_time_eq     | 0.4.2    | CC0-1.0 OR MIT-0 OR Apache-2.0 |\n" +
         "| convert_case         | 0.6.0    | MIT |\n" +
         "| cpufeatures          | 0.3.0    | MIT OR Apache-2.0 |\n" +
         "| crc32fast            | 1.5.0    | MIT OR Apache-2.0 |\n" +
         "| crypto-common        | 0.2.2    | MIT OR Apache-2.0 |\n" +
         "| cxx                  | 1.0.194  | MIT OR Apache-2.0 |\n" +
-        "| cxxbridge-flags      | 1.0.194  | MIT OR Apache-2.0 |\n" +
-        "| cxxbridge-macro      | 1.0.194  | MIT OR Apache-2.0 |\n" +
         "| cxx-gen              | 0.7.194  | MIT OR Apache-2.0 |\n" +
         "| cxx-qt               | 0.8.1    | MIT OR Apache-2.0 |\n" +
         "| cxx-qt-build         | 0.8.1    | MIT OR Apache-2.0 |\n" +
         "| cxx-qt-gen           | 0.8.1    | MIT OR Apache-2.0 |\n" +
         "| cxx-qt-lib           | 0.8.1    | MIT OR Apache-2.0 |\n" +
         "| cxx-qt-macro         | 0.8.1    | MIT OR Apache-2.0 |\n" +
+        "| cxxbridge-flags      | 1.0.194  | MIT OR Apache-2.0 |\n" +
+        "| cxxbridge-macro      | 1.0.194  | MIT OR Apache-2.0 |\n" +
         "| digest               | 0.11.3   | MIT OR Apache-2.0 |\n" +
         "| enumflags2           | 0.7.12   | MIT OR Apache-2.0 |\n" +
         "| enumflags2_derive    | 0.7.12   | MIT OR Apache-2.0 |\n" +

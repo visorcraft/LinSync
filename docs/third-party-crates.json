@@ -95,14 +95,14 @@
     "license": "MIT"
   },
   {
-    "name": "constant_time_eq",
-    "version": "0.4.2",
-    "license": "CC0-1.0 OR MIT-0 OR Apache-2.0"
-  },
-  {
     "name": "const-oid",
     "version": "0.10.2",
     "license": "Apache-2.0 OR MIT"
+  },
+  {
+    "name": "constant_time_eq",
+    "version": "0.4.2",
+    "license": "CC0-1.0 OR MIT-0 OR Apache-2.0"
   },
   {
     "name": "convert_case",
@@ -126,16 +126,6 @@
   },
   {
     "name": "cxx",
-    "version": "1.0.194",
-    "license": "MIT OR Apache-2.0"
-  },
-  {
-    "name": "cxxbridge-flags",
-    "version": "1.0.194",
-    "license": "MIT OR Apache-2.0"
-  },
-  {
-    "name": "cxxbridge-macro",
     "version": "1.0.194",
     "license": "MIT OR Apache-2.0"
   },
@@ -167,6 +157,16 @@
   {
     "name": "cxx-qt-macro",
     "version": "0.8.1",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "cxxbridge-flags",
+    "version": "1.0.194",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "cxxbridge-macro",
+    "version": "1.0.194",
     "license": "MIT OR Apache-2.0"
   },
   {

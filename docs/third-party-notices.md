@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Last regenerated: 2026-06-17
+Last regenerated: 2026-06-29
 
 This notice file covers the current LinSync source tree and Cargo dependency
 set. It must be regenerated or reviewed before every public binary release.
@@ -53,21 +53,21 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `codespan-reporting` | 0.11.1 | Apache-2.0 |
 | `codespan-reporting` | 0.13.1 | Apache-2.0 |
 | `color_quant` | 1.1.0 | MIT |
-| `constant_time_eq` | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | `const-oid` | 0.10.2 | Apache-2.0 OR MIT |
+| `constant_time_eq` | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | `convert_case` | 0.6.0 | MIT |
 | `cpufeatures` | 0.3.0 | MIT OR Apache-2.0 |
 | `crc32fast` | 1.5.0 | MIT OR Apache-2.0 |
 | `crypto-common` | 0.2.2 | MIT OR Apache-2.0 |
 | `cxx` | 1.0.194 | MIT OR Apache-2.0 |
-| `cxxbridge-flags` | 1.0.194 | MIT OR Apache-2.0 |
-| `cxxbridge-macro` | 1.0.194 | MIT OR Apache-2.0 |
 | `cxx-gen` | 0.7.194 | MIT OR Apache-2.0 |
 | `cxx-qt` | 0.8.1 | MIT OR Apache-2.0 |
 | `cxx-qt-build` | 0.8.1 | MIT OR Apache-2.0 |
 | `cxx-qt-gen` | 0.8.1 | MIT OR Apache-2.0 |
 | `cxx-qt-lib` | 0.8.1 | MIT OR Apache-2.0 |
 | `cxx-qt-macro` | 0.8.1 | MIT OR Apache-2.0 |
+| `cxxbridge-flags` | 1.0.194 | MIT OR Apache-2.0 |
+| `cxxbridge-macro` | 1.0.194 | MIT OR Apache-2.0 |
 | `digest` | 0.11.3 | MIT OR Apache-2.0 |
 | `enumflags2` | 0.7.12 | MIT OR Apache-2.0 |
 | `enumflags2_derive` | 0.7.12 | MIT OR Apache-2.0 |

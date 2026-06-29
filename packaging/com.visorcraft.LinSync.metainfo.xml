@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.16.1" date="2026-06-29">
+      <description>
+        <p>Bug fix release: raw-text live preview now clears stale preview rows when leaving empty-path Text mode and resynchronizes pane text when returning to raw input mode.</p>
+      </description>
+    </release>
     <release version="1.16.0" date="2026-06-17">
       <description>
         <p>Dependency maintenance: upgraded all bundled Rust crates to their latest releases (including the SHA-2 and seccomp libraries) and refreshed the third-party credits. Internal cleanup deduplicated URL decoding, the sandbox resource-limit helper, and bridge query-option parsing.</p>
