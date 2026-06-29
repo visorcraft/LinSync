@@ -1248,6 +1248,24 @@ Kirigami.ApplicationWindow {
         return true
     }
 
+    function bridgePostJson(path, payload, onJson) {
+        if (root.bridgeUrl === "")
+            return false
+        const request = new XMLHttpRequest()
+        request.onreadystatechange = function () {
+            if (request.readyState === XMLHttpRequest.DONE) {
+                let responsePayload = null
+                try { responsePayload = JSON.parse(request.responseText) } catch (_e) {}
+                const ok = request.status >= 200 && request.status < 300
+                if (onJson) onJson(ok, responsePayload, request.status)
+            }
+        }
+        request.open("POST", root.bridgeUrl + path)
+        request.setRequestHeader("Content-Type", "application/json")
+        request.send(JSON.stringify(payload || {}))
+        return true
+    }
+
     function openConfigFolder() {
         bridgeGet("/folder/open?key=config", function (ok) {
             root.statusText = ok ? "Opened config folder" : "Could not open config folder"
@@ -2234,6 +2252,15 @@ Kirigami.ApplicationWindow {
             return
         }
 
+        if (root.compareMode === "Text" && root.leftPath === "" && root.rightPath === "") {
+            if (root.rawTextInputReady()) {
+                root.requestRawTextCompare(newTab)
+                return
+            }
+            root.statusText = qsTr("Select two paths")
+            return
+        }
+
         if (root.leftPath === "" || root.rightPath === "") {
             root.statusText = "Select two paths"
             return
@@ -2306,6 +2333,45 @@ Kirigami.ApplicationWindow {
         // subset does not expose timeout/onerror callbacks.
         request.open("GET", url)
         request.send()
+    }
+
+    function requestRawTextCompare(newTab) {
+        if (root.bridgeUrl === "") {
+            root.statusText = qsTr("Compare bridge unavailable")
+            return
+        }
+
+        cancelActiveCompare()
+
+        root.statusText = qsTr("Comparing")
+        root.requestCounter += 1
+        var reqId = "req-" + root.requestCounter
+        root.activeRequestId = reqId
+        root.comparing = true
+
+        let path = "/raw-compare?request_id=" + encodeURIComponent(reqId)
+        path += root.textOptionParams()
+        if (newTab)
+            path += "&new_tab=1"
+
+        root.bridgePostJson(path, {
+            "left_text": root.leftPaneText,
+            "right_text": root.rightPaneText,
+            "left_name": qsTr("Left"),
+            "right_name": qsTr("Right")
+        }, function (ok, payload) {
+            if (reqId !== root.activeRequestId)
+                return
+            root.comparing = false
+            root.activeRequestId = ""
+            if (ok && payload) {
+                applyLaunchContext(payload, false)
+            } else {
+                root.statusText = (payload && payload.error)
+                    ? qsTr("Compare failed: %1").arg(payload.error)
+                    : qsTr("Compare failed")
+            }
+        })
     }
 
     // Cancel the in-flight compare (if any) by flipping its bridge-side cancel

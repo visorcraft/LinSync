@@ -4714,6 +4714,46 @@ fn raw_compare_returns_text_diff() {
 }
 
 #[test]
+fn raw_compare_accepts_post_json_body() {
+    let paths = test_app_paths("raw-compare-post");
+    let state = test_bridge_state(None);
+    let body = br#"{"left_text":"hello","right_text":"world","left_name":"L","right_name":"R"}"#;
+    let resp = String::from_utf8(bridge_response_with_token(
+        "POST /raw-compare HTTP/1.1\r\n",
+        body,
+        &paths,
+        &state,
+        None,
+    ))
+    .expect("utf-8 response");
+    assert!(resp.contains("HTTP/1.1 200"));
+    let body = json_response_body(&resp);
+    let tabs = body["session"]["tabs"].as_array().unwrap();
+    assert!(!tabs.is_empty());
+    assert!(tabs[0]["difference_count"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn raw_compare_accepts_one_empty_side() {
+    let paths = test_app_paths("raw-compare-empty-side");
+    let state = test_bridge_state(None);
+    let resp = String::from_utf8(bridge_response(
+        "GET /raw-compare?left_text=&right_text=world&left_name=L&right_name=R HTTP/1.1\r\n",
+        &paths,
+        &state,
+    ))
+    .expect("utf-8 response");
+    assert!(resp.contains("HTTP/1.1 200"));
+    let body = json_response_body(&resp);
+    assert!(
+        body["session"]["tabs"][0]["difference_count"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+}
+
+#[test]
 fn raw_compare_rejects_missing_left_text() {
     let paths = test_app_paths("raw-compare-missing");
     let state = test_bridge_state(None);

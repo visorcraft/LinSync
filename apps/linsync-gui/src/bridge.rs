@@ -385,7 +385,7 @@ pub(crate) fn bridge_response_with_token(
         "/profiles/active/plugin-enabled" => {
             profiles_active_plugin_enabled_bridge_response(query, paths)
         }
-        "/raw-compare" => raw_compare_bridge_response(query, paths, state),
+        "/raw-compare" => raw_compare_bridge_response(query, body, paths, state),
         "/compare/image" => {
             let params = query_params(query);
             let profile = match resolve_profile_for_request(paths, &params) {
@@ -1478,6 +1478,65 @@ pub(crate) fn progress_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeS
             .into_bytes(),
     )
 }
+#[derive(Default, serde::Deserialize)]
+struct RawCompareBody {
+    left_text: Option<String>,
+    right_text: Option<String>,
+    left_name: Option<String>,
+    right_name: Option<String>,
+}
+
+struct RawCompareRequest {
+    left_text: String,
+    right_text: String,
+    left_name: String,
+    right_name: String,
+    new_tab: bool,
+    text_options: TextCompareOptions,
+}
+
+fn raw_compare_request(
+    query: &str,
+    body: &[u8],
+    paths: &AppPaths,
+) -> Result<RawCompareRequest, Vec<u8>> {
+    let params = query_params(query);
+    let body_payload = if body.is_empty() {
+        RawCompareBody::default()
+    } else {
+        serde_json::from_slice::<RawCompareBody>(body)
+            .map_err(|err| bridge_error(400, "Bad Request", &format!("invalid JSON body: {err}")))?
+    };
+
+    let left_text = body_payload
+        .left_text
+        .or_else(|| query_value(&params, "left_text").map(str::to_owned))
+        .ok_or_else(|| bridge_error(400, "Bad Request", "missing left_text"))?;
+    let right_text = body_payload
+        .right_text
+        .or_else(|| query_value(&params, "right_text").map(str::to_owned))
+        .ok_or_else(|| bridge_error(400, "Bad Request", "missing right_text"))?;
+    let left_name = body_payload
+        .left_name
+        .or_else(|| query_value(&params, "left_name").map(str::to_owned))
+        .unwrap_or_else(|| "Left".to_owned());
+    let right_name = body_payload
+        .right_name
+        .or_else(|| query_value(&params, "right_name").map(str::to_owned))
+        .unwrap_or_else(|| "Right".to_owned());
+    let text_options = resolve_text_options_for_request(paths, &params)
+        .map_err(|err| bridge_error(400, "Bad Request", &err))?;
+
+    Ok(RawCompareRequest {
+        left_text,
+        right_text,
+        left_name,
+        right_name,
+        new_tab: query_bool(&params, "new_tab"),
+        text_options,
+    })
+}
+
 /// Handle `/raw-compare?left_text=...&right_text=...&left_name=...&right_name=...&mode=...`
 ///
 /// Compares raw text strings directly without requiring files on disk.
@@ -1485,43 +1544,31 @@ pub(crate) fn progress_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeS
 /// undo, save, etc.) works identically to file-based compares.
 pub(crate) fn raw_compare_bridge_response(
     query: &str,
+    body: &[u8],
     paths: &AppPaths,
     state: &Arc<Mutex<GuiBridgeState>>,
 ) -> Vec<u8> {
-    let params = query_params(query);
-    let left_text = match query_value(&params, "left_text") {
-        Some(v) => percent_decode(v),
-        None => return bridge_error(400, "Bad Request", "missing left_text"),
-    };
-    let right_text = match query_value(&params, "right_text") {
-        Some(v) => percent_decode(v),
-        None => return bridge_error(400, "Bad Request", "missing right_text"),
-    };
-    let left_name = query_value(&params, "left_name").unwrap_or("Left");
-    let right_name = query_value(&params, "right_name").unwrap_or("Right");
-    let new_tab = query_bool(&params, "new_tab");
-
-    let text_options = match resolve_text_options_for_request(paths, &params) {
-        Ok(opts) => opts,
-        Err(err) => return bridge_error(400, "Bad Request", &err),
+    let req = match raw_compare_request(query, body, paths) {
+        Ok(req) => req,
+        Err(resp) => return resp,
     };
 
     // Use linsync-core's compare_text which accepts raw &str
     let result = compare_text(
-        left_name,
-        &left_text,
-        right_name,
-        &right_text,
-        &text_options,
+        &req.left_name,
+        &req.left_text,
+        &req.right_name,
+        &req.right_text,
+        &req.text_options,
     );
-    let (left_rows, right_rows) = text_rows_for_gui_with_options(&result, &text_options);
+    let (left_rows, right_rows) = text_rows_for_gui_with_options(&result, &req.text_options);
 
     let tab = GuiCompareTab {
         id: 1,
         title: "Text: raw text compare".to_owned(),
         mode: "Text".to_owned(),
-        left_path: format!("📄 {left_name}"),
-        right_path: format!("📄 {right_name}"),
+        left_path: format!("📄 {}", req.left_name),
+        right_path: format!("📄 {}", req.right_name),
         base_path: None,
         status: "Text compare complete".to_owned(),
         difference_count: result.summary.differences,
@@ -1553,13 +1600,13 @@ pub(crate) fn raw_compare_bridge_response(
         artifacts: Vec::new(),
         rendered_pages: None,
         options: Some(GuiCompareOptions {
-            text: text_options.clone(),
+            text: req.text_options.clone(),
             ..GuiCompareOptions::default()
         }),
     };
 
     let context = match state.lock() {
-        Ok(mut state) => state.apply_compare(tab, new_tab),
+        Ok(mut state) => state.apply_compare(tab, req.new_tab),
         Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
     };
 
