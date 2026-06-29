@@ -603,6 +603,20 @@ fn source_tree_qml_wires_reduced_motion_setting() {
 }
 
 #[test]
+fn source_tree_qml_wires_live_compare_setting() {
+    let qml_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml");
+    let main = fs::read_to_string(qml_root.join("Main.qml")).expect("Main.qml should read");
+    assert!(main.contains(r#""liveCompare": false"#));
+    assert!(main.contains("liveCompare: root.liveCompareEnabled"));
+    assert!(main.contains(r#"key === "liveCompare""#));
+
+    let settings =
+        fs::read_to_string(qml_root.join("SettingsPage.qml")).expect("SettingsPage should read");
+    assert!(settings.contains("property bool liveCompare: false"));
+    assert!(settings.contains(r#"page.emit("liveCompare", checked)"#));
+}
+
+#[test]
 fn source_tree_window_icon_file_exists() {
     let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
     let icon_file = resolve_window_icon_file(&source_file).expect("missing window icon file");

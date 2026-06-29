@@ -36,6 +36,7 @@ Kirigami.ScrollablePage {
     property bool persistRecentPaths: true
     property bool reduceMotion: false
     property bool keepArchiveBackup: false
+    property bool liveCompare: false
     property int maxRecentPaths: 20
     property bool bridgeConnected: false
 
@@ -772,6 +773,41 @@ up.indicator: Rectangle {
                         onToggled: {
                             page.keepArchiveBackup = checked
                             page.emit("keepArchiveBackup", checked)
+                        }
+                    }
+
+                    AppCheckBox {
+                        indicator: Rectangle {
+                            implicitWidth: 18
+                            implicitHeight: 18
+                            x: parent.leftPadding
+                            y: (parent.height - height) / 2
+                            radius: 3
+                            color: parent.checked ? page.themeHighlight : page.themeBg
+                            border.color: parent.checked ? page.themeHighlight : page.separator
+                            border.width: 1
+                            Controls.Label {
+                                anchors.centerIn: parent
+                                visible: parent.parent.checked
+                                text: "\u2713"
+                                font.pixelSize: 14
+                                font.bold: true
+                                color: page.themeHighlightedText
+                            }
+                        }
+                        contentItem: Controls.Label {
+                            text: parent.text
+                            leftPadding: parent.indicator.width + 8
+                            verticalAlignment: Text.AlignVCenter
+                            color: page.themeText
+                        }
+                        palette.windowText: page.themeText
+                        Kirigami.FormData.label: qsTr("Live raw compare")
+                        text: qsTr("Preview raw text while typing")
+                        checked: page.liveCompare
+                        onToggled: {
+                            page.liveCompare = checked
+                            page.emit("liveCompare", checked)
                         }
                     }
 

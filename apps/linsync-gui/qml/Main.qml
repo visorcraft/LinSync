@@ -1131,6 +1131,7 @@ Kirigami.ApplicationWindow {
             "reduceMotion": false,
             "detectMoves": false,
             "keepArchiveBackup": false,
+            "liveCompare": false,
             "maxRecentPaths": 20
         }
     }
@@ -1156,6 +1157,7 @@ Kirigami.ApplicationWindow {
         root.reduceMotion       = merged.reduceMotion
         root.detectMoves        = merged.detectMoves
         root.keepArchiveBackup  = merged.keepArchiveBackup
+        root.liveCompareEnabled = merged.liveCompare
         root.maxRecentPaths     = merged.maxRecentPaths
         // Only reset the active compare mode when no comparison is in progress;
         // otherwise a late settings response would clobber the mode chosen by the
@@ -1184,6 +1186,7 @@ Kirigami.ApplicationWindow {
         else if (key === "reduceMotion")       root.reduceMotion       = value
         else if (key === "detectMoves")        root.detectMoves        = value
         else if (key === "keepArchiveBackup")  root.keepArchiveBackup  = value
+        else if (key === "liveCompare")        root.liveCompareEnabled = value
         else if (key === "maxRecentPaths")     root.maxRecentPaths     = value
     }
 
@@ -6098,6 +6101,7 @@ Kirigami.ApplicationWindow {
                 reduceMotion:       root.reduceMotion
                 detectMoves:        root.detectMoves
                 keepArchiveBackup:  root.keepArchiveBackup
+                liveCompare: root.liveCompareEnabled
                 maxRecentPaths:     root.maxRecentPaths
                 bridgeConnected:    root.bridgeAvailable()
                 onSettingChanged: (key, value) => {
