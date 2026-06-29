@@ -6189,7 +6189,9 @@ Kirigami.ApplicationWindow {
         required property var rows
         property bool useBridgeModel: false
         property int modelRevision: 0
-        property bool syntaxOverlayActive: root.compareMode === "Text" && root.syntaxMode !== "plain"
+        property bool syntaxOverlayActive: root.compareMode === "Text"
+            && root.syntaxMode !== "plain"
+            && !(pane.editMode || root.rawTextInputActive())
         property bool editMode: false
 
         // External code (sibling pane sync) sets pane.contentY to mirror
@@ -6259,11 +6261,9 @@ Kirigami.ApplicationWindow {
         }
 
         function resetRowsModel() {
-            if (pane.editMode) {
-                loadRawContent()
-            } else {
-                contentArea.text = computeJoinedText()
-            }
+            if (root.rawTextInputActive()) return
+            if (pane.editMode) loadRawContent()
+            else contentArea.text = computeJoinedText()
         }
 
         onRowsChanged: {
@@ -6461,7 +6461,7 @@ Kirigami.ApplicationWindow {
 
                     Controls.TextArea {
                         id: contentArea
-                        readOnly: false
+                        readOnly: !(pane.editMode || root.rawTextInputActive())
                         font.family: root.paneFontFamily
                         font.pixelSize: root.paneFontSize
                         textFormat: Controls.TextArea.PlainText
@@ -6487,6 +6487,11 @@ Kirigami.ApplicationWindow {
                                     root.editRightDirtyText = text
                                     root.rightDirty = true
                                 }
+                            } else if (root.rawTextInputActive()) {
+                                if (pane.sideKey === "left")
+                                    root.leftPaneText = text
+                                else
+                                    root.rightPaneText = text
                             }
                         }
 
