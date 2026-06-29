@@ -62,6 +62,9 @@ pub struct Settings {
     /// repack (portal commits always retain their app-private backup).
     #[serde(default)]
     pub keep_archive_backup: bool,
+    /// Live/debounced raw-text preview on the main Compare page.
+    #[serde(default)]
+    pub live_compare: bool,
     /// Unknown keys from a richer/newer build, preserved verbatim across a
     /// load→save round-trip so an older build never silently drops settings it
     /// does not understand.
@@ -105,6 +108,7 @@ impl Default for Settings {
             session_includes: Vec::new(),
             session_excludes: Vec::new(),
             keep_archive_backup: false,
+            live_compare: false,
             extra: serde_json::Map::new(),
         }
     }
@@ -1016,6 +1020,21 @@ mod tests {
         assert!(persisted.contains(r#""width": 1280"#));
         assert!(!persisted.contains(r#""x""#));
         assert!(!persisted.contains(r#""y""#));
+    }
+
+    #[test]
+    fn settings_round_trip_preserves_live_compare() {
+        let fixture = TempFixture::new();
+        let store = SettingsStore::new(fixture.path.join("settings.json"));
+        let settings = Settings {
+            live_compare: true,
+            ..Settings::default()
+        };
+        store.save(&settings).unwrap();
+        let loaded = store.load_or_default().unwrap();
+        assert!(loaded.live_compare);
+        let persisted = fs::read_to_string(&store.path).unwrap();
+        assert!(persisted.contains(r#""live_compare": true"#));
     }
 
     #[cfg(unix)]
