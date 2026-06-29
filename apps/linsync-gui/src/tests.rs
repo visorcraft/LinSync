@@ -2193,6 +2193,21 @@ fn bridge_settings_round_trip_through_core_store() {
     assert!(settings.keep_archive_backup);
 
     let response = String::from_utf8(bridge_response(
+        "GET /settings/set?key=liveCompare&value=true HTTP/1.1\r\n",
+        &paths,
+        &state,
+    ))
+    .expect("utf-8 response");
+
+    assert!(response.contains("HTTP/1.1 200 OK"));
+    let body = json_response_body(&response);
+    assert_eq!(body["liveCompare"], serde_json::json!(true));
+    let settings = SettingsStore::new(paths.settings_file())
+        .load_or_default()
+        .expect("settings should load");
+    assert!(settings.live_compare);
+
+    let response = String::from_utf8(bridge_response(
         "GET /settings/set?key=reduceMotion&value=true HTTP/1.1\r\n",
         &paths,
         &state,
