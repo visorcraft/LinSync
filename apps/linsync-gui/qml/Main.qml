@@ -209,6 +209,15 @@ Kirigami.ApplicationWindow {
         property bool pendingNewTab: false
         onTriggered: root.requestCompare(pendingNewTab)
     }
+    Timer {
+        id: liveCompareTimer
+        interval: root.liveCompareDebounceMs
+        repeat: false
+        onTriggered: {
+            if (root.liveCompareEnabled && root.rawTextInputActive())
+                root.requestRawTextPreview()
+        }
+    }
     function scheduleCompare(newTab) {
         compareRetriggerDebounce.pendingNewTab = newTab
         compareRetriggerDebounce.restart()
@@ -514,6 +523,11 @@ Kirigami.ApplicationWindow {
     function rawTextInputReady() {
         return root.rawTextInputActive()
             && (root.leftPaneText !== "" || root.rightPaneText !== "")
+    }
+
+    function scheduleRawTextPreview() {
+        if (root.liveCompareEnabled && root.rawTextInputActive())
+            liveCompareTimer.restart()
     }
 
     // State-to-color lookup — computed once per row in the delegate.
@@ -1198,7 +1212,15 @@ Kirigami.ApplicationWindow {
         else if (key === "reduceMotion")       root.reduceMotion       = value
         else if (key === "detectMoves")        root.detectMoves        = value
         else if (key === "keepArchiveBackup")  root.keepArchiveBackup  = value
-        else if (key === "liveCompare")        root.liveCompareEnabled = value
+        else if (key === "liveCompare") {
+            root.liveCompareEnabled = value
+            if (!value) {
+                liveCompareTimer.stop()
+                root.clearRawTextPreview()
+            } else {
+                root.scheduleRawTextPreview()
+            }
+        }
         else if (key === "maxRecentPaths")     root.maxRecentPaths     = value
     }
 
@@ -4602,6 +4624,19 @@ Kirigami.ApplicationWindow {
                     }
 
                     Controls.ToolButton {
+                        icon.name: root.liveCompareEnabled ? "media-playback-pause" : "media-playback-start"
+                        icon.color: root.activeText
+                        visible: root.compareMode === "Text"
+                        checked: root.liveCompareEnabled
+                        Controls.ToolTip.text: root.liveCompareEnabled
+                            ? qsTr("Live raw compare is on")
+                            : qsTr("Live raw compare is off")
+                        Controls.ToolTip.visible: hovered
+                        Accessible.name: qsTr("Toggle live raw compare")
+                        onClicked: root.updateUiSetting("liveCompare", !root.liveCompareEnabled)
+                    }
+
+                    Controls.ToolButton {
                         icon.name: "process-stop"
                         icon.color: root.activeText
                         enabled: root.comparing
@@ -6641,6 +6676,7 @@ Kirigami.ApplicationWindow {
                                     root.leftPaneText = text
                                 else
                                     root.rightPaneText = text
+                                root.scheduleRawTextPreview()
                             }
                         }
 

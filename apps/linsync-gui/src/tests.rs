@@ -617,6 +617,17 @@ fn source_tree_qml_wires_live_compare_setting() {
 }
 
 #[test]
+fn source_tree_qml_wires_live_compare_timer_and_toggle() {
+    let qml_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml");
+    let main = fs::read_to_string(qml_root.join("Main.qml")).expect("Main.qml should read");
+    assert!(main.contains("id: liveCompareTimer"));
+    assert!(main.contains("liveCompareTimer.restart()"));
+    assert!(main.contains("root.scheduleRawTextPreview()"));
+    assert!(main.contains("liveCompareTimer.stop()"));
+    assert!(main.contains("Toggle live raw compare"));
+}
+
+#[test]
 fn source_tree_window_icon_file_exists() {
     let source_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml/Main.qml");
     let icon_file = resolve_window_icon_file(&source_file).expect("missing window icon file");
