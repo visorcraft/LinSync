@@ -50,7 +50,7 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-fn json_with_schema(mut value: serde_json::Value) -> String {
+pub fn json_with_schema(mut value: serde_json::Value) -> String {
     if let Some(object) = value.as_object_mut() {
         object
             .entry("schema_version".to_owned())

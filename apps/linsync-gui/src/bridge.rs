@@ -386,6 +386,7 @@ pub(crate) fn bridge_response_with_token(
             profiles_active_plugin_enabled_bridge_response(query, paths)
         }
         "/raw-compare" => raw_compare_bridge_response(query, body, paths, state),
+        "/raw-compare/preview" => raw_compare_preview_bridge_response(query, body, paths),
         "/compare/image" => {
             let params = query_params(query);
             let profile = match resolve_profile_for_request(paths, &params) {
@@ -1537,6 +1538,38 @@ fn raw_compare_request(
     })
 }
 
+struct RawComparePreview {
+    left_rows: Vec<GuiLineRow>,
+    right_rows: Vec<GuiLineRow>,
+    difference_count: usize,
+    summary: Vec<GuiSummaryItem>,
+    encoding_metadata: Option<EncodingSummary>,
+}
+
+fn raw_compare_preview(
+    left_text: &str,
+    right_text: &str,
+    left_name: &str,
+    right_name: &str,
+    text_options: &TextCompareOptions,
+) -> RawComparePreview {
+    let result = compare_text(left_name, left_text, right_name, right_text, text_options);
+    let (left_rows, right_rows) = text_rows_for_gui_with_options(&result, text_options);
+    let summary = vec![
+        summary_item("Diff blocks", result.summary.diff_blocks),
+        summary_item("Changed lines", result.summary.changed_lines),
+        summary_item("Left-only lines", result.summary.left_only_lines),
+        summary_item("Right-only lines", result.summary.right_only_lines),
+    ];
+    RawComparePreview {
+        left_rows,
+        right_rows,
+        difference_count: result.summary.differences,
+        summary,
+        encoding_metadata: Some(result.encoding_summary()),
+    }
+}
+
 /// Handle `/raw-compare` (POST JSON body or query string).
 ///
 /// Compares raw text strings directly without requiring files on disk.
@@ -1548,30 +1581,28 @@ pub(crate) fn raw_compare_bridge_response(
     paths: &AppPaths,
     state: &Arc<Mutex<GuiBridgeState>>,
 ) -> Vec<u8> {
-    let req = match raw_compare_request(query, body, paths) {
-        Ok(req) => req,
-        Err(resp) => return resp,
+    let raw = match raw_compare_request(query, body, paths) {
+        Ok(raw) => raw,
+        Err(response) => return response,
     };
 
-    // Use linsync-core's compare_text which accepts raw &str
-    let result = compare_text(
-        &req.left_name,
-        &req.left_text,
-        &req.right_name,
-        &req.right_text,
-        &req.text_options,
+    let preview = raw_compare_preview(
+        &raw.left_text,
+        &raw.right_text,
+        &raw.left_name,
+        &raw.right_name,
+        &raw.text_options,
     );
-    let (left_rows, right_rows) = text_rows_for_gui_with_options(&result, &req.text_options);
 
     let tab = GuiCompareTab {
         id: 1,
         title: "Text: raw text compare".to_owned(),
         mode: "Text".to_owned(),
-        left_path: format!("📄 {}", req.left_name),
-        right_path: format!("📄 {}", req.right_name),
+        left_path: format!("📄 {}", raw.left_name),
+        right_path: format!("📄 {}", raw.right_name),
         base_path: None,
         status: "Text compare complete".to_owned(),
-        difference_count: result.summary.differences,
+        difference_count: preview.difference_count,
         left_dirty: false,
         right_dirty: false,
         can_undo: false,
@@ -1581,32 +1612,27 @@ pub(crate) fn raw_compare_bridge_response(
             path_kind: "RawText".to_owned(),
             message: "Compared pasted text".to_owned(),
         },
-        summary: vec![
-            summary_item("Diff blocks", result.summary.diff_blocks),
-            summary_item("Changed lines", result.summary.changed_lines),
-            summary_item("Left-only lines", result.summary.left_only_lines),
-            summary_item("Right-only lines", result.summary.right_only_lines),
-        ],
-        left_rows,
-        right_rows,
+        summary: preview.summary,
+        left_rows: preview.left_rows,
+        right_rows: preview.right_rows,
         total_rows: None,
         diff_row_indexes: Vec::new(),
         search_row_indexes: Vec::new(),
         folder_entries: vec![],
         folder_total: None,
-        encoding_metadata: Some(result.encoding_summary()),
+        encoding_metadata: preview.encoding_metadata,
         table_headers: None,
         table_cells: None,
         artifacts: Vec::new(),
         rendered_pages: None,
         options: Some(GuiCompareOptions {
-            text: req.text_options.clone(),
+            text: raw.text_options.clone(),
             ..GuiCompareOptions::default()
         }),
     };
 
     let context = match state.lock() {
-        Ok(mut state) => state.apply_compare(tab, req.new_tab),
+        Ok(mut state) => state.apply_compare(tab, raw.new_tab),
         Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
     };
 
@@ -1614,6 +1640,36 @@ pub(crate) fn raw_compare_bridge_response(
         Ok(body) => http_response(200, "OK", "application/json", body.into_bytes()),
         Err(err) => bridge_error(500, "Internal Server Error", &err.to_string()),
     }
+}
+
+pub(crate) fn raw_compare_preview_bridge_response(
+    query: &str,
+    body: &[u8],
+    paths: &AppPaths,
+) -> Vec<u8> {
+    let raw = match raw_compare_request(query, body, paths) {
+        Ok(raw) => raw,
+        Err(response) => return response,
+    };
+
+    let preview = raw_compare_preview(
+        &raw.left_text,
+        &raw.right_text,
+        &raw.left_name,
+        &raw.right_name,
+        &raw.text_options,
+    );
+
+    let body = serde_json::json!({
+        "equal": preview.difference_count == 0,
+        "difference_count": preview.difference_count,
+        "summary": preview.summary,
+        "left_rows": preview.left_rows,
+        "right_rows": preview.right_rows,
+        "mode": "Text",
+    });
+
+    http_response(200, "OK", "application/json", linsync::json_with_schema(body).into_bytes())
 }
 
 pub(crate) fn copy_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {

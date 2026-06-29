@@ -4748,6 +4748,37 @@ fn raw_compare_accepts_post_json_body() {
 }
 
 #[test]
+fn raw_compare_preview_does_not_mutate_session() {
+    let paths = test_app_paths("raw-compare-preview");
+    let state = test_bridge_state(None);
+
+    // Preview computes rows but must not create or replace a compare tab.
+    let body = br#"{"left_text":"hello","right_text":"world","left_name":"L","right_name":"R"}"#;
+    let resp = String::from_utf8(bridge_response_with_token(
+        "POST /raw-compare/preview HTTP/1.1\r\n",
+        body,
+        &paths,
+        &state,
+        None,
+    ))
+    .expect("utf-8 response");
+    assert!(resp.contains("HTTP/1.1 200"));
+    let body = json_response_body(&resp);
+    assert!(body["difference_count"].as_u64().unwrap() > 0);
+    assert!(body.get("session").is_none(), "preview must not include session state");
+
+    // And the bridge state must have no tabs.
+    let session_resp = String::from_utf8(bridge_response(
+        "GET /session HTTP/1.1\r\n",
+        &paths,
+        &state,
+    ))
+    .expect("utf-8 response");
+    let session_body = json_response_body(&session_resp);
+    assert!(session_body["session"]["tabs"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn raw_compare_accepts_one_empty_side() {
     let paths = test_app_paths("raw-compare-empty-side");
     let state = test_bridge_state(None);
