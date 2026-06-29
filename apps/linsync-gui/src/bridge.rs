@@ -1669,7 +1669,12 @@ pub(crate) fn raw_compare_preview_bridge_response(
         "mode": "Text",
     });
 
-    http_response(200, "OK", "application/json", linsync::json_with_schema(body).into_bytes())
+    http_response(
+        200,
+        "OK",
+        "application/json",
+        linsync::json_with_schema(body).into_bytes(),
+    )
 }
 
 pub(crate) fn copy_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState>>) -> Vec<u8> {

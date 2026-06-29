@@ -4776,17 +4776,22 @@ fn raw_compare_preview_does_not_mutate_session() {
     assert!(resp.contains("HTTP/1.1 200"));
     let body = json_response_body(&resp);
     assert!(body["difference_count"].as_u64().unwrap() > 0);
-    assert!(body.get("session").is_none(), "preview must not include session state");
+    assert!(
+        body.get("session").is_none(),
+        "preview must not include session state"
+    );
 
     // And the bridge state must have no tabs.
-    let session_resp = String::from_utf8(bridge_response(
-        "GET /session HTTP/1.1\r\n",
-        &paths,
-        &state,
-    ))
-    .expect("utf-8 response");
+    let session_resp =
+        String::from_utf8(bridge_response("GET /session HTTP/1.1\r\n", &paths, &state))
+            .expect("utf-8 response");
     let session_body = json_response_body(&session_resp);
-    assert!(session_body["session"]["tabs"].as_array().unwrap().is_empty());
+    assert!(
+        session_body["session"]["tabs"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

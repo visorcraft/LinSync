@@ -4627,6 +4627,7 @@ Kirigami.ApplicationWindow {
                         icon.name: root.liveCompareEnabled ? "media-playback-pause" : "media-playback-start"
                         icon.color: root.activeText
                         visible: root.compareMode === "Text"
+                        checkable: true
                         checked: root.liveCompareEnabled
                         Controls.ToolTip.text: root.liveCompareEnabled
                             ? qsTr("Live raw compare is on")
