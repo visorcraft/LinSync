@@ -174,7 +174,7 @@ grep -q "ImageComparePage" apps/linsync-gui/qml/Main.qml \
 # suite here re-executes plugin_archive_e2e which has a pre-existing
 # parallel race on the shared zip-fixture file. The image-compare
 # smoke doesn't need the full suite.
-cargo test -q -p linsync-core --features image-compare --test image_compare 2>&1 \
+cargo test -q -p linsync-core --test image_compare 2>&1 \
   | grep -v "^$" \
   | tail -5
 echo "image-compare GUI smoke OK"
