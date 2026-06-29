@@ -383,6 +383,7 @@ struct GuiSettings {
     max_recent_paths: usize,
     reduce_motion: bool,
     keep_archive_backup: bool,
+    live_compare: bool,
 }
 
 impl From<&Settings> for GuiSettings {
@@ -407,6 +408,7 @@ impl From<&Settings> for GuiSettings {
             max_recent_paths: settings.recent_limit,
             reduce_motion: settings.reduce_motion,
             keep_archive_backup: settings.keep_archive_backup,
+            live_compare: settings.live_compare,
         }
     }
 }

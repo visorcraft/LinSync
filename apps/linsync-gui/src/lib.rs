@@ -669,6 +669,7 @@ pub fn apply_gui_setting(
         "persistRecentPaths" => settings.persist_recent_paths = parse_bool_setting(key, value)?,
         "reduceMotion" => settings.reduce_motion = parse_bool_setting(key, value)?,
         "keepArchiveBackup" => settings.keep_archive_backup = parse_bool_setting(key, value)?,
+        "liveCompare" => settings.live_compare = parse_bool_setting(key, value)?,
         "maxRecentPaths" => {
             settings.recent_limit = value
                 .parse::<usize>()
@@ -1044,6 +1045,13 @@ pub mod test_support {
     ) -> Result<linsync_core::CommitOutcome, String> {
         let options = linsync_core::CommitOptions { keep_backup };
         linsync_core::commit_member_edit(ctx, &options).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn apply_gui_setting_accepts_live_compare() {
+        assert!(apply_gui_setting_test("liveCompare", "true").is_ok());
+        assert!(apply_gui_setting_test("liveCompare", "false").is_ok());
+        assert!(apply_gui_setting_test("liveCompare", "nope").is_err());
     }
 }
 
