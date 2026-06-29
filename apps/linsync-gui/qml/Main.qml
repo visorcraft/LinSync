@@ -115,6 +115,12 @@ Kirigami.ApplicationWindow {
     property bool archiveEditInProgress: false
     property string archiveEditSide: ""  // "left" or "right"
     property string archiveEditPortalWarning: ""
+    // Raw-text input capture on the main Compare page. Only used when both
+    // paths are empty and compareMode is "Text".
+    property string leftPaneText: ""
+    property string rightPaneText: ""
+    property bool liveCompareEnabled: false
+    property int liveCompareDebounceMs: 300
     // Cached editability for the two compared archives. Updated asynchronously
     // whenever the paths change so the context menu can be shown synchronously
     // when the user right-clicks a folder row.
@@ -485,6 +491,17 @@ Kirigami.ApplicationWindow {
             })
         }
         return rows
+    }
+
+    function rawTextInputActive() {
+        return root.compareMode === "Text"
+            && root.leftPath === ""
+            && root.rightPath === ""
+    }
+
+    function rawTextInputReady() {
+        return root.rawTextInputActive()
+            && (root.leftPaneText !== "" || root.rightPaneText !== "")
     }
 
     // State-to-color lookup — computed once per row in the delegate.
