@@ -143,3 +143,6 @@
 /packaging/debian/debhelper-build-stamp
 /packaging/debian/*.substvars
 /packaging/debian/*.debhelper.log
+
+# Local release-artifact cache kept by clean_visorcraft_repos
+/_releases/
