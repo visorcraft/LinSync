@@ -1537,11 +1537,11 @@ fn raw_compare_request(
     })
 }
 
-/// Handle `/raw-compare?left_text=...&right_text=...&left_name=...&right_name=...&mode=...`
+/// Handle `/raw-compare` (POST JSON body or query string).
 ///
 /// Compares raw text strings directly without requiring files on disk.
-/// Writes temp files for the full pipeline to consume so the UX (tabs,
-/// undo, save, etc.) works identically to file-based compares.
+/// Accepts `left_text`, `right_text`, `left_name`, `right_name` either as a
+/// JSON body or as query parameters, plus the usual text option overrides.
 pub(crate) fn raw_compare_bridge_response(
     query: &str,
     body: &[u8],

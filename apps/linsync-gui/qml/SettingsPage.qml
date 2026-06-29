@@ -804,6 +804,7 @@ up.indicator: Rectangle {
                         palette.windowText: page.themeText
                         Kirigami.FormData.label: qsTr("Live raw compare")
                         text: qsTr("Preview raw text while typing")
+                        Accessible.name: text
                         checked: page.liveCompare
                         onToggled: {
                             page.liveCompare = checked
