@@ -1,3 +1,10 @@
+linsync (1.16.2-1) unstable; urgency=medium
+
+  * Fix Compare view startup: left/right panes now open at equal width and the
+    diff overview ruler is restored beside the panes.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Tue, 30 Jun 2026 12:00:00 -0500
+
 linsync (1.16.1-1) unstable; urgency=medium
 
   * Fix raw-text live-preview cleanup when leaving and returning to empty-path

@@ -5697,6 +5697,7 @@ Kirigami.ApplicationWindow {
             }
 
             Controls.SplitView {
+                id: compareSplit
                 visible: root.compareMode !== "Folder" && root.compareMode !== "Table"
                 Layout.fillHeight: root.compareMode !== "Folder" && root.compareMode !== "Table"
                 Layout.fillWidth: true
@@ -5705,7 +5706,12 @@ Kirigami.ApplicationWindow {
                 PaneColumn {
                     id: leftPane
 
-                    Controls.SplitView.fillWidth: true
+                    // Qt SplitView splits unevenly when multiple children set
+                    // fillWidth; give left an explicit half of the space left
+                    // after the overview ruler so a fresh compare starts
+                    // symmetric, and let right fill the remainder. The binding
+                    // is replaced once the user drags the divider.
+                    Controls.SplitView.preferredWidth: (compareSplit.width - overviewPane.width) / 2
                     Controls.SplitView.minimumWidth: 320
                     sideName: "Left"
                     sideKey: "left"
@@ -5730,7 +5736,6 @@ Kirigami.ApplicationWindow {
                     useBridgeModel: false
                     modelRevision: root.bridgeModelRevision
                     editMode: root.editRightMode
-                }
                 }
 
                 Rectangle {
@@ -5860,6 +5865,7 @@ Kirigami.ApplicationWindow {
                         }
                     }
                 }
+            }
             }
 
             TableComparePane {

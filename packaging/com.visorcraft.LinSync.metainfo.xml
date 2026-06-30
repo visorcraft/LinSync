@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.16.2" date="2026-06-30">
+      <description>
+        <p>Bug fix release: the Compare view now opens with equal-width left and right panes, and the diff overview ruler is restored to the side of the panes.</p>
+      </description>
+    </release>
     <release version="1.16.1" date="2026-06-29">
       <description>
         <p>Bug fix release: raw-text live preview now clears stale preview rows when leaving empty-path Text mode and resynchronizes pane text when returning to raw input mode.</p>
