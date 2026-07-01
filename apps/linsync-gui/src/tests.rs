@@ -2789,7 +2789,14 @@ fn bridge_state_save_dirty_text_side_writes_backup_safe_file() {
         .copy_row(row, "left_to_right")
         .expect("copy should succeed");
 
-    let context = state.save_side("dirty").expect("save should succeed");
+    // Drive the save through the same three phased entry points the HTTP
+    // bridge uses (prepare → write off-lock → finish) so this test also guards
+    // the lock-release refactor, not just a convenience wrapper.
+    let prepared = state.prepare_save("dirty").expect("prepare should succeed");
+    let attempt = perform_save(&prepared.sides);
+    let context = state
+        .finish_save(&prepared, attempt)
+        .expect("save should succeed");
     let tab = context.active_tab().expect("active tab");
 
     assert_eq!(fs::read_to_string(&right).unwrap(), "alpha\nbeta\n");
@@ -2832,6 +2839,113 @@ fn bridge_save_endpoint_writes_dirty_side() {
 
     assert_eq!(body["session"]["tabs"][0]["right_dirty"], false);
     assert_eq!(fs::read_to_string(&right).unwrap(), "alpha\nbeta\n");
+}
+
+#[test]
+fn save_explicit_side_status_says_with_backup() {
+    let root = test_file_root("save-explicit");
+    let left = root.join("left.txt");
+    let right = root.join("right.txt");
+    fs::write(&left, "alpha\nbeta\n").unwrap();
+    fs::write(&right, "alpha\ngamma\n").unwrap();
+    let mut state = GuiBridgeState::new(Some(build_context_for_paths(&left, &right)));
+    let row = state
+        .context()
+        .active_tab()
+        .expect("active tab")
+        .left_rows
+        .iter()
+        .position(|r| r.state == "changed")
+        .expect("changed row");
+    state
+        .copy_row(row, "left_to_right")
+        .expect("copy should succeed");
+
+    let prepared = state.prepare_save("right").expect("prepare");
+    let attempt = perform_save(&prepared.sides);
+    let context = state
+        .finish_save(&prepared, attempt)
+        .expect("finish should succeed");
+    let tab = context.active_tab().expect("active tab");
+
+    assert!(!tab.right_dirty);
+    assert_eq!(tab.status, "Saved right side with backup");
+    assert_eq!(fs::read_to_string(&right).unwrap(), "alpha\nbeta\n");
+}
+
+#[test]
+fn save_clean_side_reports_already_clean_and_writes_nothing() {
+    let root = test_file_root("save-clean");
+    let left = root.join("left.txt");
+    let right = root.join("right.txt");
+    fs::write(&left, "alpha\nbeta\n").unwrap();
+    fs::write(&right, "alpha\ngamma\n").unwrap();
+    let mut state = GuiBridgeState::new(Some(build_context_for_paths(&left, &right)));
+    // No copy → both sides clean.
+
+    let prepared = state.prepare_save("left").expect("prepare");
+    assert!(
+        prepared.sides.is_empty(),
+        "clean side yields nothing to write"
+    );
+    let attempt = perform_save(&prepared.sides);
+    let context = state
+        .finish_save(&prepared, attempt)
+        .expect("finish should succeed");
+    let tab = context.active_tab().expect("active tab");
+
+    assert!(!tab.left_dirty);
+    assert_eq!(tab.status, "left side already clean");
+    // File untouched (no backup created either).
+    assert_eq!(fs::read_to_string(&left).unwrap(), "alpha\nbeta\n");
+    assert!(!root.join("left.txt.bak").exists());
+}
+
+#[test]
+fn finish_save_leaves_dirty_when_rows_changed_after_prepare() {
+    let root = test_file_root("save-race");
+    let left = root.join("left.txt");
+    let right = root.join("right.txt");
+    fs::write(&left, "alpha\nbeta\n").unwrap();
+    fs::write(&right, "alpha\ngamma\n").unwrap();
+    let mut state = GuiBridgeState::new(Some(build_context_for_paths(&left, &right)));
+    let row = state
+        .context()
+        .active_tab()
+        .expect("active tab")
+        .left_rows
+        .iter()
+        .position(|r| r.state == "changed")
+        .expect("changed row");
+    state
+        .copy_row(row, "left_to_right")
+        .expect("copy should succeed");
+
+    let prepared = state.prepare_save("right").expect("prepare");
+    // Simulate a concurrent edit between prepare and finish: the right pane's
+    // row text no longer matches what phase 2 just wrote, so clearing dirty
+    // would silently lose the new edit. finish_save must detect the mismatch
+    // and leave the side dirty.
+    {
+        let active_id = state.session.active_tab_id;
+        let tab = state
+            .session
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == active_id)
+            .expect("active tab");
+        tab.right_rows[row].text = "delta".to_owned();
+    }
+    let attempt = perform_save(&prepared.sides);
+    let context = state
+        .finish_save(&prepared, attempt)
+        .expect("finish should succeed");
+    let tab = context.active_tab().expect("active tab");
+
+    // The file was written from the prepared (pre-edit) rows...
+    assert_eq!(fs::read_to_string(&right).unwrap(), "alpha\nbeta\n");
+    // ...but dirty stays true because the on-tab rows changed after prepare.
+    assert!(tab.right_dirty, "concurrent edit must not be marked saved");
 }
 
 #[test]
@@ -2937,6 +3051,69 @@ fn bridge_accepts_loopback_origin() {
         .expect("response should read");
 
     assert!(response.contains("HTTP/1.1 200 OK"));
+}
+
+#[test]
+fn control_request_routing_classifies_only_cancel_and_progress() {
+    // Control routes must be recognised regardless of the auth-token prefix
+    // and with or without a query string.
+    assert!(bridge::is_control_request(
+        "GET /deadbeef/cancel?id=req-3 HTTP/1.1\r\n"
+    ));
+    assert!(bridge::is_control_request(
+        "GET /deadbeef/progress?id=req-3 HTTP/1.1\r\n"
+    ));
+    assert!(bridge::is_control_request("GET /cancel HTTP/1.1\r\n"));
+    assert!(bridge::is_control_request("GET /progress HTTP/1.1\r\n"));
+
+    // Every heavy route must stay on the slotted path — a misclassification
+    // here would let a flood of, say, /compare bypass the worker cap.
+    for heavy in [
+        "GET /deadbeef/compare?mode=Folder HTTP/1.1\r\n",
+        "GET /deadbeef/save?side=dirty HTTP/1.1\r\n",
+        "GET /deadbeef/health HTTP/1.1\r\n",
+        "GET /deadbeef/session HTTP/1.1\r\n",
+        "GET /deadbeef/folder/query HTTP/1.1\r\n",
+        "GET /deadbeef/compare/text/window HTTP/1.1\r\n",
+    ] {
+        assert!(
+            !bridge::is_control_request(heavy),
+            "heavy route misclassified as control: {heavy}"
+        );
+    }
+}
+
+#[test]
+fn bridge_serves_control_requests_via_real_accept_loop() {
+    // Exercises the inline control-request path added so /cancel and /progress
+    // stay servicable even under worker-pool saturation. Both endpoints return
+    // 200 (with a benign body) for an unknown id, which is enough to prove the
+    // accept loop reads, routes, and responds to control requests end-to-end.
+    let bridge =
+        start_bridge_server(test_app_paths("bridge-control"), None).expect("bridge should start");
+    let (address, token_path) = bridge_address_and_token_path(&bridge.base_url);
+
+    for route in ["/cancel", "/progress"] {
+        let mut stream = TcpStream::connect(&address).expect("bridge should accept connections");
+        let request =
+            format!("GET {token_path}{route}?id=control-smoke HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .expect("request should write");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("response should read");
+
+        assert!(
+            response.contains("HTTP/1.1 200 OK"),
+            "control route {route} should always be served, got: {response}"
+        );
+        assert!(
+            !response.contains("HTTP/1.1 503"),
+            "control route {route} must never be rejected by the worker cap"
+        );
+    }
 }
 
 #[test]
@@ -5685,8 +5862,9 @@ fn bridge_rejects_over_limit_with_503() {
     let token = token_path.strip_prefix('/').unwrap_or(token_path);
 
     // Open enough POST requests with an announced body that is never sent to
-    // occupy every concurrent handler slot. The handler will block reading the
-    // body, keeping the active-connection count high.
+    // occupy every concurrent heavy handler slot. The handler acquires a
+    // worker permit, then blocks reading the (never-arriving) body, keeping the
+    // heavy pool saturated.
     const LIMIT: usize = 16;
     let mut hold: Vec<TcpStream> = Vec::with_capacity(LIMIT);
     for _ in 0..LIMIT {
@@ -5704,9 +5882,37 @@ fn bridge_rejects_over_limit_with_503() {
 
     // Give the accept loop a moment to spawn all holding handlers before
     // probing the limit.
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(150));
 
-    // The next complete request must be rejected with a 503 instead of hanging.
+    // While every heavy slot is occupied, the cheap control routes (`/cancel`,
+    // `/progress`) must still be served — they bypass the worker cap so a
+    // saturated bridge can always recover the UI (the "must restart" failure
+    // mode this protects against). Each must return 200, never a 503.
+    for route in ["/cancel", "/progress"] {
+        let mut probe =
+            TcpStream::connect(addr).expect("should connect to bridge for control probe");
+        probe
+            .write_all(
+                format!("GET /{token}{route}?id=saturated HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+        probe
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut buf = [0_u8; 1024];
+        let n = probe
+            .read(&mut buf)
+            .unwrap_or_else(|_| panic!("control route {route} should respond while saturated"));
+        let resp = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            resp.starts_with("HTTP/1.1 200 OK"),
+            "control route {route} must stay available under saturation, got: {resp}"
+        );
+    }
+
+    // The next complete HEAVY request must be rejected with a 503 instead of
+    // hanging — proving the cap still bounds heavy work while control flows.
     let mut overflow = TcpStream::connect(addr).expect("should connect to bridge");
     overflow
         .write_all(format!("GET /{token}/health HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())

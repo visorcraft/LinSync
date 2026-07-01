@@ -65,6 +65,13 @@ Controls.Pane {
     property int progressTotal: 0
     property string progressMessage: ""
     property bool pendingNewTab: false
+    // Defensive iteration cap for the progress timer so a compare whose XHR
+    // never completes (bridge worker wedged, plugin hang, lost response)
+    // cannot poll /progress forever and saturate the bridge connection pool.
+    // At 200 ms intervals, 1500 iterations == 5 minutes. Mirrors Main.qml's
+    // progressPollMax safety net.
+    property int progressPollCount: 0
+    readonly property int progressPollMax: 1500
 
     // Per-row diff tints over the page background (left=red, right=green,
     // changed=amber); "equal" rows are absent → transparent.
@@ -131,6 +138,7 @@ Controls.Pane {
         root.progressCurrent = 0;
         root.progressTotal = 0;
         root.progressMessage = "";
+        root.progressPollCount = 0;
         const left = encodeURIComponent(root.leftUrl);
         const right = encodeURIComponent(root.rightUrl);
         const mode = encodeURIComponent(root.subMode);
@@ -196,6 +204,25 @@ Controls.Pane {
         repeat: true
         running: root.busy && root.activeRequestId !== ""
         onTriggered: {
+            if (!root.busy || root.activeRequestId === "") {
+                progressTimer.stop()
+                return
+            }
+            // If the compare XHR never reports back, stop polling, cancel the
+            // request on the bridge (so its worker slot is freed), and recover
+            // the UI instead of polling forever and exhausting the connection
+            // pool — the "app gets slow until restarted" failure mode.
+            root.progressPollCount += 1
+            if (root.progressPollCount > root.progressPollMax) {
+                root.bridgeGet("/cancel?id=" + encodeURIComponent(root.activeRequestId), function () {})
+                root.busy = false
+                root.activeRequestId = ""
+                root.pendingNewTab = false
+                root.resultError = true
+                root.resultSummary = qsTr("Compare timed out — no response from the bridge")
+                progressTimer.stop()
+                return
+            }
             root.bridgeGet("/progress?id=" + encodeURIComponent(root.activeRequestId), function (ok, data) {
                 if (!ok || !data)
                     return;

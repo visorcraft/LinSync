@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.16.2
+Version:        1.16.3
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -125,6 +125,9 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Tue Jun 30 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.16.3-1
+- Fix GUI slowdown/hang: cap runaway progress polling, cancel wedged compares, bound log growth, release the bridge lock during saves, and keep /cancel + /progress servicable under worker saturation.
+
 * Tue Jun 30 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.16.2-1
 - Fix Compare view startup: equal-width left/right panes and restore the diff overview ruler beside them.
 

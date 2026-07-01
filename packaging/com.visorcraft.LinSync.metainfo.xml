@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.16.3" date="2026-06-30">
+      <description>
+        <p>Bug fix release: resolves a GUI slowdown and hang that could build up over a session and require a force-quit. Runaway progress polling on the Webpage and Document compare pages is now capped, wedged compares are cancelled on timeout, the log file is rotated to bound disk growth, the bridge state lock is no longer held during file saves, and the /cancel and /progress endpoints stay available even when the worker pool is saturated.</p>
+      </description>
+    </release>
     <release version="1.16.2" date="2026-06-30">
       <description>
         <p>Bug fix release: the Compare view now opens with equal-width left and right panes, and the diff overview ruler is restored to the side of the panes.</p>

@@ -53,57 +53,39 @@ pub(crate) fn start_bridge_server(
     sweep_orphaned_archive_edits(&paths);
 
     thread::spawn(move || {
-        // Cap concurrent handler threads. This is a local single-client bridge
-        // (one QML XMLHttpRequest at a time in normal use), but a retrigger
-        // storm or progress-poll flood could otherwise spawn unbounded OS
-        // threads. Each excess connection is rejected with a 503 so the client
-        // retries on the next tick rather than queuing indefinitely.
+        // Each connection is handled on its own thread so the accept loop
+        // never blocks on a slow client — it spawns and immediately moves on.
+        // Inside, the request line is read first to route cheap control
+        // requests (`/cancel`, `/progress`) WITHOUT consuming a worker slot,
+        // so the UI can always cancel an in-flight compare or poll its
+        // progress even when every heavy slot is occupied. Without this, a
+        // wedged compare plus its progress poller could saturate the pool and
+        // 503 the very `/cancel` meant to recover the UI (the "must restart"
+        // failure mode).
         const MAX_CONCURRENT_BRIDGE_CONNECTIONS: usize = 16;
         let active = Arc::new(AtomicUsize::new(0));
         for stream in listener.incoming() {
-            match stream {
-                Ok(mut stream) => {
-                    // Handle each connection on its own thread so a `/cancel`
-                    // request can be served while a `/compare` is still running
-                    // (the accept loop must not block on a single request).
-                    if active.load(Ordering::Relaxed) >= MAX_CONCURRENT_BRIDGE_CONNECTIONS {
-                        tracing::warn!(
-                            concurrent = active.load(Ordering::Relaxed),
-                            "LinSync GUI bridge connection limit reached, rejecting"
-                        );
-                        // Return a 503 so the client sees a retry signal rather than
-                        // a silently dropped connection.
-                        let response = b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                        if let Err(err) = stream.write_all(response) {
-                            tracing::warn!(error = %err, "failed to write 503 to rejected bridge connection");
-                        } else if let Err(err) = stream.flush() {
-                            tracing::warn!(error = %err, "failed to flush 503 to rejected bridge connection");
-                        }
-                        drop(stream);
-                        continue;
-                    }
-                    let paths = paths.clone();
-                    let state = Arc::clone(&state);
-                    let token = server_token.clone();
-                    let active = Arc::clone(&active);
-                    active.fetch_add(1, Ordering::Relaxed);
-                    thread::spawn(move || {
-                        // RAII guard ensures the permit is released even if the
-                        // handler panics (default unwind strategy). Without this,
-                        // a panic would leak a permit and after MAX_CONCURRENT
-                        // panics wedge the bridge — the exact session-
-                        // accumulating hang this cap exists to prevent.
-                        let _guard = PermitGuard(Arc::clone(&active));
-                        if let Err(err) = handle_bridge_connection(stream, &paths, &state, &token) {
-                            tracing::warn!(error = %err, "LinSync GUI bridge request failed");
-                        }
-                    });
-                }
+            let stream = match stream {
+                Ok(stream) => stream,
                 Err(err) => {
                     tracing::warn!(error = %err, "LinSync GUI bridge accept failed");
                     break;
                 }
-            }
+            };
+            let paths = paths.clone();
+            let state = Arc::clone(&state);
+            let token = server_token.clone();
+            let active = Arc::clone(&active);
+            thread::spawn(move || {
+                handle_bridge_connection(
+                    stream,
+                    &paths,
+                    &state,
+                    &token,
+                    active,
+                    MAX_CONCURRENT_BRIDGE_CONNECTIONS,
+                );
+            });
         }
     });
 
@@ -124,25 +106,126 @@ impl Drop for PermitGuard {
 pub(crate) const MAX_BRIDGE_REQUEST_BYTES: u64 = 256 * 1024; // 256 KB — bumped for raw-text paste via query params
 pub(crate) const MAX_BRIDGE_HEADERS: usize = 64;
 
-pub(crate) fn handle_bridge_connection(
+struct BridgeRequest {
+    request_line: String,
+    body: Vec<u8>,
+}
+
+/// Handle one bridge connection on its own worker thread. The request line is
+/// read first so control routes (`/cancel`, `/progress`) can be dispatched
+/// without a worker permit; heavy routes acquire a permit (capped at `cap`)
+/// BEFORE the body is read, so a client that stalls mid-body still counts
+/// against the limit and can't wedge the bridge for free.
+fn handle_bridge_connection(
     mut stream: TcpStream,
     paths: &AppPaths,
     state: &Arc<Mutex<GuiBridgeState>>,
     token: &str,
-) -> std::io::Result<()> {
+    active: Arc<AtomicUsize>,
+    cap: usize,
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
 
-    let mut reader = BufReader::new(stream.try_clone()?).take(MAX_BRIDGE_REQUEST_BYTES);
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
+    let cloned = match stream.try_clone() {
+        Ok(cloned) => cloned,
+        Err(err) => {
+            tracing::warn!(error = %err, "LinSync GUI bridge stream clone failed");
+            return;
+        }
+    };
+    let mut reader = BufReader::new(cloned).take(MAX_BRIDGE_REQUEST_BYTES);
 
+    let request_line = match read_request_line(&mut reader) {
+        Ok(Some(line)) => line,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(error = %err, "LinSync GUI bridge request-line read failed");
+            return;
+        }
+    };
+
+    // Control requests skip the worker cap entirely; their handlers are
+    // sub-millisecond (a HashMap lookup for /progress, an AtomicBool flip for
+    // /cancel) so they never wait behind a saturated heavy pool.
+    if is_control_request(&request_line) {
+        if let Ok(Some(request)) = read_headers_and_body(&mut reader, request_line, &mut stream) {
+            let response = bridge_response_with_token(
+                &request.request_line,
+                &request.body,
+                paths,
+                state,
+                Some(token),
+            );
+            write_bridge_response(&mut stream, &response);
+        }
+        return;
+    }
+
+    // Heavy request — gate on the cap so a retrigger storm or progress-poll
+    // flood can't run unbounded heavy work concurrently. Excess connections
+    // get a 503 so the client retries on the next tick rather than queuing.
+    if active.load(Ordering::Relaxed) >= cap {
+        tracing::warn!(
+            concurrent = active.load(Ordering::Relaxed),
+            "LinSync GUI bridge connection limit reached, rejecting"
+        );
+        write_bridge_response(
+            &mut stream,
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        return;
+    }
+    active.fetch_add(1, Ordering::Relaxed);
+    // RAII guard ensures the permit is released even if the handler panics
+    // (default unwind strategy). Without this, a panic would leak a permit and
+    // after MAX_CONCURRENT panics wedge the bridge — the exact session-
+    // accumulating hang this cap exists to prevent.
+    let _guard = PermitGuard(active);
+
+    if let Ok(Some(request)) = read_headers_and_body(&mut reader, request_line, &mut stream) {
+        let response = bridge_response_with_token(
+            &request.request_line,
+            &request.body,
+            paths,
+            state,
+            Some(token),
+        );
+        write_bridge_response(&mut stream, &response);
+    }
+}
+
+fn write_bridge_response(stream: &mut TcpStream, response: &[u8]) {
+    if let Err(err) = stream.write_all(response).and_then(|_| stream.flush()) {
+        tracing::warn!(error = %err, "LinSync GUI bridge response write failed");
+    }
+}
+
+/// Read just the HTTP request line (the first line). Returns `Ok(None)` for an
+/// empty/immediately-closed connection.
+fn read_request_line(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(line))
+}
+
+/// Read the remaining headers (bounded by `MAX_BRIDGE_HEADERS`) and a body up
+/// to `MAX_BRIDGE_REQUEST_BYTES`, then enforce the cross-origin check (writing
+/// a 403 directly to `stream` when it fails). Returns `Ok(None)` when an error
+/// response was already written or the request was malformed.
+fn read_headers_and_body(
+    reader: &mut impl BufRead,
+    request_line: String,
+    stream: &mut TcpStream,
+) -> std::io::Result<Option<BridgeRequest>> {
     let mut origin: Option<String> = None;
     let mut headers_seen: usize = 0;
     let mut content_length: usize = 0;
     loop {
         if headers_seen > MAX_BRIDGE_HEADERS {
-            return Ok(());
+            return Ok(None);
         }
         headers_seen += 1;
         let mut header = String::new();
@@ -170,13 +253,23 @@ pub(crate) fn handle_bridge_connection(
         && !origin_is_loopback(value)
     {
         let response = bridge_error(403, "Forbidden", "cross-origin requests are not allowed");
-        stream.write_all(&response)?;
-        return stream.flush();
+        let _ = stream.write_all(&response);
+        let _ = stream.flush();
+        return Ok(None);
     }
 
-    let response = bridge_response_with_token(&request_line, &body, paths, state, Some(token));
-    stream.write_all(&response)?;
-    stream.flush()
+    Ok(Some(BridgeRequest { request_line, body }))
+}
+
+/// Cheap routing check: does this request target one of the lightweight
+/// control endpoints (`/cancel`, `/progress`) that must stay servicable even
+/// when every heavy worker slot is occupied? Based on the raw request target
+/// so it works regardless of the bridge auth-token prefix; no other route
+/// ends with these segments.
+pub(crate) fn is_control_request(request_line: &str) -> bool {
+    let target = request_line.split_whitespace().nth(1).unwrap_or("");
+    let path = target.split('?').next().unwrap_or("");
+    path.ends_with("/cancel") || path.ends_with("/progress")
 }
 
 pub(crate) fn origin_is_loopback(origin: &str) -> bool {
@@ -1753,8 +1846,25 @@ pub(crate) fn save_bridge_response(query: &str, state: &Arc<Mutex<GuiBridgeState
         return bridge_error(400, "Bad Request", "missing side");
     };
 
+    // Three-phase save so the file I/O never holds the global state lock:
+    // phase 1 clones the rows/path out under a brief lock, phase 2 writes to
+    // disk with NO lock held (a slow/networked filesystem can't freeze every
+    // other bridge request — `/progress`, `/cancel`, tab activation, ...),
+    // phase 3 re-takes the lock to clear dirty flags and build the response.
+    // `GuiBridgeState::save_side` orchestrates the same three phases inline for
+    // direct (test) callers that own `&mut self`.
+    let prepared = match state.lock() {
+        Ok(mut s) => match s.prepare_save(side) {
+            Ok(prepared) => prepared,
+            Err(err) => return bridge_error(400, "Bad Request", &err),
+        },
+        Err(_) => return bridge_error(500, "Internal Server Error", "session state unavailable"),
+    };
+
+    let attempt = perform_save(&prepared.sides);
+
     let context = match state.lock() {
-        Ok(mut state) => match state.save_side(side) {
+        Ok(mut s) => match s.finish_save(&prepared, attempt) {
             Ok(context) => context,
             Err(err) => return bridge_error(400, "Bad Request", &err),
         },

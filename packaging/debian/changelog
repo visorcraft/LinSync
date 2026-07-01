@@ -1,3 +1,12 @@
+linsync (1.16.3-1) unstable; urgency=medium
+
+  * Fix GUI slowdown/hang: cap runaway progress polling on the Webpage and
+    Document compare pages, cancel wedged compares on timeout, bound log file
+    growth via rotation, release the bridge state lock during saves, and keep
+    /cancel + /progress servicable under worker-pool saturation.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Tue, 30 Jun 2026 18:00:00 -0500
+
 linsync (1.16.2-1) unstable; urgency=medium
 
   * Fix Compare view startup: left/right panes now open at equal width and the

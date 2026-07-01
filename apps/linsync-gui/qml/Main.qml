@@ -6825,6 +6825,14 @@ Kirigami.ApplicationWindow {
             }
             root.progressPollCount += 1
             if (root.progressPollCount > root.progressPollMax) {
+                // Compare never reported back. Cancel it on the bridge so its
+                // worker slot is freed (cooperative cancel — polled by the
+                // folder/text/image compare loops), then recover the UI
+                // instead of polling forever and exhausting the connection
+                // pool — the "app gets slow until restarted" failure mode.
+                var hungId = root.activeRequestId
+                if (hungId && root.bridgeUrl)
+                    root.bridgeGet("/cancel?id=" + encodeURIComponent(hungId), function () {})
                 root.comparing = false
                 root.activeRequestId = ""
                 root.statusText = qsTr("Compare monitoring timed out")

@@ -1,6 +1,7 @@
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tracing_subscriber::fmt;
@@ -39,6 +40,7 @@ impl From<tracing_subscriber::util::TryInitError> for LoggingError {
 
 pub fn init_file_logging(paths: &AppPaths) -> Result<(), LoggingError> {
     fs::create_dir_all(&paths.state_dir)?;
+    rotate_log_if_needed(&paths.log_file);
     let file = open_owner_only_append(&paths.log_file)?;
 
     fmt()
@@ -49,6 +51,42 @@ pub fn init_file_logging(paths: &AppPaths) -> Result<(), LoggingError> {
         .try_init()?;
 
     Ok(())
+}
+
+/// Above this size the log is rotated (at startup) to a single `.1` backup, so
+/// a long-running GUI install cannot accumulate a multi-GB log over weeks. The
+/// value is a balance: large enough that normal use never rotates within a
+/// session, small enough that the on-disk footprint stays bounded (~2× this).
+const MAX_LOG_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// If the log file at `path` has grown beyond [`MAX_LOG_FILE_BYTES`], rotate it
+/// to `<path>.1` (replacing any previous backup) before the next open. Best
+/// effort: a failed rotation is logged nowhere (we're initializing logging)
+/// and the file simply keeps appending — no worse than the previous behavior.
+fn rotate_log_if_needed(path: &Path) {
+    let len = match fs::metadata(path) {
+        Ok(meta) => meta.len(),
+        Err(_) => return,
+    };
+    if len < MAX_LOG_FILE_BYTES {
+        return;
+    }
+    let backup = log_backup_path(path);
+    // `rename(2)` atomically replaces an existing destination on Unix; on
+    // platforms where it doesn't, fall back to removing the old backup first.
+    if fs::rename(path, &backup).is_err() {
+        let _ = fs::remove_file(&backup);
+        let _ = fs::rename(path, &backup);
+    }
+}
+
+fn log_backup_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|s| s.to_os_string())
+        .unwrap_or_else(|| OsString::from("linsync.log"));
+    name.push(".1");
+    path.with_file_name(name)
 }
 
 pub fn install_panic_log_hook(paths: &AppPaths) -> Result<(), LoggingError> {
@@ -141,6 +179,35 @@ mod tests {
             fs::metadata(log_file).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn rotates_log_file_when_it_exceeds_the_size_limit() {
+        let fixture = TempFixture::new();
+        let log_file = fixture.path.join("linsync.log");
+        // Write a file just over the rotation threshold.
+        let oversize = vec![b'.'; MAX_LOG_FILE_BYTES as usize + 1024];
+        fs::write(&log_file, &oversize).unwrap();
+
+        rotate_log_if_needed(&log_file);
+
+        // Original path is gone, backup holds the old content.
+        assert!(!log_file.exists());
+        let backup = log_backup_path(&log_file);
+        assert!(backup.exists());
+        assert_eq!(fs::metadata(backup).unwrap().len(), oversize.len() as u64);
+    }
+
+    #[test]
+    fn leaves_small_log_file_unrotated() {
+        let fixture = TempFixture::new();
+        let log_file = fixture.path.join("linsync.log");
+        fs::write(&log_file, b"tiny").unwrap();
+
+        rotate_log_if_needed(&log_file);
+
+        assert!(log_file.exists());
+        assert!(!log_backup_path(&log_file).exists());
     }
 
     struct TempFixture {

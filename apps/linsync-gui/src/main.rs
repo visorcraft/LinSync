@@ -907,16 +907,99 @@ impl GuiBridgeState {
         Ok(self.context())
     }
 
-    fn save_side(&mut self, side: &str) -> Result<GuiLaunchContext, String> {
-        let active_tab_id = self.session.active_tab_id;
+    /// Phase 1 of a save, taken under the state lock: validate the active tab,
+    /// resolve which side(s) to write, and clone their rows/path out so the
+    /// actual file I/O can happen without holding the lock. Does no disk I/O
+    /// and mutates no dirty/status flags.
+    fn prepare_save(&mut self, side: &str) -> Result<PreparedSave, String> {
+        let tab_id = self.session.active_tab_id;
         let tab = self
             .session
             .tabs
             .iter_mut()
-            .find(|tab| tab.id == active_tab_id)
+            .find(|tab| tab.id == tab_id)
+            .ok_or_else(|| "no active compare tab".to_owned())?;
+        if tab.mode != "Text" {
+            return Err("save currently supports text compare tabs only".to_owned());
+        }
+
+        let scope = match side {
+            "left" => SaveScope::Left,
+            "right" => SaveScope::Right,
+            "dirty" | "all" => SaveScope::DirtyAll,
+            other => return Err(format!("unsupported save side: {other}")),
+        };
+
+        // Build the ordered candidate list. Order matters for DirtyAll status
+        // messaging ("Saved left and right"); clean sides are skipped so the
+        // "already clean" / "no dirty sides" outcomes derive from scope + an
+        // empty sides list in `finish_save`, preserving the old semantics.
+        let mut sides = Vec::new();
+        for (label, dirty, path, rows) in [
+            ("left", tab.left_dirty, &tab.left_path, &tab.left_rows),
+            ("right", tab.right_dirty, &tab.right_path, &tab.right_rows),
+        ] {
+            if !dirty {
+                continue;
+            }
+            if path.is_empty() {
+                return Err(format!("cannot save {label} side without a path"));
+            }
+            sides.push(PreparedSaveSide {
+                label,
+                path: path.to_owned(),
+                rows: rows.to_vec(),
+            });
+        }
+        Ok(PreparedSave {
+            tab_id,
+            scope,
+            sides,
+        })
+    }
+
+    /// Phase 3 of a save, taken under the state lock again: clear the dirty
+    /// flag for each side that was written — but only if its on-tab rows still
+    /// match what we wrote, so a concurrent edit/copy between prepare and
+    /// finish isn't silently marked saved — then set the tab status.
+    fn finish_save(
+        &mut self,
+        prepared: &PreparedSave,
+        attempt: SaveAttempt,
+    ) -> Result<GuiLaunchContext, String> {
+        let tab = self
+            .session
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == prepared.tab_id)
             .ok_or_else(|| "no active compare tab".to_owned())?;
 
-        save_tab_side(tab, side)?;
+        for side in &prepared.sides {
+            if !attempt.saved.contains(&side.label) {
+                continue;
+            }
+            let still_matches = match side.label {
+                "left" => rows_text_eq(&tab.left_rows, &side.rows),
+                "right" => rows_text_eq(&tab.right_rows, &side.rows),
+                _ => false,
+            };
+            if still_matches {
+                match side.label {
+                    "left" => tab.left_dirty = false,
+                    "right" => tab.right_dirty = false,
+                    _ => {}
+                }
+            }
+        }
+
+        tab.status = match (&attempt.error, attempt.saved.as_slice()) {
+            (Some(err), &[]) => err.clone(),
+            (_, saved) => compute_save_status(prepared.scope, saved),
+        };
+
+        if let Some(err) = attempt.error {
+            return Err(err);
+        }
         Ok(self.context())
     }
 
@@ -1004,88 +1087,106 @@ fn push_limited_snapshot(stack: &mut Vec<GuiCompareTab>, snapshot: GuiCompareTab
     }
 }
 
-fn save_tab_side(tab: &mut GuiCompareTab, side: &str) -> Result<(), String> {
-    if tab.mode != "Text" {
-        return Err("save currently supports text compare tabs only".to_owned());
-    }
+/// Which side(s) a save request targets. Drives the status-string computation
+/// in `finish_save` so it matches the old single-pass implementation exactly.
+#[derive(Clone, Copy)]
+enum SaveScope {
+    Left,
+    Right,
+    DirtyAll,
+}
 
-    match side {
-        "left" => save_tab_rows(
-            "left",
-            &tab.left_path,
-            &tab.left_rows,
-            &mut tab.left_dirty,
-            &mut tab.status,
-        ),
-        "right" => save_tab_rows(
-            "right",
-            &tab.right_path,
-            &tab.right_rows,
-            &mut tab.right_dirty,
-            &mut tab.status,
-        ),
-        "dirty" | "all" => {
-            let mut saved = Vec::new();
-            if tab.left_dirty {
-                save_tab_rows(
-                    "left",
-                    &tab.left_path,
-                    &tab.left_rows,
-                    &mut tab.left_dirty,
-                    &mut tab.status,
-                )?;
-                saved.push("left");
+/// One side's data, cloned out from under the state lock so the file write can
+/// happen without holding it.
+struct PreparedSaveSide {
+    label: &'static str,
+    path: String,
+    rows: Vec<GuiLineRow>,
+}
+
+/// The collected inputs for a save, produced by phase 1 (`prepare_save`) and
+/// consumed by phases 2 and 3.
+struct PreparedSave {
+    tab_id: u64,
+    scope: SaveScope,
+    sides: Vec<PreparedSaveSide>,
+}
+
+/// Result of phase 2: the sides that were actually written (in order), plus the
+/// first error encountered (if any). Sides are attempted in order, so a later
+/// side isn't tried once an earlier one fails — matching the old behavior.
+struct SaveAttempt {
+    saved: Vec<&'static str>,
+    error: Option<String>,
+}
+
+/// Phase 2 (no state lock): write each prepared side to disk in order. Done
+/// outside the lock so a slow/networked filesystem can't freeze every other
+/// bridge request (`/progress`, `/cancel`, tab activation, ...) for the
+/// duration of the write.
+fn perform_save(sides: &[PreparedSaveSide]) -> SaveAttempt {
+    let mut saved = Vec::new();
+    for side in sides {
+        match write_save_side(side) {
+            Ok(()) => saved.push(side.label),
+            Err(err) => {
+                return SaveAttempt {
+                    saved,
+                    error: Some(err),
+                };
             }
-            if tab.right_dirty {
-                save_tab_rows(
-                    "right",
-                    &tab.right_path,
-                    &tab.right_rows,
-                    &mut tab.right_dirty,
-                    &mut tab.status,
-                )?;
-                saved.push("right");
+        }
+    }
+    SaveAttempt { saved, error: None }
+}
+
+fn write_save_side(side: &PreparedSaveSide) -> Result<(), String> {
+    let label = side.label;
+    let target = PathBuf::from(&side.path);
+    let document = TextDocument::from_path(&target)
+        .map_err(|err| format!("failed to read {label} side before save: {err}"))?;
+    if document.read_only {
+        return Err(format!("cannot save read-only {label} side"));
+    }
+    let contents = rows_to_document_text(&side.rows, &document);
+    let plan = create_save_plan(&target, true);
+    write_encoded_text_with_plan(&plan, &contents, document.encoding)
+        .map_err(|err| format!("failed to save {label} side: {err}"))
+}
+
+/// Recompute the tab status after a save, faithful to the old single-pass
+/// implementation: explicit single-side saves say "... side with backup" /
+/// "... side already clean"; "dirty"/"all" saves list the sides written.
+fn compute_save_status(scope: SaveScope, saved: &[&'static str]) -> String {
+    match scope {
+        SaveScope::Left | SaveScope::Right => {
+            let label = match scope {
+                SaveScope::Left => "left",
+                SaveScope::Right => "right",
+                SaveScope::DirtyAll => unreachable!("handled in the DirtyAll arm"),
+            };
+            if saved.is_empty() {
+                format!("{label} side already clean")
+            } else {
+                format!("Saved {label} side with backup")
             }
-            tab.status = if saved.is_empty() {
+        }
+        SaveScope::DirtyAll => {
+            if saved.is_empty() {
                 "No dirty sides to save".to_owned()
             } else {
                 format!("Saved {}", saved.join(" and "))
-            };
-            Ok(())
+            }
         }
-        _ => Err(format!("unsupported save side: {side}")),
     }
 }
 
-fn save_tab_rows(
-    side: &str,
-    path: &str,
-    rows: &[GuiLineRow],
-    dirty: &mut bool,
-    status: &mut String,
-) -> Result<(), String> {
-    if !*dirty {
-        *status = format!("{side} side already clean");
-        return Ok(());
-    }
-    if path.is_empty() {
-        return Err(format!("cannot save {side} side without a path"));
-    }
-
-    let target = PathBuf::from(path);
-    let document = TextDocument::from_path(&target)
-        .map_err(|err| format!("failed to read {side} side before save: {err}"))?;
-    if document.read_only {
-        return Err(format!("cannot save read-only {side} side"));
-    }
-    let contents = rows_to_document_text(rows, &document);
-    let plan = create_save_plan(&target, true);
-    write_encoded_text_with_plan(&plan, &contents, document.encoding)
-        .map_err(|err| format!("failed to save {side} side: {err}"))?;
-
-    *dirty = false;
-    *status = format!("Saved {side} side with backup");
-    Ok(())
+/// Cheap content check used by `finish_save` to decide whether clearing the
+/// dirty flag is still safe: if the side's row texts changed between prepare
+/// and finish (a concurrent copy/edit), leave it dirty so the user is prompted
+/// to save again rather than silently losing the new edit.
+fn rows_text_eq(a: &[GuiLineRow], b: &[GuiLineRow]) -> bool {
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.text == y.text)
 }
 
 fn rows_to_document_text(rows: &[GuiLineRow], document: &TextDocument) -> String {
