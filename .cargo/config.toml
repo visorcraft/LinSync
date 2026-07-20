@@ -4,6 +4,8 @@
 # or `RUSTFLAGS= cargo …` (skip mold); see AGENTS.md "Build acceleration".
 [build]
 rustc-wrapper = "sccache"
+# ponytail: silence GCC 16 SFINAE noise from system Qt 6 qchar.h:48 — distro/upstream bug, harmless
+rustflags = ["-Wno-sfinae-incomplete"]
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
