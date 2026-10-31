@@ -245,7 +245,7 @@ job continues with `LINSYNC_SANDBOX_SKIP=1` and no extra capabilities.
 sandbox-stress:
   runs-on: ubuntu-24.04
   steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - run: cargo test -p linsync-core --test plugin_sandbox_stress
       env:
         LINSYNC_SANDBOX_SKIP: ""   # empty = sandbox enabled

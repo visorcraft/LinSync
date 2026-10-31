@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.16.3
+Version:        1.16.4
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -125,6 +125,9 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Sat Oct 31 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.16.4-1
+- Fix the GCC 16 Qt header build, refresh bundled crates to their latest compatible releases, and move GitHub Actions onto current Node 24 majors.
+
 * Tue Jun 30 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.16.3-1
 - Fix GUI slowdown/hang: cap runaway progress polling, cancel wedged compares, bound log growth, release the bridge lock during saves, and keep /cancel + /progress servicable under worker saturation.
 

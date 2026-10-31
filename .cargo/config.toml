@@ -4,8 +4,14 @@
 # or `RUSTFLAGS= cargo …` (skip mold); see AGENTS.md "Build acceleration".
 [build]
 rustc-wrapper = "sccache"
-# ponytail: silence GCC 16 SFINAE noise from system Qt 6 qchar.h:48 — distro/upstream bug, harmless
-rustflags = ["-Wno-sfinae-incomplete"]
+
+# GCC 16 warns by default on system Qt 6 headers (qchar.h, QTBUG-143470).
+# This cannot be a rustflag: target rustflags replace [build] rustflags, and
+# rustc rejects -Wno-*. The cc crate forwards CXXFLAGS last on every C++
+# compile, including cxx-qt-lib. -Wall/-Wextra put back cc's own defaults,
+# which it skips once CXXFLAGS is set.
+[env]
+CXXFLAGS = "-Wall -Wextra -Wno-sfinae-incomplete"
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]

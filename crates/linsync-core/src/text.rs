@@ -1096,7 +1096,7 @@ fn decode_text(bytes: &[u8]) -> DecodedText {
 
 fn decode_utf16(bytes: &[u8], little_endian: bool) -> DecodedText {
     let mut words = Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
+    for chunk in bytes.as_chunks::<2>().0 {
         let word = if little_endian {
             u16::from_le_bytes([chunk[0], chunk[1]])
         } else {

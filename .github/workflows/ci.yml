@@ -26,7 +26,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -36,7 +36,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Qt 6 + C++ toolchain + mold/sccache
         run: |
           sudo apt-get update
@@ -59,7 +59,7 @@ jobs:
     name: test (stable)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Qt 6 + runtime + C++ toolchain + mold/sccache
         run: |
           sudo apt-get update
@@ -98,7 +98,7 @@ jobs:
       CARGO_BUILD_RUSTC_WRAPPER: ""
       RUSTFLAGS: ""
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p linsync-sandbox --test sandbox_integration
@@ -126,7 +126,7 @@ jobs:
             sccache \
             ninja \
             mesa
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build GUI binary (cxx-qt in-process host)
@@ -172,7 +172,7 @@ jobs:
             mesa \
             xorg-server-xvfb \
             imagemagick
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build GUI binary
@@ -197,7 +197,7 @@ jobs:
     name: accessibility label grep
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Check every Button/Switch/SpinBox/ComboBox/TextField has a label
         run: bash scripts/gui-smoke.sh --check-a11y
 
@@ -206,7 +206,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Check for feature-matrix / known-limitations drift
@@ -229,7 +229,7 @@ jobs:
       CC: cc
       CXX: c++
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: EmbarkStudios/cargo-deny-action@v2
 
@@ -237,7 +237,7 @@ jobs:
     name: cargo-audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -247,7 +247,7 @@ jobs:
     name: appstream metadata
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y appstream
       - run: appstreamcli validate --no-net packaging/com.visorcraft.LinSync.metainfo.xml
 
@@ -255,7 +255,7 @@ jobs:
     name: desktop file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y desktop-file-utils
       - run: desktop-file-validate packaging/com.visorcraft.LinSync.desktop
 

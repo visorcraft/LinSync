@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Last regenerated: 2026-06-29
+Last regenerated: 2026-10-31
 
 This notice file covers the current LinSync source tree and Cargo dependency
 set. It must be regenerated or reviewed before every public binary release.
@@ -35,114 +35,122 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | --- | --- | --- |
 <!-- BEGIN GENERATED CREDITS (do not edit inside; run `just credits-update`) -->
 | `adler2` | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
-| `aho-corasick` | 1.1.4 | Unlicense OR MIT |
-| `anyhow` | 1.0.102 | MIT OR Apache-2.0 |
-| `arrayref` | 0.3.9 | BSD-2-Clause |
-| `arrayvec` | 0.7.6 | MIT OR Apache-2.0 |
+| `aho-corasick` | 1.1.5 | Unlicense OR MIT |
+| `anyhow` | 1.0.104 | MIT OR Apache-2.0 |
+| `arrayvec` | 0.7.8 | MIT OR Apache-2.0 |
 | `autocfg` | 1.5.1 | Apache-2.0 OR MIT |
 | `bincode` | 1.3.3 | MIT |
 | `bit_field` | 0.10.3 | Apache-2.0/MIT |
-| `bitflags` | 2.13.0 | MIT OR Apache-2.0 |
-| `blake3` | 1.8.5 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
+| `bitflags` | 2.13.2 | MIT OR Apache-2.0 |
+| `blake3` | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
 | `block-buffer` | 0.12.1 | MIT OR Apache-2.0 |
-| `bytemuck` | 1.25.0 | Zlib OR Apache-2.0 OR MIT |
+| `bytemuck` | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
 | `byteorder-lite` | 0.1.0 | Unlicense OR MIT |
-| `cc` | 1.2.64 | MIT OR Apache-2.0 |
-| `cfg-if` | 1.0.4 | MIT OR Apache-2.0 |
+| `cc` | 1.10.0 | MIT OR Apache-2.0 |
+| `cfg-if` | 1.0.5 | MIT OR Apache-2.0 |
 | `clang-format` | 0.3.0 | MIT OR Apache-2.0 |
 | `codespan-reporting` | 0.11.1 | Apache-2.0 |
 | `codespan-reporting` | 0.13.1 | Apache-2.0 |
 | `color_quant` | 1.1.0 | MIT |
-| `const-oid` | 0.10.2 | Apache-2.0 OR MIT |
 | `constant_time_eq` | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
+| `const-oid` | 0.10.2 | Apache-2.0 OR MIT |
 | `convert_case` | 0.6.0 | MIT |
-| `cpufeatures` | 0.3.0 | MIT OR Apache-2.0 |
-| `crc32fast` | 1.5.0 | MIT OR Apache-2.0 |
+| `cpufeatures` | 0.3.1 | MIT OR Apache-2.0 |
+| `crc32fast` | 1.5.3 | MIT OR Apache-2.0 |
 | `crypto-common` | 0.2.2 | MIT OR Apache-2.0 |
-| `cxx` | 1.0.194 | MIT OR Apache-2.0 |
-| `cxx-gen` | 0.7.194 | MIT OR Apache-2.0 |
-| `cxx-qt` | 0.8.1 | MIT OR Apache-2.0 |
-| `cxx-qt-build` | 0.8.1 | MIT OR Apache-2.0 |
-| `cxx-qt-gen` | 0.8.1 | MIT OR Apache-2.0 |
-| `cxx-qt-lib` | 0.8.1 | MIT OR Apache-2.0 |
-| `cxx-qt-macro` | 0.8.1 | MIT OR Apache-2.0 |
-| `cxxbridge-flags` | 1.0.194 | MIT OR Apache-2.0 |
-| `cxxbridge-macro` | 1.0.194 | MIT OR Apache-2.0 |
+| `cxx` | 1.0.205 | MIT OR Apache-2.0 |
+| `cxxbridge-flags` | 1.0.205 | MIT OR Apache-2.0 |
+| `cxxbridge-macro` | 1.0.205 | MIT OR Apache-2.0 |
+| `cxx-gen` | 0.7.205 | MIT OR Apache-2.0 |
+| `cxx-qt` | 0.10.0 | MIT OR Apache-2.0 |
+| `cxx-qt-build` | 0.10.0 | MIT OR Apache-2.0 |
+| `cxx-qt-gen` | 0.10.0 | MIT OR Apache-2.0 |
+| `cxx-qt-lib` | 0.10.0 | MIT OR Apache-2.0 |
+| `cxx-qt-macro` | 0.10.0 | MIT OR Apache-2.0 |
 | `digest` | 0.11.3 | MIT OR Apache-2.0 |
 | `enumflags2` | 0.7.12 | MIT OR Apache-2.0 |
 | `enumflags2_derive` | 0.7.12 | MIT OR Apache-2.0 |
-| `equivalent` | 1.0.2 | Apache-2.0 OR MIT |
-| `exr` | 1.74.0 | BSD-3-Clause |
-| `fastrand` | 2.4.1 | Apache-2.0 OR MIT |
+| `equivalent` | 1.0.3 | Apache-2.0 OR MIT |
+| `exr` | 1.74.2 | BSD-3-Clause |
+| `fastrand` | 2.5.0 | Apache-2.0 OR MIT |
 | `fax` | 0.2.7 | MIT |
 | `fdeflate` | 0.3.7 | MIT OR Apache-2.0 |
-| `find-msvc-tools` | 0.1.9 | MIT OR Apache-2.0 |
-| `flate2` | 1.1.9 | MIT OR Apache-2.0 |
+| `find-msvc-tools` | 0.1.15 | MIT OR Apache-2.0 |
+| `flate2` | 1.1.10 | MIT OR Apache-2.0 |
 | `fnv` | 1.0.7 | Apache-2.0 / MIT |
 | `foldhash` | 0.2.0 | Zlib |
 | `getrandom` | 0.4.3 | MIT OR Apache-2.0 |
 | `gif` | 0.14.2 | MIT OR Apache-2.0 |
 | `half` | 2.7.1 | MIT OR Apache-2.0 |
 | `hashbrown` | 0.17.1 | MIT OR Apache-2.0 |
-| `hybrid-array` | 0.4.12 | MIT OR Apache-2.0 |
+| `hybrid-array` | 0.4.15 | MIT OR Apache-2.0 |
 | `image` | 0.25.10 | MIT OR Apache-2.0 |
 | `image-webp` | 0.2.4 | MIT OR Apache-2.0 |
-| `indexmap` | 2.14.0 | Apache-2.0 OR MIT |
-| `indoc` | 2.0.7 | MIT OR Apache-2.0 |
+| `indexmap` | 2.14.2 | Apache-2.0 OR MIT |
+| `indoc` | 2.0.8 | MIT OR Apache-2.0 |
 | `itoa` | 1.0.18 | MIT OR Apache-2.0 |
-| `jobserver` | 0.1.34 | MIT OR Apache-2.0 |
+| `jobserver` | 0.1.35 | MIT OR Apache-2.0 |
 | `lab` | 0.11.0 | MIT |
-| `landlock` | 0.4.5 | MIT OR Apache-2.0 |
-| `lazy_static` | 1.5.0 | MIT OR Apache-2.0 |
+| `landlock` | 0.4.7 | MIT OR Apache-2.0 |
+| `lazy_static` | 1.5.1 | MIT OR Apache-2.0 |
 | `lebe` | 0.5.3 | BSD-3-Clause |
-| `libc` | 0.2.186 | MIT OR Apache-2.0 |
+| `libc` | 0.2.191 | MIT OR Apache-2.0 |
+| `libm` | 0.2.16 | MIT |
 | `link-cplusplus` | 1.0.12 | MIT OR Apache-2.0 |
 | `linux-raw-sys` | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| `log` | 0.4.32 | MIT OR Apache-2.0 |
-| `memchr` | 2.8.2 | Unlicense OR MIT |
+| `log` | 0.4.35 | MIT OR Apache-2.0 |
+| `memchr` | 2.8.3 | Unlicense OR MIT |
 | `miniz_oxide` | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
+| `miniz_oxide` | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | `moxcms` | 0.8.1 | BSD-3-Clause OR Apache-2.0 |
 | `nu-ansi-term` | 0.50.3 | MIT |
+| `num-complex` | 0.4.6 | MIT OR Apache-2.0 |
 | `num-traits` | 0.2.19 | MIT OR Apache-2.0 |
 | `once_cell` | 1.21.4 | MIT OR Apache-2.0 |
 | `onig` | 6.5.3 | MIT |
 | `onig_sys` | 69.9.3 | MIT |
+| `paste` | 1.0.15 | MIT OR Apache-2.0 |
 | `pin-project-lite` | 0.2.17 | Apache-2.0 OR MIT |
-| `pkg-config` | 0.3.33 | MIT OR Apache-2.0 |
+| `pkg-config` | 0.3.34 | MIT OR Apache-2.0 |
 | `png` | 0.18.1 | MIT OR Apache-2.0 |
-| `proc-macro2` | 1.0.106 | MIT OR Apache-2.0 |
-| `pxfm` | 0.1.29 | BSD-3-Clause OR Apache-2.0 |
-| `qt-build-utils` | 0.8.1 | MIT OR Apache-2.0 |
+| `proc-macro2` | 1.0.107 | MIT OR Apache-2.0 |
+| `pulp` | 0.22.3 | MIT |
+| `pulp-wasm-simd-flag` | 0.1.1 | MIT |
+| `pxfm` | 0.1.30 | BSD-3-Clause OR Apache-2.0 |
+| `qt-build-utils` | 0.10.0 | MIT OR Apache-2.0 |
 | `quick-error` | 2.0.1 | MIT/Apache-2.0 |
-| `quote` | 1.0.45 | MIT OR Apache-2.0 |
-| `regex` | 1.12.4 | MIT OR Apache-2.0 |
-| `regex-automata` | 0.4.14 | MIT OR Apache-2.0 |
+| `quote` | 1.0.47 | MIT OR Apache-2.0 |
+| `raw-cpuid` | 11.6.0 | MIT |
+| `reborrow` | 0.5.5 | MIT |
+| `regex` | 1.13.1 | MIT OR Apache-2.0 |
+| `regex-automata` | 0.4.18 | MIT OR Apache-2.0 |
 | `regex-syntax` | 0.8.11 | MIT OR Apache-2.0 |
-| `rustix` | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| `rustversion` | 1.0.22 | MIT OR Apache-2.0 |
+| `rustix` | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| `rustversion` | 1.0.23 | MIT OR Apache-2.0 |
 | `same-file` | 1.0.6 | Unlicense/MIT |
 | `seccompiler` | 0.5.0 | Apache-2.0 OR BSD-3-Clause |
 | `semver` | 1.0.28 | MIT OR Apache-2.0 |
-| `serde` | 1.0.228 | MIT OR Apache-2.0 |
-| `serde_core` | 1.0.228 | MIT OR Apache-2.0 |
-| `serde_derive` | 1.0.228 | MIT OR Apache-2.0 |
-| `serde_json` | 1.0.150 | MIT OR Apache-2.0 |
-| `serde_repr` | 0.1.20 | MIT OR Apache-2.0 |
-| `sha2` | 0.11.0 | MIT OR Apache-2.0 |
+| `serde` | 1.0.229 | MIT OR Apache-2.0 |
+| `serde_core` | 1.0.229 | MIT OR Apache-2.0 |
+| `serde_derive` | 1.0.229 | MIT OR Apache-2.0 |
+| `serde_json` | 1.0.154 | MIT OR Apache-2.0 |
+| `serde_repr` | 0.1.21 | MIT OR Apache-2.0 |
+| `sha2` | 0.11.1 | MIT OR Apache-2.0 |
 | `sharded-slab` | 0.1.7 | MIT |
 | `shlex` | 2.0.1 | MIT OR Apache-2.0 |
-| `simd-adler32` | 0.3.9 | MIT |
-| `smallvec` | 1.15.2 | MIT OR Apache-2.0 |
+| `simd-adler32` | 0.3.10 | MIT |
+| `smallvec` | 1.16.4 | MIT OR Apache-2.0 |
 | `static_assertions` | 1.1.0 | MIT OR Apache-2.0 |
-| `syn` | 2.0.118 | MIT OR Apache-2.0 |
+| `syn` | 2.0.119 | MIT OR Apache-2.0 |
+| `syn` | 3.0.9 | MIT OR Apache-2.0 |
 | `syntect` | 5.3.0 | MIT |
 | `tempfile` | 3.27.0 | MIT OR Apache-2.0 |
 | `termcolor` | 1.4.1 | Unlicense OR MIT |
 | `thiserror` | 1.0.69 | MIT OR Apache-2.0 |
-| `thiserror` | 2.0.18 | MIT OR Apache-2.0 |
+| `thiserror` | 2.0.21 | MIT OR Apache-2.0 |
 | `thiserror-impl` | 1.0.69 | MIT OR Apache-2.0 |
-| `thiserror-impl` | 2.0.18 | MIT OR Apache-2.0 |
-| `thread_local` | 1.1.9 | MIT OR Apache-2.0 |
+| `thiserror-impl` | 2.0.21 | MIT OR Apache-2.0 |
+| `thread_local` | 1.1.10 | MIT OR Apache-2.0 |
 | `tiff` | 0.11.3 | MIT |
 | `tracing` | 0.1.44 | MIT |
 | `tracing-attributes` | 0.1.31 | MIT |
@@ -151,17 +159,19 @@ the Zlib license, whose full text is bundled in the in-app Licenses page.
 | `tracing-serde` | 0.2.0 | MIT |
 | `tracing-subscriber` | 0.3.23 | MIT |
 | `typenum` | 1.20.1 | MIT OR Apache-2.0 |
-| `unicode-ident` | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| `unicode-ident` | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | `unicode-segmentation` | 1.13.3 | MIT OR Apache-2.0 |
 | `unicode-width` | 0.1.14 | MIT OR Apache-2.0 |
-| `unicode-width` | 0.2.2 | MIT OR Apache-2.0 |
+| `unicode-width` | 0.2.3 | MIT OR Apache-2.0 |
 | `urlencoding` | 2.1.3 | MIT |
+| `version_check` | 0.9.5 | MIT/Apache-2.0 |
 | `walkdir` | 2.5.0 | Unlicense/MIT |
 | `weezl` | 0.1.12 | MIT OR Apache-2.0 |
-| `zerocopy` | 0.8.52 | BSD-2-Clause OR Apache-2.0 OR MIT |
-| `zerocopy-derive` | 0.8.52 | BSD-2-Clause OR Apache-2.0 OR MIT |
-| `zmij` | 1.0.21 | MIT |
-| `zune-core` | 0.5.1 | MIT OR Apache-2.0 OR Zlib |
+| `which` | 8.0.6 | MIT |
+| `zerocopy` | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| `zerocopy-derive` | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| `zmij` | 1.0.23 | MIT |
+| `zune-core` | 0.5.3 | MIT OR Apache-2.0 OR Zlib |
 | `zune-inflate` | 0.2.54 | MIT OR Apache-2.0 OR Zlib |
 | `zune-jpeg` | 0.5.15 | MIT OR Apache-2.0 OR Zlib |
 <!-- END GENERATED CREDITS -->

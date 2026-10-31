@@ -1,3 +1,10 @@
+linsync (1.16.4-1) unstable; urgency=medium
+
+  * Fix the GCC 16 Qt header build, refresh bundled crates to their latest
+    compatible releases, and move GitHub Actions onto current Node 24 majors.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Sat, 31 Oct 2026 12:00:00 -0500
+
 linsync (1.16.3-1) unstable; urgency=medium
 
   * Fix GUI slowdown/hang: cap runaway progress polling on the Webpage and
