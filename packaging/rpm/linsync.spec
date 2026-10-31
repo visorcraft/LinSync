@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.16.4
+Version:        1.16.5
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -125,6 +125,9 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Sat Oct 31 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.16.5-1
+- Keep the plugin discovery test off plugins already installed under /usr, so an upgrade can pass its test suite.
+
 * Sat Oct 31 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.16.4-1
 - Fix the GCC 16 Qt header build, refresh bundled crates to their latest compatible releases, and move GitHub Actions onto current Node 24 majors.
 

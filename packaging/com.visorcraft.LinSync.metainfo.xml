@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.16.5" date="2026-10-31">
+      <description>
+        <p>Bug fix release: the packaged test suite no longer fails when LinSync plugins are already installed under /usr. Upgrades can complete their checks on a machine that already has the package.</p>
+      </description>
+    </release>
     <release version="1.16.4" date="2026-10-31">
       <description>
         <p>Bug fix release: the in-process Qt build stays clean on GCC 16, where system Qt headers emit a harmless SFINAE warning. Bundled Rust crates are updated to their latest compatible releases, including security fixes for the HTTP and crossbeam libraries. GitHub Actions now use current Node 24 releases.</p>

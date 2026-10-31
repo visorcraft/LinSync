@@ -2844,12 +2844,28 @@ mod tests {
         assert!(roots.contains(&PathBuf::from("/usr/local/share/linsync/plugins")));
         assert!(roots.contains(&PathBuf::from("/usr/share/linsync/plugins")));
 
-        let discovery = discover_installed_plugins(&paths);
+        // discover_installed_plugins also reads the host system roots. An
+        // upgrade builds on a machine that already has those plugins, so the
+        // precedence check uses stand-in directories instead.
+        let system_root = fixture.path.join("system-plugins");
+        let system_same = system_root.join("shadow");
+        let system_other = system_root.join("other");
+        fs::create_dir_all(&system_same).unwrap();
+        fs::create_dir_all(&system_other).unwrap();
+        write_helper(&system_same, "normalize-text", "#!/bin/sh\n");
+        write_helper(&system_other, "normalize-text", "#!/bin/sh\n");
+        write_manifest(&system_same, &sample_manifest("example.installed"));
+        write_manifest(&system_other, &sample_manifest("example.system"));
 
-        assert_eq!(discovery.errors, Vec::new());
-        assert_eq!(discovery.plugins.len(), 1);
+        let discovery = discover_plugins(&[paths.user_plugins_dir(), system_root]);
+
+        assert_eq!(discovery.plugins.len(), 2);
         assert_eq!(discovery.plugins[0].manifest.id, "example.installed");
         assert_eq!(discovery.plugins[0].root, plugin_dir);
+        assert_eq!(discovery.plugins[1].manifest.id, "example.system");
+        assert_eq!(discovery.errors.len(), 1);
+        assert!(discovery.errors[0].message.contains("duplicate plugin id"));
+        assert!(discovery.errors[0].message.contains("example.installed"));
     }
 
     #[test]
