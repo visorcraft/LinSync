@@ -4,13 +4,9 @@ use std::process::Command;
 use tempfile::TempDir;
 
 fn cli_bin() -> PathBuf {
-    std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("linsync-cli")
+    // Cargo 1.100 runs the test harness from target/debug/build/<pkg>/<hash>/out,
+    // so walking up from current_exe() no longer reaches target/debug/linsync-cli.
+    PathBuf::from(env!("CARGO_BIN_EXE_linsync-cli"))
 }
 
 fn save_png(dir: &TempDir, name: &str, img: &RgbaImage) -> PathBuf {

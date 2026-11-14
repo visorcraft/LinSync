@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "linsync"
-version = "1.16.6"
+version = "1.16.7"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "linsync-cli"
-version = "1.16.6"
+version = "1.16.7"
 dependencies = [
  "image",
  "linsync-core",
@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "linsync-core"
-version = "1.16.6"
+version = "1.16.7"
 dependencies = [
  "blake3",
  "crc32fast",
@@ -1253,7 +1253,7 @@ dependencies = [
 
 [[package]]
 name = "linsync-sandbox"
-version = "1.16.6"
+version = "1.16.7"
 dependencies = [
  "landlock",
  "libc",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "linsync-webengine"
-version = "1.16.6"
+version = "1.16.7"
 dependencies = [
  "tempfile",
 ]

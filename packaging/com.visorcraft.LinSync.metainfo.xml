@@ -70,6 +70,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.16.7" date="2026-11-14">
+      <description>
+        <p>Bug fix release: the image compare command tests locate the CLI through Cargo, so the packaged test suite passes on Rust 1.100.</p>
+      </description>
+    </release>
     <release version="1.16.6" date="2026-11-14">
       <description>
         <p>Bug fix release: bundled Rust crates are updated to their latest releases, including crc32fast 1.5 and regex 1.13.</p>

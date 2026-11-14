@@ -1,3 +1,9 @@
+linsync (1.16.7-1) unstable; urgency=medium
+
+  * Find the image CLI test binary through Cargo so the suite passes on Rust 1.100.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Sat, 14 Nov 2026 04:50:00 -0600
+
 linsync (1.16.6-1) unstable; urgency=medium
 
   * Refresh bundled Rust crates to their latest releases.
