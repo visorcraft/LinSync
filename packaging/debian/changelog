@@ -1,3 +1,9 @@
+linsync (1.16.6-1) unstable; urgency=medium
+
+  * Refresh bundled Rust crates to their latest releases.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Sat, 14 Nov 2026 04:30:00 -0600
+
 linsync (1.16.5-1) unstable; urgency=medium
 
   * Keep the plugin discovery test off plugins already installed under /usr,

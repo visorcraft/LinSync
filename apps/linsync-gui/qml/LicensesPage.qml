@@ -67,7 +67,7 @@ Kirigami.Page {
         "after any dependency change.\n" +
         "\n" +
         // BEGIN GENERATED CREDITS COUNTS (do not edit inside; run `just credits-update`)
-        " - MIT License                  (128 crates)\n" +
+        " - MIT License                  (123 crates)\n" +
         " - Apache License 2.0           (9 crates)\n" +
         " - BSD 3-Clause                 (2 crates)\n" +
         " - BSD 2-Clause                 (0 crates)\n" +
@@ -87,23 +87,23 @@ Kirigami.Page {
         "| arrayvec             | 0.7.8    | MIT OR Apache-2.0 |\n" +
         "| autocfg              | 1.5.1    | Apache-2.0 OR MIT |\n" +
         "| bincode              | 1.3.3    | MIT |\n" +
-        "| bit_field            | 0.10.3   | Apache-2.0/MIT |\n" +
+        "| bit_field            | 0.10.4   | MIT OR Apache-2.0 |\n" +
         "| bitflags             | 2.13.2   | MIT OR Apache-2.0 |\n" +
         "| blake3               | 1.8.7    | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |\n" +
         "| block-buffer         | 0.12.1   | MIT OR Apache-2.0 |\n" +
         "| bytemuck             | 1.25.2   | Zlib OR Apache-2.0 OR MIT |\n" +
         "| byteorder-lite       | 0.1.0    | Unlicense OR MIT |\n" +
-        "| cc                   | 1.10.0   | MIT OR Apache-2.0 |\n" +
+        "| cc                   | 1.11.2   | MIT OR Apache-2.0 |\n" +
         "| cfg-if               | 1.0.5    | MIT OR Apache-2.0 |\n" +
         "| clang-format         | 0.3.0    | MIT OR Apache-2.0 |\n" +
         "| codespan-reporting   | 0.11.1   | Apache-2.0 |\n" +
         "| codespan-reporting   | 0.13.1   | Apache-2.0 |\n" +
         "| color_quant          | 1.1.0    | MIT |\n" +
         "| constant_time_eq     | 0.4.2    | CC0-1.0 OR MIT-0 OR Apache-2.0 |\n" +
-        "| const-oid            | 0.10.2   | Apache-2.0 OR MIT |\n" +
+        "| const-oid            | 0.10.3   | Apache-2.0 OR MIT |\n" +
         "| convert_case         | 0.6.0    | MIT |\n" +
         "| cpufeatures          | 0.3.1    | MIT OR Apache-2.0 |\n" +
-        "| crc32fast            | 1.5.3    | MIT OR Apache-2.0 |\n" +
+        "| crc32fast            | 1.5.5    | MIT OR Apache-2.0 |\n" +
         "| crypto-common        | 0.2.2    | MIT OR Apache-2.0 |\n" +
         "| cxx                  | 1.0.205  | MIT OR Apache-2.0 |\n" +
         "| cxxbridge-flags      | 1.0.205  | MIT OR Apache-2.0 |\n" +
@@ -118,12 +118,12 @@ Kirigami.Page {
         "| enumflags2           | 0.7.12   | MIT OR Apache-2.0 |\n" +
         "| enumflags2_derive    | 0.7.12   | MIT OR Apache-2.0 |\n" +
         "| equivalent           | 1.0.3    | Apache-2.0 OR MIT |\n" +
-        "| exr                  | 1.74.2   | BSD-3-Clause |\n" +
+        "| exr                  | 1.74.3   | BSD-3-Clause |\n" +
         "| fastrand             | 2.5.0    | Apache-2.0 OR MIT |\n" +
         "| fax                  | 0.2.7    | MIT |\n" +
         "| fdeflate             | 0.3.7    | MIT OR Apache-2.0 |\n" +
         "| find-msvc-tools      | 0.1.15   | MIT OR Apache-2.0 |\n" +
-        "| flate2               | 1.1.10   | MIT OR Apache-2.0 |\n" +
+        "| flate2               | 1.1.11   | MIT OR Apache-2.0 |\n" +
         "| fnv                  | 1.0.7    | Apache-2.0 / MIT |\n" +
         "| foldhash             | 0.2.0    | Zlib |\n" +
         "| getrandom            | 0.4.3    | MIT OR Apache-2.0 |\n" +
@@ -135,14 +135,13 @@ Kirigami.Page {
         "| image-webp           | 0.2.4    | MIT OR Apache-2.0 |\n" +
         "| indexmap             | 2.14.2   | Apache-2.0 OR MIT |\n" +
         "| indoc                | 2.0.8    | MIT OR Apache-2.0 |\n" +
-        "| itoa                 | 1.0.18   | MIT OR Apache-2.0 |\n" +
+        "| itoa                 | 1.0.19   | MIT OR Apache-2.0 |\n" +
         "| jobserver            | 0.1.35   | MIT OR Apache-2.0 |\n" +
         "| lab                  | 0.11.0   | MIT |\n" +
         "| landlock             | 0.4.7    | MIT OR Apache-2.0 |\n" +
         "| lazy_static          | 1.5.1    | MIT OR Apache-2.0 |\n" +
         "| lebe                 | 0.5.3    | BSD-3-Clause |\n" +
         "| libc                 | 0.2.191  | MIT OR Apache-2.0 |\n" +
-        "| libm                 | 0.2.16   | MIT |\n" +
         "| link-cplusplus       | 1.0.12   | MIT OR Apache-2.0 |\n" +
         "| linux-raw-sys        | 0.12.1   | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |\n" +
         "| log                  | 0.4.35   | MIT OR Apache-2.0 |\n" +
@@ -150,25 +149,21 @@ Kirigami.Page {
         "| miniz_oxide          | 0.8.9    | MIT OR Zlib OR Apache-2.0 |\n" +
         "| miniz_oxide          | 0.9.1    | MIT OR Zlib OR Apache-2.0 |\n" +
         "| moxcms               | 0.8.1    | BSD-3-Clause OR Apache-2.0 |\n" +
+        "| multiversion         | 0.8.1    | MIT OR Apache-2.0 |\n" +
+        "| multiversion-macros  | 0.8.1    | MIT OR Apache-2.0 |\n" +
         "| nu-ansi-term         | 0.50.3   | MIT |\n" +
-        "| num-complex          | 0.4.6    | MIT OR Apache-2.0 |\n" +
         "| num-traits           | 0.2.19   | MIT OR Apache-2.0 |\n" +
         "| once_cell            | 1.21.4   | MIT OR Apache-2.0 |\n" +
         "| onig                 | 6.5.3    | MIT |\n" +
         "| onig_sys             | 69.9.3   | MIT |\n" +
-        "| paste                | 1.0.15   | MIT OR Apache-2.0 |\n" +
         "| pin-project-lite     | 0.2.17   | Apache-2.0 OR MIT |\n" +
         "| pkg-config           | 0.3.34   | MIT OR Apache-2.0 |\n" +
         "| png                  | 0.18.1   | MIT OR Apache-2.0 |\n" +
         "| proc-macro2          | 1.0.107  | MIT OR Apache-2.0 |\n" +
-        "| pulp                 | 0.22.3   | MIT |\n" +
-        "| pulp-wasm-simd-flag  | 0.1.1    | MIT |\n" +
         "| pxfm                 | 0.1.30   | BSD-3-Clause OR Apache-2.0 |\n" +
         "| qt-build-utils       | 0.10.0   | MIT OR Apache-2.0 |\n" +
         "| quick-error          | 2.0.1    | MIT/Apache-2.0 |\n" +
         "| quote                | 1.0.47   | MIT OR Apache-2.0 |\n" +
-        "| raw-cpuid            | 11.6.0   | MIT |\n" +
-        "| reborrow             | 0.5.5    | MIT |\n" +
         "| regex                | 1.13.1   | MIT OR Apache-2.0 |\n" +
         "| regex-automata       | 0.4.18   | MIT OR Apache-2.0 |\n" +
         "| regex-syntax         | 0.8.11   | MIT OR Apache-2.0 |\n" +
@@ -186,11 +181,12 @@ Kirigami.Page {
         "| sharded-slab         | 0.1.7    | MIT |\n" +
         "| shlex                | 2.0.1    | MIT OR Apache-2.0 |\n" +
         "| simd-adler32         | 0.3.10   | MIT |\n" +
-        "| smallvec             | 1.16.4   | MIT OR Apache-2.0 |\n" +
+        "| smallvec             | 1.16.5   | MIT OR Apache-2.0 |\n" +
         "| static_assertions    | 1.1.0    | MIT OR Apache-2.0 |\n" +
         "| syn                  | 2.0.119  | MIT OR Apache-2.0 |\n" +
-        "| syn                  | 3.0.9    | MIT OR Apache-2.0 |\n" +
+        "| syn                  | 3.0.10   | MIT OR Apache-2.0 |\n" +
         "| syntect              | 5.3.0    | MIT |\n" +
+        "| target-features      | 0.1.6    | MIT OR Apache-2.0 |\n" +
         "| tempfile             | 3.27.0   | MIT OR Apache-2.0 |\n" +
         "| termcolor            | 1.4.1    | Unlicense OR MIT |\n" +
         "| thiserror            | 1.0.69   | MIT OR Apache-2.0 |\n" +
@@ -211,7 +207,6 @@ Kirigami.Page {
         "| unicode-width        | 0.1.14   | MIT OR Apache-2.0 |\n" +
         "| unicode-width        | 0.2.3    | MIT OR Apache-2.0 |\n" +
         "| urlencoding          | 2.1.3    | MIT |\n" +
-        "| version_check        | 0.9.5    | MIT/Apache-2.0 |\n" +
         "| walkdir              | 2.5.0    | Unlicense/MIT |\n" +
         "| weezl                | 0.1.12   | MIT OR Apache-2.0 |\n" +
         "| which                | 8.0.6    | MIT |\n" +
