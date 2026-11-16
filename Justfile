@@ -157,8 +157,8 @@ flatpak-vendor:
 # Build the Flatpak into a local OSTree repo at target/flatpak/repo and
 # the install tree at target/flatpak/build. Requires:
 #   flatpak-builder
-#   org.kde.Platform//6.10
-#   org.kde.Sdk//6.10
+#   org.kde.Platform//6.11
+#   org.kde.Sdk//6.11
 #   org.freedesktop.Sdk.Extension.rust-stable//25.08
 flatpak: flatpak-vendor
     # Stage the vendor config at .cargo/config.toml just long enough

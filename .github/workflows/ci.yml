@@ -262,10 +262,10 @@ jobs:
   # NOTE: Flatpak CI is currently disabled.
   # bilelmoussaoui/flatpak-github-actions only publishes kde-5.15 tags
   # (verified 2026-05-26); there's no KDE 6 base image. The Flatpak
-  # manifest pins org.kde.Platform//6.10 at *runtime* but the CI host
+  # manifest pins org.kde.Platform//6.11 at *runtime* but the CI host
   # needs a matching base. To re-enable, either:
   #   1. Set up flatpak-builder on a stock ubuntu-latest runner with
   #      apt-get install flatpak flatpak-builder and `flatpak install`
-  #      org.kde.Platform//6.10 from flathub, OR
+  #      org.kde.Platform//6.11 from flathub, OR
   #   2. Use a published flatpak-builder image that has KDE 6 SDK.
   # Local builds via `just flatpak-bundle` continue to work for now.

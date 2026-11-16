@@ -5,12 +5,12 @@ LinSync ships first-class packaging recipes for the following targets:
 | Target            | Recipe                                | Tooling                         |
 | ----------------- | -------------------------------------- | -------------------------------- |
 | AppImage          | `packaging/appimage/build-appdir.sh`  | `linuxdeploy`, `linuxdeploy-plugin-qt`, `qmake6` |
-| Flatpak           | `packaging/flatpak/com.visorcraft.LinSync.yml` | `flatpak-builder`, KDE Platform//6.10, rust-stable//25.08 |
+| Flatpak           | `packaging/flatpak/com.visorcraft.LinSync.yml` | `flatpak-builder`, KDE Platform//6.11, rust-stable//25.08 |
 | Arch / CachyOS    | `packaging/arch/PKGBUILD`             | `makepkg`                       |
 | Debian / Ubuntu   | `packaging/debian/`                   | `dpkg-buildpackage`, `debhelper`|
 | Fedora / RHEL     | `packaging/rpm/linsync.spec`          | `rpmbuild`                      |
 
-Every recipe targets the workspace at version **1.16.7** and builds with the
+Every recipe targets the workspace at version **1.16.8** and builds with the
 `cxxqt` + `cxxqt-app` features so the Qt 6 / Kirigami UI is included.
 
 These same recipes are driven automatically by

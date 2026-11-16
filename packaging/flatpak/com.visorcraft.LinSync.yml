@@ -1,7 +1,7 @@
 # Flatpak manifest for LinSync.
 #
 # This manifest pairs with the workspace `rust-toolchain.toml` pin (Rust
-# 1.95, 2024 edition) by selecting the KDE 6.10 runtime, which is built on
+# 1.95, 2024 edition) by selecting the KDE 6.11 runtime, which is built on
 # the FDO 25.08 SDK and gets us the matching rust-stable Sdk extension.
 #
 # Build the .flatpak bundle via `just flatpak-bundle` (recommended). The
@@ -11,8 +11,8 @@
 #
 # Requires:
 #   flatpak-builder
-#   org.kde.Platform//6.10
-#   org.kde.Sdk//6.10
+#   org.kde.Platform//6.11
+#   org.kde.Sdk//6.11
 #   org.freedesktop.Sdk.Extension.rust-stable//25.08
 #
 # Plugin-helper sandbox notes
@@ -29,7 +29,7 @@
 
 app-id: com.visorcraft.LinSync
 runtime: org.kde.Platform
-runtime-version: '6.10'
+runtime-version: '6.11'
 sdk: org.kde.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable

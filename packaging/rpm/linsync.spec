@@ -13,7 +13,7 @@
 #              -bb linsync.spec
 
 Name:           linsync
-Version:        1.16.7
+Version:        1.16.8
 Release:        1%{?dist}
 Summary:        Linux-native visual file and folder comparison
 
@@ -125,6 +125,9 @@ if [ $1 -eq 0 ]; then
 fi
 
 %changelog
+* Mon Nov 16 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.16.8-1
+- Build the Flatpak on the KDE 6.11 runtime.
+
 * Sat Nov 14 2026 VisorCraft LLC <licensing@visorcraft.com> - 1.16.7-1
 - Find the image CLI test binary through Cargo so the suite passes on Rust 1.100.
 

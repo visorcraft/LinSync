@@ -1,3 +1,9 @@
+linsync (1.16.8-1) unstable; urgency=medium
+
+  * Build the Flatpak on the KDE 6.11 runtime.
+
+ -- VisorCraft LLC <licensing@visorcraft.com>  Mon, 16 Nov 2026 12:50:00 -0600
+
 linsync (1.16.7-1) unstable; urgency=medium
 
   * Find the image CLI test binary through Cargo so the suite passes on Rust 1.100.
